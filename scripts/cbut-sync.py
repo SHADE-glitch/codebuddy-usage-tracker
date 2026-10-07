@@ -58,6 +58,21 @@ BUILTIN_AGENTS = {
 CMD_RE = re.compile(r"<command-name>\s*/?([^<\s]+)\s*</command-name>")
 BAGGAGE_SID_RE = re.compile(r"codebuddy\.session_id=([^,\s]+)")
 
+# Transcript record types that represent one model response. All carry a
+# ``providerData.messageId`` that is globally unique *when the record also
+# carries ``rawUsage``* — that uniqueness is what we dedup on.
+MODEL_RESPONSE_TYPES = ("function_call", "message", "model-usage")
+
+# Token fields read from ``providerData.rawUsage``, in persistence order.
+# Deliberately excluded: ``credit`` (billing, not tokens), ``total_tokens``
+# (derivable), and everything derived from ``turn-metrics.tokenDelta``.
+USAGE_FIELDS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
 
 def _session_id(rec) -> str | None:
     """Session id from the record, falling back to _meta.baggage.
@@ -219,11 +234,77 @@ def index_file(conn: sqlite3.Connection, path: Path, offset: int,
     return new_offset
 
 
+def _record_model_response(conn, rec, sid, project, ts) -> None:
+    """Persist one model response's token usage, deduped by messageId.
+
+    Source of truth is ``providerData.rawUsage`` only. The same response can be
+    re-emitted several times (a usage-bearing record plus usage-less copies that
+    share its ``messageId``), so:
+
+    * a record *with* ``rawUsage`` upserts the token columns;
+    * a record *without* ``rawUsage`` only inserts a placeholder if the response
+      is not known yet (``INSERT OR IGNORE``), never fabricating tokens.
+
+    Missing token fields are stored as NULL and named in ``missing``. ``credit``
+    and ``turn-metrics.tokenDelta`` are never read here.
+    """
+    if rec.get("type") not in MODEL_RESPONSE_TYPES:
+        return
+    provider = rec.get("providerData") or {}
+    message_id = provider.get("messageId")
+    if not message_id:
+        return                       # no stable response id -> do not guess one
+    model = provider.get("model")
+    conv = provider.get("conversationRequestId")
+    raw = provider.get("rawUsage")
+
+    if isinstance(raw, dict):
+        vals = {k: raw.get(k) for k in USAGE_FIELDS}
+        missing = [k for k in USAGE_FIELDS if raw.get(k) is None]
+        if model is None:
+            missing.append("model")
+        conn.execute(
+            "INSERT INTO model_responses"
+            "(message_id, session_id, conversation_request_id, model,"
+            " prompt_tokens, completion_tokens,"
+            " cache_read_input_tokens, cache_creation_input_tokens,"
+            " ts, project, source, usage_available, missing)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,'transcript',1,?)"
+            " ON CONFLICT(message_id) DO UPDATE SET"
+            "   session_id = COALESCE(excluded.session_id, session_id),"
+            "   conversation_request_id ="
+            "     COALESCE(excluded.conversation_request_id, conversation_request_id),"
+            "   model = COALESCE(excluded.model, model),"
+            "   prompt_tokens = excluded.prompt_tokens,"
+            "   completion_tokens = excluded.completion_tokens,"
+            "   cache_read_input_tokens = excluded.cache_read_input_tokens,"
+            "   cache_creation_input_tokens = excluded.cache_creation_input_tokens,"
+            "   ts = COALESCE(excluded.ts, ts),"
+            "   project = COALESCE(excluded.project, project),"
+            "   usage_available = 1,"
+            "   missing = excluded.missing",
+            (message_id, sid, conv, model, vals["prompt_tokens"],
+             vals["completion_tokens"], vals["cache_read_input_tokens"],
+             vals["cache_creation_input_tokens"], ts, project,
+             ",".join(missing) or None),
+        )
+    else:
+        conn.execute(
+            "INSERT OR IGNORE INTO model_responses"
+            "(message_id, session_id, conversation_request_id, model,"
+            " ts, project, source, usage_available, missing)"
+            " VALUES(?,?,?,?,?,?,'transcript',0,'rawUsage')",
+            (message_id, sid, conv, model, ts, project),
+        )
+
+
 def _handle_record(conn, rec, skill_owner, agent_owner, command_owner) -> None:
     rtype = rec.get("type")
     sid = _session_id(rec)
     project = rec.get("cwd")
     ts = rec.get("timestamp")
+
+    _record_model_response(conn, rec, sid, project, ts)
 
     if rtype == "function_call":
         name = rec.get("name") or ""
@@ -304,6 +385,9 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner) -> None:
             )
 
     elif rtype == "turn-metrics":
+        # NOTE: tokenDelta is a *context* metric for the whole turn, not the
+        # model's prompt/completion tokens. It is kept in sessions.tokens and is
+        # never mixed into model_responses (which reads rawUsage only).
         if sid:
             conn.execute(
                 "INSERT INTO sessions"
@@ -449,6 +533,17 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
         "mcp": conn.execute("SELECT COUNT(*) FROM mcp_usage").fetchone()[0],
         "sessions": conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0],
         "commands": conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0],
+        "model_responses": conn.execute(
+            "SELECT COUNT(*) FROM model_responses").fetchone()[0],
+        "model_responses_with_usage": conn.execute(
+            "SELECT COUNT(*) FROM model_responses WHERE usage_available=1"
+        ).fetchone()[0],
+        "model_prompt_tokens": conn.execute(
+            "SELECT COALESCE(SUM(prompt_tokens),0) FROM model_responses"
+        ).fetchone()[0],
+        "model_completion_tokens": conn.execute(
+            "SELECT COALESCE(SUM(completion_tokens),0) FROM model_responses"
+        ).fetchone()[0],
     }
     conn.close()
 
@@ -457,6 +552,10 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
         print(f"  tool_calls={stats['tool_calls']}  skills={stats['skills']}  "
               f"agents={stats['agents']}  mcp={stats['mcp']}  "
               f"sessions={stats['sessions']}  commands={stats['commands']}")
+        print(f"  model_responses={stats['model_responses']} "
+              f"(with usage {stats['model_responses_with_usage']})  "
+              f"prompt_tokens={stats['model_prompt_tokens']:,}  "
+              f"completion_tokens={stats['model_completion_tokens']:,}")
     return stats
 
 

@@ -16,7 +16,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # --- locations -------------------------------------------------------------
 
@@ -50,6 +50,31 @@ CREATE TABLE IF NOT EXISTS sessions (
     tokens      INTEGER DEFAULT 0,
     duration_ms INTEGER DEFAULT 0
 );
+
+-- One row per model response, keyed by providerData.messageId (globally unique
+-- in the transcripts: a usage-bearing messageId always appears exactly once).
+-- Token columns come *only* from providerData.rawUsage. They are never derived
+-- from credit, turn-metrics.tokenDelta, context-window estimates or model
+-- multipliers. A missing field is stored as NULL (never a fabricated 0) and is
+-- named in `missing`; `usage_available` is 0 when the response carried no usage.
+CREATE TABLE IF NOT EXISTS model_responses (
+    message_id                 TEXT PRIMARY KEY,
+    session_id                 TEXT,
+    conversation_request_id    TEXT,
+    model                      TEXT,
+    prompt_tokens              INTEGER,
+    completion_tokens          INTEGER,
+    cache_read_input_tokens    INTEGER,
+    cache_creation_input_tokens INTEGER,
+    ts                         INTEGER,
+    project                    TEXT,
+    source                     TEXT DEFAULT 'transcript',
+    usage_available            INTEGER DEFAULT 0,
+    missing                    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_model_resp_session ON model_responses(session_id);
+CREATE INDEX IF NOT EXISTS idx_model_resp_model   ON model_responses(model);
+CREATE INDEX IF NOT EXISTS idx_model_resp_ts      ON model_responses(ts);
 
 CREATE TABLE IF NOT EXISTS tool_calls (
     call_id     TEXT PRIMARY KEY,
@@ -255,6 +280,7 @@ def reset(conn: sqlite3.Connection) -> None:
         "agent_usage",
         "skill_usage",
         "tool_calls",
+        "model_responses",
         "sessions",
         "inventory",
         "sync_state",
@@ -336,6 +362,47 @@ def q_history(conn, kind, name, limit=50):
     ).fetchall()
 
 
+def q_model_responses(conn, limit=50, model=None):
+    """Recent per-response model usage rows (newest first).
+
+    Data interface for the future token tab. Token columns are the raw
+    providerData.rawUsage values; NULL means the field was absent.
+    """
+    sql = (
+        "SELECT message_id, session_id, conversation_request_id, model,"
+        " prompt_tokens, completion_tokens, cache_read_input_tokens,"
+        " cache_creation_input_tokens, ts, project, source,"
+        " usage_available, missing"
+        " FROM model_responses"
+    )
+    params: list = []
+    if model:
+        sql += " WHERE model = ?"
+        params.append(model)
+    sql += " ORDER BY ts DESC LIMIT ?"
+    params.append(int(limit))
+    return conn.execute(sql, params).fetchall()
+
+
+def q_model_tokens(conn):
+    """Per-model token totals.
+
+    ``SUM`` skips NULLs, so responses recorded with ``usage_available=0`` add
+    nothing instead of a fabricated zero. ``tokenDelta`` and credit are never
+    part of these sums.
+    """
+    return conn.execute(
+        "SELECT model,"
+        " COUNT(*) AS responses,"
+        " SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END) AS with_usage,"
+        " SUM(prompt_tokens) AS prompt_tokens,"
+        " SUM(completion_tokens) AS completion_tokens,"
+        " SUM(cache_read_input_tokens) AS cache_read_input_tokens,"
+        " SUM(cache_creation_input_tokens) AS cache_creation_input_tokens"
+        " FROM model_responses GROUP BY model ORDER BY responses DESC"
+    ).fetchall()
+
+
 def q_inventory(conn, kind=None):
     sql = "SELECT * FROM inventory"
     params = ()
@@ -362,7 +429,16 @@ def overview(conn) -> dict:
         "projects": one("SELECT COUNT(DISTINCT project) FROM sessions WHERE project IS NOT NULL"),
         "first_ts": one("SELECT MIN(ts) FROM tool_calls"),
         "last_ts": one("SELECT MAX(ts) FROM tool_calls"),
+        # NB: sessions.tokens is the turn-metrics.tokenDelta context metric, NOT
+        # model prompt/completion tokens. The two are deliberately kept apart.
         "total_tokens": one("SELECT COALESCE(SUM(tokens),0) FROM sessions"),
+        "model_responses": one("SELECT COUNT(*) FROM model_responses"),
+        "model_responses_with_usage":
+            one("SELECT COUNT(*) FROM model_responses WHERE usage_available=1"),
+        "model_prompt_tokens":
+            one("SELECT COALESCE(SUM(prompt_tokens),0) FROM model_responses"),
+        "model_completion_tokens":
+            one("SELECT COALESCE(SUM(completion_tokens),0) FROM model_responses"),
         "inventory": one("SELECT COUNT(*) FROM inventory"),
     }
 

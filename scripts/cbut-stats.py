@@ -5,6 +5,7 @@ Standard library only (no textual needed). Subcommands:
 
     stats                 overview of all five categories
     tools|skills|agents|mcp|plugins   per-category tables
+    models                per-model token totals from transcript rawUsage
     show <kind> <name>    recent calls for one entity
     recent                most recent tool calls
     inventory             what is installed / available, used vs unused
@@ -81,7 +82,13 @@ def cmd_stats(conn, args):
     print(f"  MCP invocations    {o['mcp']}")
     print(f"  plugins used       {o['plugins_used']}")
     print(f"  slash commands     {o['commands']}")
-    print(f"  tokens (session)   {o['total_tokens']:,}")
+    print(f"  model responses    {o['model_responses']} "
+          f"({o['model_responses_with_usage']} with usage)")
+    print(f"  model tokens       in {o['model_prompt_tokens']:,}  "
+          f"out {o['model_completion_tokens']:,}")
+    # Kept visually separate from model tokens on purpose: sessions.tokens is the
+    # turn-metrics.tokenDelta context metric, not prompt/completion tokens.
+    print(f"  context tokens     {o['total_tokens']:,}  (turn-metrics tokenDelta)")
     print(f"  range              {ts(o['first_ts'])} .. {ts(o['last_ts'])}")
     print()
 
@@ -146,6 +153,26 @@ def cmd_mcp(conn, args):
                 [[r[0], r[1], r[2], r[3], ts(r[4])] for r in rows]) or "(none)")
 
 
+def cmd_models(conn, args):
+    """Per-model token totals from real transcript usage (rawUsage)."""
+    rows = _rows(db.q_model_tokens(conn),
+                 ["model", "responses", "with_usage", "prompt_tokens",
+                  "completion_tokens", "cache_read_input_tokens",
+                  "cache_creation_input_tokens"])
+    print("Model token usage (source: transcript providerData.rawUsage)")
+    print(table(["model", "resp", "usage", "in", "out", "cache_r", "cache_w"],
+                [[r[0] or "?", r[1], r[2], r[3] or 0, r[4] or 0, r[5] or 0, r[6] or 0]
+                 for r in rows]) or "  (no model responses indexed yet)")
+    print()
+    print("Recent model responses")
+    recent = db.q_model_responses(conn, args.limit)
+    print(table(["when", "model", "in", "out", "cache_r", "cache_w", "usage", "session"],
+                [[ts(r["ts"]), r["model"] or "?", r["prompt_tokens"], r["completion_tokens"],
+                  r["cache_read_input_tokens"], r["cache_creation_input_tokens"],
+                  "yes" if r["usage_available"] else "no",
+                  (r["session_id"] or "")[:8]] for r in recent]) or "  (none)")
+
+
 def cmd_plugins(conn, args):
     rows = _rows(db.q_plugins(conn),
                  ["plugin", "version", "uses", "skills", "agents", "commands", "last_used"])
@@ -183,6 +210,11 @@ def cmd_export(conn, args):
     for view in ("v_tools", "v_skills", "v_agents", "v_mcp", "v_plugins"):
         out[view] = [dict(r) for r in conn.execute(f"SELECT * FROM {view}")]
     out["inventory"] = [dict(r) for r in conn.execute("SELECT * FROM inventory")]
+    out["model_tokens"] = [dict(r) for r in db.q_model_tokens(conn)]
+    out["model_responses"] = [
+        dict(r) for r in conn.execute(
+            "SELECT * FROM model_responses ORDER BY ts DESC")
+    ]
     out["sessions"] = [
         dict(r) for r in conn.execute("SELECT * FROM sessions ORDER BY ended_at DESC")
     ]
@@ -206,7 +238,9 @@ def cmd_health(conn, args):
     tracked = conn.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0]
     print(f"  transcript files {n_files} on disk, {tracked} tracked")
     o = db.overview(conn)
-    print(f"  indexed        {o['tool_calls']} tool calls, {o['sessions']} sessions")
+    print(f"  indexed        {o['tool_calls']} tool calls, {o['sessions']} sessions, "
+          f"{o['model_responses']} model responses "
+          f"({o['model_responses_with_usage']} with usage)")
     print(f"  last activity  {ts(o['last_ts'])}")
 
 
@@ -215,6 +249,7 @@ def cmd_health(conn, args):
 COMMANDS = {
     "stats": cmd_stats, "tools": cmd_tools, "skills": cmd_skills,
     "agents": cmd_agents, "mcp": cmd_mcp, "plugins": cmd_plugins,
+    "models": cmd_models,
     "show": cmd_show, "recent": cmd_recent, "inventory": cmd_inventory,
     "export": cmd_export, "health": cmd_health,
 }
@@ -228,7 +263,7 @@ def main(argv=None) -> int:
     for name in ("stats", "health", "plugins", "inventory", "export"):
         p = sub.add_parser(name)
         p.add_argument("--kind", default=None, help="inventory only: filter by kind")
-    for name in ("tools", "skills", "agents", "mcp", "recent"):
+    for name in ("tools", "skills", "agents", "mcp", "recent", "models"):
         sub.add_parser(name).add_argument("--limit", type=int, default=30)
     sp = sub.add_parser("show")
     sp.add_argument("kind", choices=["tool", "skill", "agent", "mcp"])
