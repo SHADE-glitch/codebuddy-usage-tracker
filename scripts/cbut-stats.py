@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sqlite3
 import sys
 from datetime import datetime
@@ -43,6 +44,22 @@ def ms(v):
     if v < 1000:
         return f"{v}ms"
     return f"{v / 1000:.1f}s"
+
+
+def fmt_n(v):
+    """Render a token count: ``-`` for NULL (never a fabricated 0), else grouped."""
+    if v is None:
+        return "-"
+    return f"{v:,}"
+
+
+def _rendered_width(headers, rows) -> int:
+    """Width (chars) of the table ``table()`` would print, including separators."""
+    widths = [len(h) for h in headers]
+    for r in rows:
+        for i, c in enumerate(r):
+            widths[i] = max(widths[i], len("" if c is None else str(c)))
+    return sum(widths) + 2 * (len(headers) - 1)
 
 
 def table(headers, rows, aligns=None):
@@ -85,7 +102,11 @@ def cmd_stats(conn, args):
     print(f"  model responses    {o['model_responses']} "
           f"({o['model_responses_with_usage']} with usage)")
     print(f"  model tokens       in {o['model_prompt_tokens']:,}  "
-          f"out {o['model_completion_tokens']:,}")
+          f"out {o['model_completion_tokens']:,}  "
+          f"total {o['model_total_tokens']:,}")
+    print(f"  model cache        hit {o['model_prompt_cache_hit_tokens']:,}  "
+          f"miss {o['model_prompt_cache_miss_tokens']:,}  "
+          f"write {o['model_prompt_cache_write_tokens']:,}  (not in total)")
     # Kept visually separate from model tokens on purpose: sessions.tokens is the
     # turn-metrics.tokenDelta context metric, not prompt/completion tokens.
     print(f"  context tokens     {o['total_tokens']:,}  (turn-metrics tokenDelta)")
@@ -153,24 +174,69 @@ def cmd_mcp(conn, args):
                 [[r[0], r[1], r[2], r[3], ts(r[4])] for r in rows]) or "(none)")
 
 
+# Per-model table: (header, q_model_tokens key). Order matters — the trailing
+# cache columns are the first dropped when the terminal is narrow.
+MODEL_TABLE_COLUMNS = (
+    ("model", "model"),
+    ("resp", "responses"),
+    ("usage", "with_usage"),
+    ("in", "prompt_tokens"),
+    ("out", "completion_tokens"),
+    ("total", "total_tokens"),
+    ("cache hit", "prompt_cache_hit_tokens"),
+    ("cache miss", "prompt_cache_miss_tokens"),
+    ("cache write", "prompt_cache_write_tokens"),
+)
+# Dropped left-to-right until the table fits; model/in/out/total always survive.
+_MODEL_DROP_ORDER = ("cache write", "cache miss", "cache hit", "usage", "resp")
+_MODEL_ALWAYS_KEEP = 4
+
+
+def _fit_model_columns(width, headers, rows):
+    """Reduce (headers, rows) to fit ``width`` by dropping cache, then resp/usage.
+
+    Never drops below the first four columns (model / in / out / total).
+    """
+    headers = list(headers)
+    rows = [list(r) for r in rows]
+    for name in _MODEL_DROP_ORDER:
+        if _rendered_width(headers, rows) <= width or len(headers) <= _MODEL_ALWAYS_KEEP:
+            break
+        if name in headers:
+            j = headers.index(name)
+            headers.pop(j)
+            for r in rows:
+                r.pop(j)
+    return headers, rows
+
+
 def cmd_models(conn, args):
     """Per-model token totals from real transcript usage (rawUsage)."""
-    rows = _rows(db.q_model_tokens(conn),
-                 ["model", "responses", "with_usage", "prompt_tokens",
-                  "completion_tokens", "cache_read_input_tokens",
-                  "cache_creation_input_tokens"])
+    data = _rows(db.q_model_tokens(conn), [k for _, k in MODEL_TABLE_COLUMNS])
+    rows = [[r[0] or "?"] + [fmt_n(c) for c in r[1:]] for r in data]
+    headers = [h for h, _ in MODEL_TABLE_COLUMNS]
+    width = shutil.get_terminal_size((100, 24)).columns
+    headers, rows = _fit_model_columns(width, headers, rows)
     print("Model token usage (source: transcript providerData.rawUsage)")
-    print(table(["model", "resp", "usage", "in", "out", "cache_r", "cache_w"],
-                [[r[0] or "?", r[1], r[2], r[3] or 0, r[4] or 0, r[5] or 0, r[6] or 0]
-                 for r in rows]) or "  (no model responses indexed yet)")
+    print("Total = provider total when present, else Input + Output. "
+          "Cache hit/miss/write are separate, not in Total.")
+    if rows:
+        print(table(headers, rows))
+    else:
+        print("  (no model responses indexed yet)")
     print()
     print("Recent model responses")
     recent = db.q_model_responses(conn, args.limit)
-    print(table(["when", "model", "in", "out", "cache_r", "cache_w", "usage", "session"],
-                [[ts(r["ts"]), r["model"] or "?", r["prompt_tokens"], r["completion_tokens"],
-                  r["cache_read_input_tokens"], r["cache_creation_input_tokens"],
-                  "yes" if r["usage_available"] else "no",
-                  (r["session_id"] or "")[:8]] for r in recent]) or "  (none)")
+    print(table(
+        ["when", "model", "in", "out", "total", "cache hit", "cache miss",
+         "cache write", "usage", "session"],
+        [[ts(r["ts"]), r["model"] or "?", fmt_n(r["prompt_tokens"]),
+          fmt_n(r["completion_tokens"]), fmt_n(r["total_tokens"]),
+          fmt_n(r["prompt_cache_hit_tokens"]),
+          fmt_n(r["prompt_cache_miss_tokens"]),
+          fmt_n(r["prompt_cache_write_tokens"]),
+          "yes" if r["usage_available"] else "no",
+          (r["session_id"] or "")[:8]] for r in recent]) or "  (none)")
 
 
 def cmd_plugins(conn, args):

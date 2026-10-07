@@ -16,7 +16,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 # --- locations -------------------------------------------------------------
 
@@ -57,6 +57,14 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- from credit, turn-metrics.tokenDelta, context-window estimates or model
 -- multipliers. A missing field is stored as NULL (never a fabricated 0) and is
 -- named in `missing`; `usage_available` is 0 when the response carried no usage.
+--
+-- In real transcripts prompt_tokens is partitioned as
+--   prompt_tokens = prompt_cache_hit_tokens
+--                 + prompt_cache_miss_tokens
+--                 + prompt_cache_write_tokens
+-- (all three are *parts* of the input; they are never added on top of it).
+-- cache_read/creation_input_tokens are a separate, usually-zero legacy pair and
+-- are never summed with prompt_cache_*.
 CREATE TABLE IF NOT EXISTS model_responses (
     message_id                 TEXT PRIMARY KEY,
     session_id                 TEXT,
@@ -66,6 +74,15 @@ CREATE TABLE IF NOT EXISTS model_responses (
     completion_tokens          INTEGER,
     cache_read_input_tokens    INTEGER,
     cache_creation_input_tokens INTEGER,
+    -- Newer rawUsage cache fields (schema v3). Real cache values live here;
+    -- cache_read/creation above are usually 0. Absent field -> NULL (never 0).
+    prompt_cache_hit_tokens    INTEGER,
+    prompt_cache_miss_tokens   INTEGER,
+    prompt_cache_write_tokens  INTEGER,
+    -- The provider's own total (schema v4), copied verbatim from
+    -- providerData.rawUsage.total_tokens. Absent -> NULL; a real 0 stays 0.
+    -- Never derived here (the derived fallback is applied at query time).
+    provider_total_tokens      INTEGER,
     ts                         INTEGER,
     project                    TEXT,
     source                     TEXT DEFAULT 'transcript',
@@ -75,6 +92,7 @@ CREATE TABLE IF NOT EXISTS model_responses (
 CREATE INDEX IF NOT EXISTS idx_model_resp_session ON model_responses(session_id);
 CREATE INDEX IF NOT EXISTS idx_model_resp_model   ON model_responses(model);
 CREATE INDEX IF NOT EXISTS idx_model_resp_ts      ON model_responses(ts);
+CREATE INDEX IF NOT EXISTS idx_model_resp_model_ts ON model_responses(model, ts);
 
 CREATE TABLE IF NOT EXISTS tool_calls (
     call_id     TEXT PRIMARY KEY,
@@ -130,6 +148,7 @@ CREATE TABLE IF NOT EXISTS mcp_usage (
     duration_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_server ON mcp_usage(server);
+CREATE INDEX IF NOT EXISTS idx_mcp_tool   ON mcp_usage(tool);
 
 CREATE TABLE IF NOT EXISTS plugin_usage (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -198,7 +217,7 @@ SELECT skill,
        COUNT(DISTINCT project)                             AS projects,
        COUNT(DISTINCT session_id)                          AS sessions
 FROM skill_usage
-GROUP BY skill;
+GROUP BY skill, plugin;
 
 DROP VIEW IF EXISTS v_agents;
 CREATE VIEW v_agents AS
@@ -210,7 +229,7 @@ SELECT agent_type,
        COUNT(DISTINCT project)                             AS projects,
        COUNT(DISTINCT session_id)                          AS sessions
 FROM agent_usage
-GROUP BY agent_type;
+GROUP BY agent_type, kind;
 
 DROP VIEW IF EXISTS v_mcp;
 CREATE VIEW v_mcp AS
@@ -233,7 +252,7 @@ SELECT plugin,
        MAX(ts)                                             AS last_used,
        COUNT(DISTINCT session_id)                          AS sessions
 FROM plugin_usage
-GROUP BY plugin;
+GROUP BY plugin, marketplace;
 """
 
 SCHEMA_SQL = TABLES_SQL + VIEWS_SQL
@@ -261,14 +280,69 @@ def open_db(path: Path | str = DB_PATH, readonly: bool = False) -> sqlite3.Conne
     return conn
 
 
+# Columns added after the original schema, kept here so the migration and the
+# CREATE TABLE stay in sync. v3: the three prompt_cache_* cache parts.
+# v4: provider_total_tokens (the provider's own rawUsage total).
+_NEW_MODEL_COLUMNS = (
+    "prompt_cache_hit_tokens",
+    "prompt_cache_miss_tokens",
+    "prompt_cache_write_tokens",
+    "provider_total_tokens",
+)
+
+
+def _migrate_model_responses(conn: sqlite3.Connection) -> None:
+    """Add v3/v4 columns to a pre-existing ``model_responses`` table.
+
+    SQLite has no ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``, so check
+    ``PRAGMA table_info`` first. When any column is actually added (i.e. an old
+    database is being upgraded), clear ``sync_state`` so the next incremental
+    ``cbut sync`` re-reads the transcripts and backfills the new columns via the
+    existing messageId UPSERT — row counts stay stable. ``sessions`` is cleared
+    too: its ``tokens``/``duration_ms`` are *accumulated* from ``turn-metrics``,
+    so a full re-read would otherwise add every turn's delta a second time.
+    Fresh databases already have the columns, so this is a no-op for them.
+    """
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(model_responses)")}
+    added = [c for c in _NEW_MODEL_COLUMNS if c not in existing]
+    if not added:
+        return
+    for col in added:
+        conn.execute(f"ALTER TABLE model_responses ADD COLUMN {col} INTEGER")
+    conn.execute("DELETE FROM sync_state")
+    conn.execute("DELETE FROM sessions")
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
+    _migrate_model_responses(conn)
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (str(SCHEMA_VERSION),),
     )
     conn.commit()
+
+
+def migrate(db_path: Path | str = DB_PATH) -> bool:
+    """Best-effort upgrade of the tracker DB to the current schema.
+
+    Opens the DB read-write, runs :func:`ensure_schema` (which adds the v3/v4
+    columns and, when it actually adds columns, clears ``sync_state`` so the next
+    incremental sync backfills them), and closes. Returns ``True`` on success.
+
+    Swallows ``sqlite3.Error`` so a read-only environment can still launch the
+    TUI; callers that need the newer columns should tolerate ``False``.
+    """
+    try:
+        conn = open_db(db_path)
+        try:
+            ensure_schema(conn)
+        finally:
+            conn.close()
+        return True
+    except sqlite3.Error:
+        return False
 
 
 def reset(conn: sqlite3.Connection) -> None:
@@ -365,14 +439,20 @@ def q_history(conn, kind, name, limit=50):
 def q_model_responses(conn, limit=50, model=None):
     """Recent per-response model usage rows (newest first).
 
-    Data interface for the future token tab. Token columns are the raw
-    providerData.rawUsage values; NULL means the field was absent.
+    Token columns are the raw providerData.rawUsage values; NULL means the field
+    was absent. ``total_tokens`` prefers the provider's own total and falls back
+    to ``prompt + completion``; ``total_tokens_source`` says which was used
+    ('provider' | 'derived' | NULL).
     """
     sql = (
         "SELECT message_id, session_id, conversation_request_id, model,"
         " prompt_tokens, completion_tokens, cache_read_input_tokens,"
-        " cache_creation_input_tokens, ts, project, source,"
-        " usage_available, missing"
+        " cache_creation_input_tokens,"
+        " prompt_cache_hit_tokens, prompt_cache_miss_tokens,"
+        " prompt_cache_write_tokens, provider_total_tokens,"
+        f" {_TOTAL_EXPR} AS total_tokens,"
+        f" {_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
+        " ts, project, source, usage_available, missing"
         " FROM model_responses"
     )
     params: list = []
@@ -390,6 +470,20 @@ def q_model_tokens(conn):
     ``SUM`` skips NULLs, so responses recorded with ``usage_available=0`` add
     nothing instead of a fabricated zero. ``tokenDelta`` and credit are never
     part of these sums.
+
+    ``total_tokens`` is the **API Total**: the sum of the per-row totals, i.e.
+    the provider's own ``provider_total_tokens`` where present, else
+    ``prompt + completion``. It is NULL only when a model contributes no total
+    at all. ``total_tokens_source`` reports 'provider' / 'derived' / 'mixed' /
+    NULL. The cache columns (hit/miss/write) are reported separately and are
+    deliberately NOT added into ``total_tokens``.
+
+    ``usage_total_tokens`` is a **display-only** metric:
+    ``prompt + completion + cache hit``. Because ``prompt_tokens`` already
+    contains the cache hit (``prompt = hit + miss + write``), this re-adds the
+    hit and is roughly twice the API Total. It never replaces ``total_tokens``.
+    Rows without cache data contribute no hit (COALESCE to 0), so they are not
+    inflated.
     """
     return conn.execute(
         "SELECT model,"
@@ -398,8 +492,224 @@ def q_model_tokens(conn):
         " SUM(prompt_tokens) AS prompt_tokens,"
         " SUM(completion_tokens) AS completion_tokens,"
         " SUM(cache_read_input_tokens) AS cache_read_input_tokens,"
-        " SUM(cache_creation_input_tokens) AS cache_creation_input_tokens"
+        " SUM(cache_creation_input_tokens) AS cache_creation_input_tokens,"
+        " SUM(prompt_cache_hit_tokens) AS prompt_cache_hit_tokens,"
+        " SUM(prompt_cache_miss_tokens) AS prompt_cache_miss_tokens,"
+        " SUM(prompt_cache_write_tokens) AS prompt_cache_write_tokens,"
+        f" {_AGG_TOTAL_EXPR} AS total_tokens,"
+        f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
+        f" {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens"
         " FROM model_responses GROUP BY model ORDER BY responses DESC"
+    ).fetchall()
+
+
+# --- usage statistics (rolling time windows) -------------------------------
+
+# Rolling window sizes in hours; None = All time (no lower bound).
+USAGE_RANGES = {"24h": 24, "48h": 48, "72h": 72, "7d": 24 * 7, "30d": 24 * 30,
+                "all": None}
+USAGE_RANGE_LABELS = {
+    "24h": "Last 24 hours", "48h": "Last 48 hours", "72h": "Last 72 hours",
+    "7d": "Last 7 days", "30d": "Last 30 days", "all": "All time",
+}
+
+# No provider/account/site/endpoint field exists in the transcripts, so every
+# record is honestly grouped under this label (never inferred from the model).
+UNKNOWN_PROVIDER = "Transcript / Unknown"
+
+# Per-row total: prefer the provider's own rawUsage total, else fall back to
+# prompt + completion. NULL only when neither is available (never a fabricated 0).
+_TOTAL_EXPR = (
+    "COALESCE(provider_total_tokens,"
+    " CASE WHEN prompt_tokens IS NOT NULL AND completion_tokens IS NOT NULL"
+    " THEN prompt_tokens + completion_tokens ELSE NULL END)"
+)
+# Provenance of the per-row value above: 'provider' | 'derived' | NULL.
+_TOTAL_SOURCE_EXPR = (
+    "CASE WHEN provider_total_tokens IS NOT NULL THEN 'provider'"
+    " WHEN prompt_tokens IS NOT NULL AND completion_tokens IS NOT NULL"
+    " THEN 'derived' ELSE NULL END"
+)
+# Aggregate total: SUM of the PER-ROW total. Never SUM(provider_total_tokens),
+# which would silently drop rows that fall back to the derived value.
+_AGG_TOTAL_EXPR = f"SUM({_TOTAL_EXPR})"
+# Row counts that feed the aggregate provenance below.
+_AGG_PROVIDER_N = (
+    "SUM(CASE WHEN provider_total_tokens IS NOT NULL THEN 1 ELSE 0 END)"
+)
+_AGG_DERIVED_N = (
+    "SUM(CASE WHEN provider_total_tokens IS NULL"
+    " AND prompt_tokens IS NOT NULL AND completion_tokens IS NOT NULL"
+    " THEN 1 ELSE 0 END)"
+)
+# Aggregate provenance over the contributing rows:
+#   NULL     -> no row contributes a total
+#   provider -> every contributing row carries a provider total
+#   derived  -> none carry one (all fell back to prompt + completion)
+#   mixed    -> both kinds are present
+# COALESCE guards the empty-window case, where SUM(...) is NULL (not 0).
+_AGG_TOTAL_SOURCE_EXPR = (
+    f"CASE WHEN COALESCE({_AGG_PROVIDER_N},0) = 0"
+    f" AND COALESCE({_AGG_DERIVED_N},0) = 0 THEN NULL"
+    f" WHEN COALESCE({_AGG_DERIVED_N},0) = 0 THEN 'provider'"
+    f" WHEN COALESCE({_AGG_PROVIDER_N},0) = 0 THEN 'derived'"
+    " ELSE 'mixed' END"
+)
+
+# --- display-only "Usage Total" -------------------------------------------
+# prompt + completion + cache hit. The prompt already contains the cache hit
+# (prompt = hit + miss + write, verified on real data), so this deliberately
+# re-adds it and lands at roughly twice the API total. It is shown *next to*
+# the API total, never instead of it. NULL when the API parts are missing;
+# a missing cache-hit column contributes 0 (COALESCE) so a row without cache
+# data is not inflated and is not silently dropped from the sum.
+_USAGE_TOTAL_EXPR = (
+    "CASE WHEN prompt_tokens IS NOT NULL AND completion_tokens IS NOT NULL"
+    " THEN prompt_tokens + completion_tokens"
+    " + COALESCE(prompt_cache_hit_tokens, 0) ELSE NULL END"
+)
+_AGG_USAGE_TOTAL_EXPR = f"SUM({_USAGE_TOTAL_EXPR})"
+
+
+def window_bounds(range_key: str, now_ms: int):
+    """``(start_ms, end_ms)`` for a rolling window ending at ``now_ms``.
+
+    ``start_ms`` is ``None`` for ``"all"`` (no lower bound). Never uses
+    natural-day boundaries or the process start time — always the caller's
+    ``now_ms``.
+    """
+    hours = USAGE_RANGES[range_key]
+    end = int(now_ms)
+    if hours is None:
+        return None, end
+    return end - hours * 3600 * 1000, end
+
+
+def cache_hit_rate(hit, miss, write=None):
+    """``hit / (hit + miss + write)`` as a fraction, or ``None`` when undefined.
+
+    The denominator is the *cacheable input* — exactly the three parts that
+    partition ``prompt_tokens`` (``prompt = hit + miss + write``). This matches
+    cc-switch's definition ("cache read tokens as a share of cacheable input")
+    and, unlike ``hit / (hit + miss)``, does not overstate the rate on rows that
+    also wrote to the cache. ``write=None`` counts as 0 (rows that carry no
+    cache data leave the rate undefined via the NULL checks below).
+
+    NULL on either ``hit`` or ``miss``, or a zero denominator, yields ``None`` —
+    never a fabricated rate.
+    """
+    if hit is None or miss is None:
+        return None
+    base = hit + miss + (write or 0)
+    if base == 0:
+        return None
+    return hit / base
+
+
+def _ts_where(start_ts, end_ts):
+    if start_ts is None:
+        return "ts < ?", [end_ts]
+    return "ts >= ? AND ts < ?", [start_ts, end_ts]
+
+
+def q_usage_summary(conn, start_ts, end_ts) -> dict:
+    """Totals for one rolling window. ``SUM`` keeps NULL (no fabricated 0).
+
+    ``total_tokens`` is the **API Total** (provider total, else
+    ``prompt + completion``); ``usage_total_tokens`` is the **display-only**
+    ``prompt + completion + cache hit`` (see :data:`_USAGE_TOTAL_EXPR`). The two
+    are separate keys and are never conflated.
+    """
+    where, params = _ts_where(start_ts, end_ts)
+    row = conn.execute(
+        "SELECT COUNT(*) AS requests,"
+        " SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END) AS with_usage,"
+        " SUM(prompt_tokens) AS prompt_tokens,"
+        " SUM(completion_tokens) AS completion_tokens,"
+        f" {_AGG_TOTAL_EXPR} AS total_tokens,"
+        f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
+        f" {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,"
+        " SUM(prompt_cache_hit_tokens) AS cache_hit,"
+        " SUM(prompt_cache_miss_tokens) AS cache_miss,"
+        " SUM(prompt_cache_write_tokens) AS cache_write,"
+        " SUM(CASE WHEN prompt_tokens IS NULL THEN 1 ELSE 0 END) AS missing_prompt,"
+        " SUM(CASE WHEN completion_tokens IS NULL THEN 1 ELSE 0 END)"
+        " AS missing_completion"
+        f" FROM model_responses WHERE {where}",
+        params,
+    ).fetchone()
+    return dict(row)
+
+
+def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0):
+    """Per-response rows in the window, newest first (never re-parses logs).
+
+    Carries both ``total_tokens`` (API total) and ``usage_total_tokens`` (the
+    display-only re-add of cache hit), plus the raw cache parts.
+    """
+    where, params = _ts_where(start_ts, end_ts)
+    sql = (
+        "SELECT ts, model, prompt_tokens, completion_tokens,"
+        f" {_TOTAL_EXPR} AS total_tokens,"
+        f" {_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
+        f" {_USAGE_TOTAL_EXPR} AS usage_total_tokens,"
+        " prompt_cache_hit_tokens, prompt_cache_miss_tokens,"
+        " prompt_cache_write_tokens, usage_available, source, message_id, project"
+        f" FROM model_responses WHERE {where}"
+        " ORDER BY ts DESC, message_id LIMIT ? OFFSET ?"
+    )
+    return conn.execute(sql, params + [int(limit), int(offset)]).fetchall()
+
+
+def q_usage_provider_stats(conn, start_ts, end_ts):
+    """Provider rollup. There is no provider field, so a non-empty window
+    yields one Unknown row; an empty window yields ``[]`` (``GROUP BY`` over no
+    rows produces no group)."""
+    where, params = _ts_where(start_ts, end_ts)
+    return conn.execute(
+        f"SELECT '{UNKNOWN_PROVIDER}' AS provider,"
+        " COUNT(*) AS requests,"
+        " SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END) AS with_usage,"
+        " SUM(prompt_tokens) AS prompt_tokens,"
+        " SUM(completion_tokens) AS completion_tokens,"
+        f" {_AGG_TOTAL_EXPR} AS total_tokens,"
+        f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
+        " SUM(prompt_cache_hit_tokens) AS cache_hit,"
+        " SUM(prompt_cache_miss_tokens) AS cache_miss,"
+        " SUM(prompt_cache_write_tokens) AS cache_write,"
+        " COUNT(DISTINCT model) AS models"
+        f" FROM model_responses WHERE {where}"
+        " GROUP BY provider",
+        params,
+    ).fetchall()
+
+
+# Whitelisted orderings for q_usage_model_stats (never user-supplied SQL).
+_MODEL_STATS_ORDER = {
+    "total_tokens": "total_tokens DESC, requests DESC",
+    "requests": "requests DESC, total_tokens DESC",
+    "model": "model COLLATE NOCASE ASC",
+}
+
+
+def q_usage_model_stats(conn, start_ts, end_ts, order_by="total_tokens"):
+    """Per-model rollup for one window. ``order_by`` is whitelisted."""
+    where, params = _ts_where(start_ts, end_ts)
+    order = _MODEL_STATS_ORDER.get(order_by, _MODEL_STATS_ORDER["total_tokens"])
+    return conn.execute(
+        "SELECT model,"
+        " COUNT(*) AS requests,"
+        " SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END) AS with_usage,"
+        " SUM(prompt_tokens) AS prompt_tokens,"
+        " SUM(completion_tokens) AS completion_tokens,"
+        f" {_AGG_TOTAL_EXPR} AS total_tokens,"
+        f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
+        " SUM(prompt_cache_hit_tokens) AS cache_hit,"
+        " SUM(prompt_cache_miss_tokens) AS cache_miss,"
+        " SUM(prompt_cache_write_tokens) AS cache_write"
+        f" FROM model_responses WHERE {where}"
+        f" GROUP BY model ORDER BY {order}",
+        params,
     ).fetchall()
 
 
@@ -439,6 +749,16 @@ def overview(conn) -> dict:
             one("SELECT COALESCE(SUM(prompt_tokens),0) FROM model_responses"),
         "model_completion_tokens":
             one("SELECT COALESCE(SUM(completion_tokens),0) FROM model_responses"),
+        # Sum of the per-row totals: provider total when present, else
+        # prompt + completion. Cache columns are reported separately.
+        "model_total_tokens":
+            one(f"SELECT COALESCE(SUM({_TOTAL_EXPR}),0) FROM model_responses"),
+        "model_prompt_cache_hit_tokens":
+            one("SELECT COALESCE(SUM(prompt_cache_hit_tokens),0) FROM model_responses"),
+        "model_prompt_cache_miss_tokens":
+            one("SELECT COALESCE(SUM(prompt_cache_miss_tokens),0) FROM model_responses"),
+        "model_prompt_cache_write_tokens":
+            one("SELECT COALESCE(SUM(prompt_cache_write_tokens),0) FROM model_responses"),
         "inventory": one("SELECT COUNT(*) FROM inventory"),
     }
 

@@ -64,13 +64,25 @@ BAGGAGE_SID_RE = re.compile(r"codebuddy\.session_id=([^,\s]+)")
 MODEL_RESPONSE_TYPES = ("function_call", "message", "model-usage")
 
 # Token fields read from ``providerData.rawUsage``, in persistence order.
-# Deliberately excluded: ``credit`` (billing, not tokens), ``total_tokens``
-# (derivable), and everything derived from ``turn-metrics.tokenDelta``.
+# Deliberately excluded: ``credit`` (billing, not tokens) and everything derived
+# from ``turn-metrics.tokenDelta``. ``total_tokens`` is now persisted separately
+# as ``provider_total_tokens`` (the provider's own total, verbatim) but is kept
+# out of this tuple so the legacy ``missing`` diagnostic keeps its meaning.
 USAGE_FIELDS = (
     "prompt_tokens",
     "completion_tokens",
     "cache_read_input_tokens",
     "cache_creation_input_tokens",
+)
+
+# Newer rawUsage cache fields (schema v3). In real transcripts the cache numbers
+# live here, while ``cache_read/creation_input_tokens`` above are usually 0.
+# Read as-is: absent -> NULL, explicit 0 -> 0. Kept separate from USAGE_FIELDS
+# so the legacy ``missing`` diagnostic keeps its original meaning.
+CACHE_USAGE_FIELDS = (
+    "prompt_cache_hit_tokens",
+    "prompt_cache_miss_tokens",
+    "prompt_cache_write_tokens",
 )
 
 
@@ -167,11 +179,22 @@ def scan_inventory(conn: sqlite3.Connection) -> tuple[dict, dict, dict]:
 
 
 def _mcp_from_name(name: str):
-    if name.startswith("mcp__"):
-        parts = name.split("__")
-        if len(parts) >= 3:
-            return parts[1], "__".join(parts[2:])
-    return None
+    """Parse ``mcp__<server>__<tool>`` into ``(server, tool)``, else ``None``.
+
+    A well-formed MCP tool name has at least three non-empty ``__``-separated
+    parts: the literal ``mcp`` prefix, the server, and the tool. A name with
+    fewer parts, an empty server/tool, or a trailing ``__`` is *not* an MCP
+    name — return ``None`` rather than guessing a split.
+    """
+    if not name.startswith("mcp__") or name.endswith("__"):
+        return None
+    parts = name.split("__")
+    if len(parts) < 3:
+        return None
+    server, tool = parts[1], "__".join(parts[2:])
+    if not server or not tool:
+        return None
+    return server, tool
 
 
 def _classify(name: str, args: dict):
@@ -206,32 +229,74 @@ def _args_dict(raw) -> dict:
     return {}
 
 
+def _plugin_owner(name: str, command_owner: dict, skill_owner: dict,
+                  agent_owner: dict):
+    """Resolve a slash command / skill / agent name to its owning plugin.
+
+    Evidence-based: a plugin is attributed only when ``inventory`` maps the
+    name to one (``scan_inventory`` returns these maps). Commands win over
+    skills over agents when a name is registered as more than one kind.
+    Returns ``(plugin, kind)`` or ``(None, None)``.
+    """
+    if name in command_owner:
+        return command_owner[name], "command"
+    if name in skill_owner:
+        return skill_owner[name], "skill"
+    if name in agent_owner:
+        return agent_owner[name], "agent"
+    return None, None
+
+
 def index_file(conn: sqlite3.Connection, path: Path, offset: int,
                skill_owner: dict, agent_owner: dict, command_owner: dict) -> int:
-    """Index appended bytes of one transcript. Returns the new offset."""
+    """Index appended bytes of one transcript. Returns the new offset.
+
+    Only *fully-consumed* bytes are reported back to the caller, so the tail
+    of a partially-written line is retried next run instead of being skipped
+    forever. A final line that lacks a trailing newline but already parses as
+    complete JSON is consumed immediately.
+
+    This never touches ``sessions``: one session spans its main transcript
+    *plus* every subagent transcript, so a single file's contribution to the
+    accumulated ``turn-metrics`` totals cannot be cleared in isolation. A stale
+    offset is handled by a whole-DB rebuild in :func:`run` instead.
+    """
     with open(path, "rb") as fh:
         fh.seek(offset)
         chunk = fh.read()
     if not chunk:
         return offset
 
-    # Only process complete lines; leave a trailing partial line for next time.
+    # Everything up to and including the last newline is complete lines; the
+    # remainder is only consumed if it is a complete JSON record on its own.
     last_nl = chunk.rfind(b"\n")
     if last_nl == -1:
-        return offset
-    complete = chunk[: last_nl + 1]
-    new_offset = offset + last_nl + 1
+        complete = b""
+        tail = chunk
+    else:
+        complete = chunk[: last_nl + 1]
+        tail = chunk[last_nl + 1:]
 
+    recs = []
     for raw in complete.splitlines():
         raw = raw.strip()
         if not raw:
             continue
         try:
-            rec = json.loads(raw)
+            recs.append(json.loads(raw))
         except ValueError:
             continue
+    consumed = offset + len(complete)
+    if tail.strip():
+        try:
+            recs.append(json.loads(tail))
+            consumed += len(tail)          # the final line was complete
+        except ValueError:
+            pass                           # partial line -> retry next run
+
+    for rec in recs:
         _handle_record(conn, rec, skill_owner, agent_owner, command_owner)
-    return new_offset
+    return consumed
 
 
 def _record_model_response(conn, rec, sid, project, ts) -> None:
@@ -260,6 +325,7 @@ def _record_model_response(conn, rec, sid, project, ts) -> None:
 
     if isinstance(raw, dict):
         vals = {k: raw.get(k) for k in USAGE_FIELDS}
+        cache = {k: raw.get(k) for k in CACHE_USAGE_FIELDS}
         missing = [k for k in USAGE_FIELDS if raw.get(k) is None]
         if model is None:
             missing.append("model")
@@ -268,8 +334,10 @@ def _record_model_response(conn, rec, sid, project, ts) -> None:
             "(message_id, session_id, conversation_request_id, model,"
             " prompt_tokens, completion_tokens,"
             " cache_read_input_tokens, cache_creation_input_tokens,"
+            " prompt_cache_hit_tokens, prompt_cache_miss_tokens,"
+            " prompt_cache_write_tokens, provider_total_tokens,"
             " ts, project, source, usage_available, missing)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,'transcript',1,?)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'transcript',1,?)"
             " ON CONFLICT(message_id) DO UPDATE SET"
             "   session_id = COALESCE(excluded.session_id, session_id),"
             "   conversation_request_id ="
@@ -279,14 +347,22 @@ def _record_model_response(conn, rec, sid, project, ts) -> None:
             "   completion_tokens = excluded.completion_tokens,"
             "   cache_read_input_tokens = excluded.cache_read_input_tokens,"
             "   cache_creation_input_tokens = excluded.cache_creation_input_tokens,"
+            "   prompt_cache_hit_tokens = excluded.prompt_cache_hit_tokens,"
+            "   prompt_cache_miss_tokens = excluded.prompt_cache_miss_tokens,"
+            "   prompt_cache_write_tokens = excluded.prompt_cache_write_tokens,"
+            "   provider_total_tokens = excluded.provider_total_tokens,"
             "   ts = COALESCE(excluded.ts, ts),"
             "   project = COALESCE(excluded.project, project),"
             "   usage_available = 1,"
             "   missing = excluded.missing",
             (message_id, sid, conv, model, vals["prompt_tokens"],
              vals["completion_tokens"], vals["cache_read_input_tokens"],
-             vals["cache_creation_input_tokens"], ts, project,
-             ",".join(missing) or None),
+             vals["cache_creation_input_tokens"],
+             cache["prompt_cache_hit_tokens"],
+             cache["prompt_cache_miss_tokens"],
+             cache["prompt_cache_write_tokens"],
+             raw.get("total_tokens"),          # provider's own total, verbatim
+             ts, project, ",".join(missing) or None),
         )
     else:
         conn.execute(
@@ -420,13 +496,17 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner) -> None:
                 " VALUES(?,?,?,?)",
                 (cmd, sid, project, ts),
             )
-            owner = command_owner.get(cmd)
+            # A slash command can name a plugin command *or* a plugin-owned
+            # skill/agent (e.g. /playwright-cli). Attribute it to the plugin
+            # only when inventory maps the name; never guess.
+            owner, kind = _plugin_owner(
+                cmd, command_owner, skill_owner, agent_owner)
             if owner:
                 conn.execute(
                     "INSERT OR IGNORE INTO plugin_usage"
                     "(plugin, marketplace, kind, target, session_id, project, ts)"
                     " VALUES(?,?,?,?,?,?,?)",
-                    (owner, "codebuddy-plugins-official", "command", cmd, sid, project, ts),
+                    (owner, "codebuddy-plugins-official", kind, cmd, sid, project, ts),
                 )
 
     # Track session start/end times from any record carrying them.
@@ -484,6 +564,48 @@ def backfill_plugin_usage(conn: sqlite3.Connection) -> int:
 # --- driver ----------------------------------------------------------------
 
 
+def _starts_on_line_boundary(path: Path, offset: int) -> bool:
+    """True when ``offset`` sits just after a newline.
+
+    An append-only transcript always leaves its offset immediately after a
+    ``\\n`` (or at 0). A byte other than ``\\n`` there means the prefix was
+    rewritten, so the offset can no longer be trusted.
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset - 1)
+            return fh.read(1) == b"\n"
+    except OSError:
+        return False
+
+
+def _needs_reset(path: Path, st, row) -> bool:
+    """True when a stored offset can no longer be trusted for this file.
+
+    A transcript is append-only: its offset always sits on a line boundary and
+    the file only ever grows. A shrink, a same-or-smaller rewrite (mtime
+    changed), or an offset that no longer follows a newline means the prefix was
+    rewritten and the stored offset is stale. A file that is untouched and fully
+    consumed is *not* stale — that early-out matters because a transcript may
+    legitimately end without a trailing newline, which would otherwise trip the
+    boundary check. An offset of 0 means nothing was consumed yet, so a re-read
+    from zero is always safe and is not a reset.
+    """
+    offset = row["offset"] or 0
+    if not offset:
+        return False
+    old_size = row["size"] or 0
+    old_mtime = row["mtime"]
+    if (st.st_mtime == old_mtime and st.st_size == old_size
+            and offset == st.st_size):
+        return False                   # untouched and fully consumed
+    return (
+        st.st_size < offset
+        or (st.st_mtime != old_mtime and st.st_size <= old_size)
+        or not _starts_on_line_boundary(path, offset)
+    )
+
+
 def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
     conn = db.open_db(db_path)
     db.ensure_schema(conn)
@@ -495,6 +617,27 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
     projects = db.CODEBUDDY_DIR / "projects"
     files = sorted(projects.glob("**/*.jsonl")) if projects.is_dir() else []
 
+    # Pre-pass: if ANY file's stored offset is stale (shrunk, rewritten, or no
+    # longer on a line boundary), rebuild the whole DB. One session spans its
+    # main transcript *and* every subagent transcript, so a single file's
+    # contribution cannot be subtracted in isolation; clearing sync_state +
+    # sessions makes the main loop re-read every file from zero exactly once, so
+    # the accumulated turn-metrics totals are rebuilt (never lost or doubled).
+    for path in files:
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        row = conn.execute(
+            "SELECT size, mtime, offset FROM sync_state WHERE file_path=?",
+            (str(path),),
+        ).fetchone()
+        if row is not None and _needs_reset(path, st, row):
+            conn.execute("DELETE FROM sync_state")
+            conn.execute("DELETE FROM sessions")
+            conn.commit()
+            break
+
     n_files = n_records = 0
     for path in files:
         try:
@@ -503,21 +646,25 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
             continue
         key = str(path)
         row = conn.execute(
-            "SELECT size, offset FROM sync_state WHERE file_path=?", (key,)
+            "SELECT size, mtime, offset FROM sync_state WHERE file_path=?", (key,)
         ).fetchone()
         offset = 0
         if row is not None:
             offset = row["offset"] or 0
-            if st.st_size < offset:      # truncated / rewritten
-                offset = 0
-        if row is not None and st.st_size == (row["size"] or 0) and offset:
-            continue
+            old_size = row["size"] or 0
+            old_mtime = row["mtime"]
+            if (offset and st.st_mtime == old_mtime and st.st_size == old_size
+                    and offset == st.st_size):
+                continue              # untouched and fully consumed
+            # Any stale offset was already resolved by the pre-pass above (it
+            # cleared sync_state, so no row survives to this point).
         new_offset = index_file(conn, path, offset,
                                 skill_owner, agent_owner, command_owner)
+        # Store only the bytes actually consumed so a deferred tail is retried.
         conn.execute(
             "INSERT OR REPLACE INTO sync_state(file_path, size, mtime, offset)"
             " VALUES(?,?,?,?)",
-            (key, st.st_size, st.st_mtime, new_offset),
+            (key, new_offset, st.st_mtime, new_offset),
         )
         n_files += 1
         conn.commit()
