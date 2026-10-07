@@ -36,13 +36,13 @@
 ## ✨ 特性
 
 - 🧰 **七个视图，一条命令** —— 工具、skill、agent、插件、MCP、token、用量。
-- 📜 **完整历史，即刻可得** —— 回填磁盘上已有的全部会话。
+- 📜 **完整历史，即刻可得** —— 回填磁盘上已有的全部会话；放宽顶部栏范围（默认 **最近 24 小时**）即可看到更早的数据。
 - 🪶 **被动只读** —— 无 hook、无插件、不改 CodeBuddy 源码。
 - 🗃️ **单个本地 SQLite 文件** —— 不联网、不上传、无遥测。
 - ⚡ **快速增量同步** —— 约 300 个会话 / 420 MB 约 5 秒完成；之后只读新增字节。
 - 🖥️ **TUI + 无头** —— 给人用的七 tab Textual 界面，给脚本用的 JSON 报告。
 - 🔢 **真实模型 token** —— 按模型的输入 / 输出 / 总计，以及缓存 hit / miss / write，直接来自 `providerData.rawUsage`；总计优先使用 provider 自报值。
-- 📊 **滚动用量窗口** —— cc-switch 风格的请求日志，覆盖 24h/48h/72h/7d/30d/全部时间，从**当前时刻**往回算，而非自然日。
+- 📊 **滚动窗口覆盖全部 tab** —— 顶部栏上的单一范围选择器（`24h`/`48h`/`72h`/`7d`/`30d`/全部时间，默认 **最近 24 小时**）过滤**全部七个 tab**，从**当前时刻**往回算，而非自然日。
 - 🔐 **只存元数据** —— 名称、耗时、状态、项目。绝不存消息正文或参数值。
 
 ## 🤔 为什么做这个
@@ -76,14 +76,16 @@ CodeBuddy 其实**已经在写**你需要的数据，只是**从不展示**。�
 
 ## 📊 七个 tab
 
+tab 上方有一条共享顶部栏，其中放着范围选择器 —— 一个控件过滤**每一个** tab。默认 **最近 24 小时**；更早的数据要放宽范围（例如 **全部时间**）才会出现。
+
 | | Tab | 内容 |
 |---|-----|------|
 | 🧰 | **Tools** | 按名称统计的工具调用、完成率、平均耗时、最近使用 |
 | 🎯 | **Skills** | skill 调用、所属插件、最近使用 |
 | 🤖 | **Agents** | 用到的子代理类型，主动 vs 内部 |
-| 🧩 | **Plugins** | 已安装插件的 skill/agent/command；**uses** 统计归属到该插件的每一次 skill/agent/command 调用，而不只是 command 条目 |
+| 🧩 | **Plugins** | 已安装插件的 skill/agent/command；列出**全部**已安装插件（来自静态清单），只有 **uses** 按所选范围过滤，并统计归属到该插件的每一次 skill/agent/command 调用，而不只是 command 条目 |
 | 🔌 | **MCP** | MCP 服务器与工具、调用次数 |
-| 🔢 | **Tokens** | 按模型的请求数、带 usage 计数、输入、输出、**API 总计**、**usage 总计**、缓存 hit/miss/write、覆盖率 |
+| 🔢 | **Tokens** | 按模型的请求数、带 usage 计数、输入、输出、**API 总计**、**usage 总计**、缓存 hit/miss/write、覆盖率 —— 按顶部栏范围过滤 |
 | 📊 | **Usage** | 滚动窗口的请求日志（cc-switch 风格列）与多个汇总面板 |
 
 任意一行按 <kbd>Enter</kbd>，可查看该对象的最近调用历史 —— 工具、skill、agent、MCP 工具显示最近调用，Tokens tab 上显示该模型的逐条 token 明细。任何 tab 在没有数据时都会显示明确的空状态提示，而不是一片空白。
@@ -98,7 +100,7 @@ CodeBuddy 其实**已经在写**你需要的数据，只是**从不展示**。�
 
 Usage tab 仿照会话用量面板的样式，但每个数字都来自磁盘上的转录：
 
-- **滚动窗口** —— `24h` / `48h` / `72h` / `7d` / `30d` / `全部时间`，均从当前时钟往回计算，**不是**自然日，也**不是** tracker 首次运行的时刻。
+- **范围控件位于共享顶部栏**，不在本 tab 上，且过滤全部七个 tab —— Usage 页只是跟随它。选项为 `24h` / `48h` / `72h` / `7d` / `30d` / `全部时间`，均从当前时钟往回计算，**不是**自然日，也**不是** tracker 首次运行的时刻。本页自带的 **Window / Requests** 面板会显示当前范围的精确边界。
 - **单一的 Request Logs 列表**，最近的请求在前。列顺序对齐 cc-switch 的请求记录 —— 时间 · 供应商 · 模型 · 输入 · 输出 · API 总计 · usage 总计 · 缓存读取(hit) · 缓存未命中(miss) · 缓存创建(write) · usage（Real / Partial / Missing） · 来源。cc-switch 的费用、耗时、HTTP 状态码列在转录里没有数据源，因此**略去而非估算**。优先列在最左；缓存明细可通过横向滚动查看。
 - **Provider 恒为 `Transcript / Unknown`。** CodeBuddy 转录里没有 provider / 账号 / 站点 / endpoint 字段，所以 provider 列只如实报告 `Unknown`，而不是从模型名猜测 —— 国际版、国内版与第三方 coding plan 一律如此。
 - **与 Tokens 相同的准确性规则** —— **API 总计** = 有 provider 原始值时用原始值，否则 `输入 + 输出`，汇总里还会显示其 `Source`（`provider` / `derived` / `mixed`）。另有一个 **Usage 总计**（`输入 + 输出 + 缓存 hit`）仅供参照，并明确标注它会重复计入缓存 hit（约 2 倍 API 总计）。缓存 hit/miss/write 绝不并入 API 总计，缺失值保持 `-`。
@@ -174,7 +176,7 @@ cbut health              # 🩺  数据库与数据源检查
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 144 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 155 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -183,8 +185,8 @@ python3 -m unittest discover -s scripts/tests     # Ran 144 tests ... OK
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
 | `test_sync.py` | 60 | 转录解析、工具归类、增量同步与 `--full` 重建 |
-| `test_tui.py` | 41 | tab 接线与报告结构，走 Textual 自带的 `run_test` |
-| `test_usage.py` | 43 | 滚动窗口（24h / 48h / 72h / 7d / 30d / 全部）从**当前时刻**往回算 |
+| `test_tui.py` | 44 | tab 接线与报告结构，走 Textual 自带的 `run_test` |
+| `test_usage.py` | 51 | 滚动窗口（24h / 48h / 72h / 7d / 30d / 全部）从**当前时刻**往回算 |
 
 ## 📁 仓库结构
 
@@ -196,7 +198,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 144 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
 | `scripts/cbut-tui.py` | 七个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 144 个用例 |
+| `scripts/tests/` | 上面那 155 个用例 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
 

@@ -36,13 +36,14 @@
 ## ✨ Features
 
 - 🧰 **Seven views, one command** — tools, skills, agents, plugins, MCP, tokens, usage.
-- 📜 **Full history, instantly** — backfills every session already on disk.
+- 📜 **Full history, instantly** — backfills every session already on disk; older data is
+  one click away by widening the top-bar range (default **Last 24 hours**).
 - 🪶 **Passive & read-only** — no hook, no plugin, no CodeBuddy source changes.
 - 🗃️ **One local SQLite file** — no network, no upload, no telemetry.
 - ⚡ **Fast incremental sync** — ~5 s to index ~300 sessions / ~420 MB; only new bytes after that.
 - 🖥️ **TUI + headless** — a seven-tab Textual UI for humans, JSON reports for scripts.
 - 🔢 **Real model tokens** — per-model input / output / total plus cache hit / miss / write, straight from `providerData.rawUsage`; total prefers the provider's own reported value.
-- 📊 **Rolling usage windows** — a cc-switch-style request log over 24h/48h/72h/7d/30d/all time, measured back from *now*, not calendar days.
+- 📊 **Rolling windows everywhere** — a single top-bar range (`24h`/`48h`/`72h`/`7d`/`30d`/All time, default **Last 24 hours**) filters **all seven tabs**, measured back from *now*, not calendar days.
 - 🔐 **Metadata only** — names, timings, statuses, projects. Never message bodies or argument values.
 
 ## 🤔 Why this exists
@@ -80,14 +81,18 @@ index. It never touches CodeBuddy's files, installs no hook, and adds no runtime
 
 ## 📊 The seven tabs
 
+A shared top bar above the tabs carries the range selector — one control that filters
+**every** tab. It defaults to **Last 24 hours**; older data stays hidden until you widen
+the range (e.g. **All time**).
+
 | | Tab | What it shows |
 |---|-----|---------------|
 | 🧰 | **Tools** | tool calls by name, completion, average duration, last used |
 | 🎯 | **Skills** | skill invocations, owning plugin, last use |
 | 🤖 | **Agents** | subagent types used, active vs internal |
-| 🧩 | **Plugins** | installed plugins with their skills/agents/commands; **uses** counts every attributed skill/agent/command invocation, not just command entries |
+| 🧩 | **Plugins** | installed plugins with their skills/agents/commands; lists **all** installed plugins (from the static inventory), while **uses** is windowed to the selected range and counts every attributed skill/agent/command invocation, not just command entries |
 | 🔌 | **MCP** | MCP servers and tools, invocation counts |
-| 🔢 | **Tokens** | per-model requests, with-usage count, input, output, **API total**, **usage total**, cache hit/miss/write, coverage |
+| 🔢 | **Tokens** | per-model requests, with-usage count, input, output, **API total**, **usage total**, cache hit/miss/write, coverage — windowed by the top-bar range |
 | 📊 | **Usage** | rolling-window request log (cc-switch-style columns) with summary panels |
 
 Press <kbd>Enter</kbd> on any row for a per-entity history — recent calls for a tool,
@@ -112,9 +117,11 @@ inventory maps that name to it.
 The Usage tab mirrors the style of a session-usage panel, but every number comes from
 the transcripts on disk:
 
-- **Rolling windows** — `24h` / `48h` / `72h` / `7d` / `30d` / `All time`, each
-  computed back from the current clock, **not** natural calendar days and **not** from
-  when the tracker first ran.
+- **The range control lives in the shared top bar**, not on this tab, and filters all
+  seven tabs — the Usage page just follows it. Options are `24h` / `48h` / `72h` / `7d` /
+  `30d` / `All time`, each computed back from the current clock, **not** natural calendar
+  days and **not** from when the tracker first ran. Its own **Window / Requests** panel
+  shows the exact bounds of the active range.
 - **One Request Logs list**, newest first. The columns follow cc-switch's request
   records — time · provider · model · input · output · API total · usage total · cache
   read (hit) · cache miss · cache write · usage (Real / Partial / Missing) · source. cc-switch's cost,
@@ -208,7 +215,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 144 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 155 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -218,8 +225,8 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | Suite | Tests | Covers |
 |---|---:|---|
 | `test_sync.py` | 60 | transcript parsing, tool classification, incremental vs `--full` re-sync |
-| `test_tui.py` | 41 | tab wiring and report shapes, through Textual's own `run_test` harness |
-| `test_usage.py` | 43 | the rolling windows (24h / 48h / 72h / 7d / 30d / all) measured back from *now* |
+| `test_tui.py` | 44 | tab wiring and report shapes, through Textual's own `run_test` harness |
+| `test_usage.py` | 51 | the rolling windows (24h / 48h / 72h / 7d / 30d / all) measured back from *now* |
 
 ## 📁 Repository layout
 
@@ -231,7 +238,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
 | `scripts/cbut-tui.py` | the seven-tab Textual UI |
-| `scripts/tests/` | the 144 tests above |
+| `scripts/tests/` | the 155 tests above |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
 
