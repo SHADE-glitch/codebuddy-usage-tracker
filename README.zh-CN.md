@@ -25,7 +25,11 @@
 - [🚀 安装](#-安装)
 - [🧭 用法](#-用法)
 - [🔒 隐私](#-隐私)
+- [🧪 测试](#-测试)
+- [📁 仓库结构](#-仓库结构)
 - [⚠️ 限制与路线图](#️-限制与路线图)
+- [🧹 卸载](#-卸载)
+- [🤝 参与贡献](#-参与贡献)
 - [🙏 致谢](#-致谢)
 - [📄 许可](#-许可)
 
@@ -127,6 +131,21 @@ python3 scripts/cbut-sync.py
 python3 scripts/cbut-stats.py stats
 ```
 
+### 🔄 可选：不开 TUI 也让索引保持最新
+
+[`systemd/`](systemd) 里带了两个用户级 unit，装上后每天跑一次 `cbut sync --quiet`。下面这四
+行就是 `install.sh` 安装成功时最后打印的那段：
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/cbut-sync.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now cbut-sync.timer
+```
+
+`Persistent=true` 会把关机期间错过的运行补上，唤醒时刻随机抖动最多 15 分钟，服务以
+`Nice=10` 运行 —— 不会和你的会话抢 CPU。用 `systemctl --user status cbut-sync.timer` 查看。
+
 ## 🧭 用法
 
 ```bash
@@ -152,6 +171,38 @@ cbut health              # 🩺  数据库与数据源检查
 
 `cbut` 只读取 CodeBuddy 自身日志中的**结构化元数据**字段，只存储计数、耗时、状态和标识符。**不**读取也不存储提示词/回复正文、工具参数值或文件内容。🔒 数据不出本机。
 
+## 🧪 测试
+
+```bash
+python3 -m unittest discover -s scripts/tests     # Ran 144 tests ... OK
+```
+
+测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
+一次性数据库 —— **不会打开你真实的 `usage.db`，也不会读 `~/.codebuddy` 日志**，全程不联网。
+
+| 测试文件 | 用例数 | 覆盖 |
+|---|---:|---|
+| `test_sync.py` | 60 | 转录解析、工具归类、增量同步与 `--full` 重建 |
+| `test_tui.py` | 41 | tab 接线与报告结构，走 Textual 自带的 `run_test` |
+| `test_usage.py` | 43 | 滚动窗口（24h / 48h / 72h / 7d / 30d / 全部）从**当前时刻**往回算 |
+
+## 📁 仓库结构
+
+| 路径 | 是什么 |
+|---|---|
+| `bin/cbut` | bash 入口。刻意用 bash：venv 缺失或坏掉时它仍要能跑出有用的报错，所以不能依赖 Python。优先用 `./.venv/bin/python`，否则退回 `python3` |
+| `install.sh` | 建 venv（有 `uv` 就用）并把 `~/.local/bin/cbut` 做成符号链接。可重复执行；目标不是符号链接时，不加 `--force` 拒绝覆盖 |
+| `scripts/cbut_db.py` | SQLite 结构，以及各入口共用的查询辅助 |
+| `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
+| `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
+| `scripts/cbut-tui.py` | 七个 tab 的 Textual 界面 |
+| `scripts/tests/` | 上面那 144 个用例 |
+| `systemd/` | 可选的每日同步 service + timer |
+| `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
+
+沙箱安装可以改路径：入口用 `CBUT_SCRIPTS` 与 `CBUT_VENV`，数据用 `CBUT_DB` 与
+`CBUT_CODEBUDDY_DIR`（见[用法](#-用法)）。
+
 ## ⚠️ 限制与路线图
 
 - 🔌 **MCP 数据初期会很少**，除非你真的调用了 MCP 工具；该 tab 由真实调用填充（`mcp__<server>__<tool>`），也包括被延迟工具机制（`DeferExecuteTool`）包裹的调用。
@@ -159,6 +210,30 @@ cbut health              # 🩺  数据库与数据源检查
 - 🏷️ **没有 provider 归属** —— CodeBuddy 转录不记录 provider / 账号 / 站点 / endpoint，所以 Usage 页只报告一行 `Transcript / Unknown`，而不从模型名猜测。
 - 🔢 **`context tokens` 与模型 token 的区别。** 无头 `cbut stats` 会在按模型 token 总计之外，单独打印一行会话级 `context tokens`（turn-metrics `tokenDelta`）；两者刻意分开。`context tokens` 现在是幂等的 —— 重复同步与 schema 迁移不再让它膨胀。
 - 🔄 同步是手动的（或可选 systemd 定时器）；没有实时 hook。
+
+## 🧹 卸载
+
+仓库之外 `cbut` 只碰三个地方，删掉它们就什么都不剩：
+
+```bash
+systemctl --user disable --now cbut-sync.timer 2>/dev/null          # 只在你装过它时需要
+rm -f ~/.config/systemd/user/cbut-sync.service ~/.config/systemd/user/cbut-sync.timer
+systemctl --user daemon-reload
+rm -f ~/.local/bin/cbut                                            # install.sh 建的符号链接
+rm -rf ~/.local/share/codebuddy-usage-tracker                      # SQLite 索引
+```
+
+再把仓库目录（连同它的 `.venv`）删掉就干净了。CodeBuddy 自己的文件从头到尾只被读过，
+没有需要恢复的东西。🗑️
+
+## 🤝 参与贡献
+
+欢迎 issue 和 pull request —— 🐛 某个工具归类错了、📈 某个窗口算得不对、💡 缺你想要的一份
+报告，都可以。两点能让改动顺利合进来：
+
+- 先跑 `python3 -m unittest discover -s scripts/tests`；改了行为就配一个能复现该行为的用例；
+- 守住两条承诺：对 CodeBuddy 日志**只读**，库里**只存元数据**。存提示词正文或参数值的 PR
+  与这个项目的目的相悖，看起来再有用也不收。
 
 ## 🙏 致谢
 

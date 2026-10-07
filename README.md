@@ -25,7 +25,11 @@
 - [🚀 Install](#-install)
 - [🧭 Usage](#-usage)
 - [🔒 Privacy](#-privacy)
+- [🧪 Testing](#-testing)
+- [📁 Repository layout](#-repository-layout)
 - [⚠️ Limitations & roadmap](#️-limitations--roadmap)
+- [🧹 Uninstall](#-uninstall)
+- [🤝 Contributing](#-contributing)
 - [🙏 Attribution](#-attribution)
 - [📄 License](#-license)
 
@@ -157,6 +161,23 @@ python3 scripts/cbut-sync.py
 python3 scripts/cbut-stats.py stats
 ```
 
+### 🔄 Optional: keep the index fresh without opening the TUI
+
+Two user units ship in [`systemd/`](systemd). Installing them runs
+`cbut sync --quiet` once a day — these are the same four lines `install.sh` prints at the
+end of a successful install:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/cbut-sync.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now cbut-sync.timer
+```
+
+`Persistent=true` catches up a run missed while the machine was off, the wake-up is
+jittered by up to 15 minutes, and the service runs at `Nice=10` — so it never competes
+with your session for CPU. Check it with `systemctl --user status cbut-sync.timer`.
+
 ## 🧭 Usage
 
 ```bash
@@ -184,6 +205,39 @@ cbut health              # 🩺  database + data-source check
 counts, timings, statuses and identifiers. It does **not** read or store prompt/response
 text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 
+## 🧪 Testing
+
+```bash
+python3 -m unittest discover -s scripts/tests     # Ran 144 tests ... OK
+```
+
+The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
+builds its own throwaway database in a temp directory — **your real `usage.db` and your
+`~/.codebuddy` logs are never opened**, and nothing reaches the network.
+
+| Suite | Tests | Covers |
+|---|---:|---|
+| `test_sync.py` | 60 | transcript parsing, tool classification, incremental vs `--full` re-sync |
+| `test_tui.py` | 41 | tab wiring and report shapes, through Textual's own `run_test` harness |
+| `test_usage.py` | 43 | the rolling windows (24h / 48h / 72h / 7d / 30d / all) measured back from *now* |
+
+## 📁 Repository layout
+
+| Path | What it is |
+|---|---|
+| `bin/cbut` | bash entry point. Bash on purpose: it must still print a useful error when the TUI venv is missing, so it cannot depend on Python. Prefers `./.venv/bin/python`, falls back to `python3` |
+| `install.sh` | creates the venv (`uv` when available) and symlinks `~/.local/bin/cbut`. Idempotent; refuses to replace a non-symlink unless `--force` |
+| `scripts/cbut_db.py` | SQLite schema and the query helpers every entry point shares |
+| `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
+| `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
+| `scripts/cbut-tui.py` | the seven-tab Textual UI |
+| `scripts/tests/` | the 144 tests above |
+| `systemd/` | optional daily sync service + timer |
+| `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
+
+Both paths are overridable for a sandboxed install: `CBUT_SCRIPTS` and `CBUT_VENV` for the
+launcher, `CBUT_DB` and `CBUT_CODEBUDDY_DIR` for the data (see [Usage](#-usage)).
+
 ## ⚠️ Limitations & roadmap
 
 - 🔌 **MCP usage is sparse** until you actually invoke an MCP tool; the tab is populated from
@@ -199,6 +253,33 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
   the two are deliberately kept apart. The `context tokens` sum is idempotent — repeated
   syncs and schema migrations no longer inflate it.
 - 🔄 Sync is manual (or via the optional systemd timer); there is no live hook.
+
+## 🧹 Uninstall
+
+`cbut` touches exactly three places outside the repository, and removing them leaves
+nothing behind:
+
+```bash
+systemctl --user disable --now cbut-sync.timer 2>/dev/null          # only if you installed it
+rm -f ~/.config/systemd/user/cbut-sync.service ~/.config/systemd/user/cbut-sync.timer
+systemctl --user daemon-reload
+rm -f ~/.local/bin/cbut                                            # the symlink install.sh made
+rm -rf ~/.local/share/codebuddy-usage-tracker                      # the SQLite index
+```
+
+Deleting the repository directory (with its `.venv`) finishes it. CodeBuddy's own files
+were only ever read, so there is nothing to restore there. 🗑️
+
+## 🤝 Contributing
+
+Issues and pull requests are welcome — 🐛 a mis-classified tool, 📈 a window that adds up
+wrong, or 💡 a report you would want that isn't there. Two things keep a change landing:
+
+- run `python3 -m unittest discover -s scripts/tests` first, and add a case alongside a
+  behaviour change;
+- keep the two guarantees intact: **read-only** towards CodeBuddy's logs, and **metadata
+  only** in the database. A PR that stores prompt text or argument values is off-purpose,
+  however useful it looks.
 
 ## 🙏 Attribution
 

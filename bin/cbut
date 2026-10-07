@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # cbut — entry point for the CodeBuddy usage tracker.
 #
-#   cbut                 launch the interactive TUI (five tabs)
+#   cbut                 launch the interactive TUI (seven tabs)
 #   cbut sync            index new CodeBuddy logs into the database
 #   cbut sync --full     rebuild the database from scratch
 #   cbut stats|tools|skills|agents|plugins|mcp|show|recent|inventory|export|health
