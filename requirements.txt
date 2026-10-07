@@ -1,0 +1,4 @@
+# Runtime dependency of the interactive TUI (scripts/cbut-tui.py).
+# The headless subcommands (sync/stats/export/health/...) need only the Python
+# standard library.
+textual>=8.2,<9

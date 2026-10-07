@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily CodeBuddy usage tracker sync
+Documentation=https://github.com/SHADE-glitch/codebuddy-usage-tracker/blob/master/README.zh-CN.md
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+AccuracySec=1h
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

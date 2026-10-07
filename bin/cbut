@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# cbut — entry point for the CodeBuddy usage tracker.
+#
+#   cbut                 launch the interactive TUI (five tabs)
+#   cbut sync            index new CodeBuddy logs into the database
+#   cbut sync --full     rebuild the database from scratch
+#   cbut stats|tools|skills|agents|plugins|mcp|show|recent|inventory|export|health
+#                        headless reports (no TUI, stdlib only)
+#
+# Written in bash on purpose: it must still run and print a useful error when
+# the TUI venv is missing or broken, so it cannot depend on any Python.
+#
+# Location-independent: resolves itself through symlinks, so the repo may live
+# anywhere and the ~/.local/bin/cbut install may be a symlink back to it.
+# Override with CBUT_SCRIPTS (a scripts/ dir) and CBUT_VENV (a venv dir or a
+# python binary) when the layout is unusual.
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+REPO_DIR="$(cd "$(dirname "${SELF:-$0}")/.." 2>/dev/null && pwd)" || REPO_DIR=""
+
+SCRIPTS="${CBUT_SCRIPTS:-}"
+if [ -z "$SCRIPTS" ] || [ ! -d "$SCRIPTS" ]; then
+  if [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR/scripts" ]; then
+    SCRIPTS="$REPO_DIR/scripts"
+  else
+    SCRIPTS="$HOME/.local/share/codebuddy-usage-tracker/scripts"
+  fi
+fi
+
+# Prefer the repo venv (has textual); fall back to system python3.
+PY="${CBUT_VENV:-}"
+if [ -n "$PY" ] && [ -x "$PY/bin/python" ]; then
+  PY="$PY/bin/python"
+elif [ -x "$REPO_DIR/.venv/bin/python" ]; then
+  PY="$REPO_DIR/.venv/bin/python"
+else
+  PY="python3"
+fi
+
+cmd="${1:-tui}"
+case "$cmd" in
+  tui|"")    shift || true; exec "$PY" "$SCRIPTS/cbut-tui.py" "$@" ;;
+  sync)      shift || true; exec "$PY" "$SCRIPTS/cbut-sync.py" "$@" ;;
+  -h|--help|help)
+    sed -n '2,16p' "$SELF" 2>/dev/null | sed 's/^# \{0,1\}//' || echo "cbut — CodeBuddy usage tracker"
+    ;;
+  *)
+    exec "$PY" "$SCRIPTS/cbut-stats.py" "$@"
+    ;;
+esac

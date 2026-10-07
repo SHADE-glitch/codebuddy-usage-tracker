@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local state: the tracker database is runtime data, never source
+*.db
+*.db-wal
+*.db-shm
+
+# Logs and local environment
+*.log
+.env
+.env.*
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
