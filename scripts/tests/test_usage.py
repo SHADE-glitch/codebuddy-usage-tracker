@@ -398,6 +398,169 @@ class QueryTest(unittest.TestCase):
         self.assertIsNone(s["total_tokens"])
 
 
+class WindowedQueryTest(unittest.TestCase):
+    """The non-Usage ``q_*`` queries accept an optional time window.
+
+    ``start_ts``/``end_ts`` are both None by default (= all time, no WHERE),
+    which is what the headless CLI and the pre-existing tests rely on. A window
+    is half-open: ``start_ts <= ts < end_ts``.
+    """
+
+    NOW = 2_000_000_000_000
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.p = Path(self.tmp.name) / "w.db"
+        self.conn = db.open_db(self.p)
+        db.ensure_schema(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _recent(self):
+        return self.NOW - 24 * HOUR
+
+    # small insert helpers -------------------------------------------------
+    def _tool(self, cid, name, ts):
+        self.conn.execute(
+            "INSERT INTO tool_calls(call_id, session_id, project, tool_name,"
+            " category, ts, duration_ms, status)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (cid, "s1", "/p", name, "builtin", ts, 1, "completed"))
+
+    def _skill(self, cid, name, ts):
+        self.conn.execute(
+            "INSERT INTO skill_usage(call_id, skill, plugin, session_id,"
+            " project, ts, status, duration_ms)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (cid, name, "pl", "s1", "/p", ts, "completed", 1))
+
+    def _agent(self, cid, name, ts):
+        self.conn.execute(
+            "INSERT INTO agent_usage(call_id, agent_type, kind, source,"
+            " session_id, project, ts, status, duration_ms)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (cid, name, "active", "tool", "s1", "/p", ts, "completed", 1))
+
+    def _mcp(self, cid, server, tool, ts):
+        self.conn.execute(
+            "INSERT INTO mcp_usage(call_id, server, tool, session_id, project,"
+            " ts, status, duration_ms) VALUES(?,?,?,?,?,?,?,?)",
+            (cid, server, tool, "s1", "/p", ts, "completed", 1))
+
+    def _model(self, mid, model, pt, ct, ts):
+        self.conn.execute(
+            "INSERT INTO model_responses(message_id, session_id, model,"
+            " prompt_tokens, completion_tokens, ts, usage_available)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (mid, "s1", model, pt, ct, ts, 1))
+
+    def _plugin(self, name):
+        self.conn.execute(
+            "INSERT INTO inventory(kind, name, owner_plugin, version, path,"
+            " source) VALUES('plugin',?,NULL,'1.0','/x','user')", (name,))
+
+    def _plugin_use(self, name, target, ts):
+        self.conn.execute(
+            "INSERT INTO plugin_usage(plugin, marketplace, kind, target,"
+            " session_id, project, ts) VALUES(?,'mkt','skill',?,'s','/p',?)",
+            (name, target, ts))
+
+    # -- q_tools / q_skills / q_agents / q_mcp ----------------------------
+
+    def test_q_tools_window_vs_all_time(self):
+        self._tool("a", "Recent", self.NOW - HOUR)
+        self._tool("b", "Old", self.NOW - 100 * HOUR)
+        self.conn.commit()
+        recent = db.q_tools(self.conn, start_ts=self._recent(), end_ts=self.NOW)
+        self.assertEqual([r["tool_name"] for r in recent], ["Recent"])
+        alltime = db.q_tools(self.conn)          # both bounds None = all time
+        self.assertEqual(sorted(r["tool_name"] for r in alltime),
+                         ["Old", "Recent"])
+
+    def test_q_tools_limit_is_second_positional(self):
+        # cbut-stats calls q_tools(conn, 10): ``limit`` must stay the second
+        # positional argument, never reinterpreted as a time bound.
+        for i in range(15):
+            self._tool(f"t{i}", f"tool{i}", self.NOW - HOUR)
+        self.conn.commit()
+        rows = db.q_tools(self.conn, 10)
+        self.assertEqual(len(rows), 10)
+
+    def test_q_skills_agents_mcp_window_vs_all_time(self):
+        self._skill("s1", "recent-skill", self.NOW - HOUR)
+        self._skill("s2", "old-skill", self.NOW - 100 * HOUR)
+        self._agent("a1", "recent-agent", self.NOW - HOUR)
+        self._agent("a2", "old-agent", self.NOW - 100 * HOUR)
+        self._mcp("m1", "srv", "recent-tool", self.NOW - HOUR)
+        self._mcp("m2", "srv", "old-tool", self.NOW - 100 * HOUR)
+        self.conn.commit()
+        start, end = self._recent(), self.NOW
+        self.assertEqual(
+            [r["skill"] for r in db.q_skills(self.conn, start_ts=start,
+                                             end_ts=end)],
+            ["recent-skill"])
+        self.assertEqual(
+            [r["agent_type"] for r in db.q_agents(self.conn, start_ts=start,
+                                                  end_ts=end)],
+            ["recent-agent"])
+        self.assertEqual(
+            [r["tool"] for r in db.q_mcp(self.conn, start_ts=start,
+                                         end_ts=end)],
+            ["recent-tool"])
+        # no bounds = all time: both rows of each entity
+        self.assertEqual(len(db.q_skills(self.conn)), 2)
+        self.assertEqual(len(db.q_agents(self.conn)), 2)
+        self.assertEqual(len(db.q_mcp(self.conn)), 2)
+
+    # -- q_plugins: full list, windowed uses ------------------------------
+
+    def test_q_plugins_window_keeps_unused_and_windows_uses(self):
+        self._plugin("used")
+        self._plugin("unused")
+        self._plugin_use("used", "t", self.NOW - HOUR)          # in window
+        self._plugin_use("used", "t2", self.NOW - 100 * HOUR)   # out of window
+        self.conn.commit()
+        rows = {r["plugin"]: r for r in db.q_plugins(
+            self.conn, start_ts=self._recent(), end_ts=self.NOW)}
+        self.assertEqual(set(rows), {"used", "unused"})  # list stays full
+        self.assertEqual(rows["used"]["uses"], 1)        # only in-window use
+        self.assertEqual(rows["unused"]["uses"], 0)      # still listed
+        # all time counts both uses
+        alltime = {r["plugin"]: r for r in db.q_plugins(self.conn)}
+        self.assertEqual(alltime["used"]["uses"], 2)
+        self.assertEqual(alltime["unused"]["uses"], 0)
+
+    # -- q_model_tokens ---------------------------------------------------
+
+    def test_q_model_tokens_window_vs_all_time(self):
+        self._model("a", "mA", 10, 2, self.NOW - HOUR)
+        self._model("b", "mB", 5, 5, self.NOW - 100 * HOUR)
+        self.conn.commit()
+        win = {r["model"]: r for r in db.q_model_tokens(
+            self.conn, start_ts=self._recent(), end_ts=self.NOW)}
+        self.assertEqual(set(win), {"mA"})
+        self.assertEqual(win["mA"]["prompt_tokens"], 10)
+        alltime = {r["model"]: r for r in db.q_model_tokens(self.conn)}
+        self.assertEqual(set(alltime), {"mA", "mB"})
+
+    # -- _time_filter helpers ---------------------------------------------
+
+    def test_time_filter_none_none_is_no_filter(self):
+        self.assertEqual(db._time_filter(None, None), ("", []))
+
+    def test_time_filter_end_only(self):
+        where, params = db._time_filter(None, self.NOW)
+        self.assertEqual(where, " WHERE ts < ?")
+        self.assertEqual(params, [self.NOW])
+
+    def test_time_filter_start_and_end(self):
+        where, params = db._time_filter(self._recent(), self.NOW)
+        self.assertEqual(where, " WHERE ts >= ? AND ts < ?")
+        self.assertEqual(params, [self._recent(), self.NOW])
+
+
 class HitRateTest(unittest.TestCase):
     def test_rate(self):
         self.assertAlmostEqual(db.cache_hit_rate(80, 20), 0.8)

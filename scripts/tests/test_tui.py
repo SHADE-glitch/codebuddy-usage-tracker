@@ -148,9 +148,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 2. Tokens tab lists each model
     async def test_tokens_tab_lists_models(self):
+        now = int(time.time() * 1000)
         make_db(self.db_path, [
-            ("m1", "s1", "a-model", 10, 20, 1, 2, 1000, 1),
-            ("m2", "s1", "b-model", 5, 5, 0, 0, 1001, 1),
+            ("m1", "s1", "a-model", 10, 20, 1, 2, now - 3600_000, 1),
+            ("m2", "s1", "b-model", 5, 5, 0, 0, now - 3600_000 + 1, 1),
         ])
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
@@ -172,8 +173,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 4. responses without usage show "-" not "0"
     async def test_no_usage_shows_dash_not_zero(self):
+        now = int(time.time() * 1000)
         make_db(self.db_path, [
-            ("m1", "s1", "m", None, None, None, None, 1000, 0),
+            ("m1", "s1", "m", None, None, None, None, now - 3600_000, 0),
         ])
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
@@ -188,8 +190,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 5. prompt / completion / total / cache shown in separate columns
     async def test_input_output_separate_columns(self):
+        now = int(time.time() * 1000)
         make_db(self.db_path, [
-            ("m1", "s1", "m", 10, 20, 3, 4, 1000, 1),
+            ("m1", "s1", "m", 10, 20, 3, 4, now - 3600_000, 1),
         ], cache={"m1": (7, 8, 9)})
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
@@ -206,9 +209,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 5b. explicit 0 is shown as "0", absent stays "-"
     async def test_zero_vs_null_distinction(self):
+        now = int(time.time() * 1000)
         make_db(self.db_path, [
-            ("m1", "s1", "zeroed", 1, 1, 0, 0, 1000, 1),
-            ("m2", "s1", "nulled", 1, 1, None, None, 1001, 1),
+            ("m1", "s1", "zeroed", 1, 1, 0, 0, now - 3600_000, 1),
+            ("m2", "s1", "nulled", 1, 1, None, None, now - 3600_000 + 1, 1),
         ], cache={"m1": (0, 0, 0)})   # m2 has no cache entry -> NULL
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
@@ -224,8 +228,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 5c. Total is not inflated by cache hit/miss
     async def test_total_excludes_cache(self):
+        now = int(time.time() * 1000)
         make_db(self.db_path, [
-            ("m1", "s1", "m", 10, 20, 0, 0, 1000, 1),
+            ("m1", "s1", "m", 10, 20, 0, 0, now - 3600_000, 1),
         ], cache={"m1": (999999, 888888, 7)})
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
@@ -279,8 +284,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             captured["quiet"] = quiet
             return {"files_indexed": 3}
 
+        now = int(time.time() * 1000)
         make_db(self.db_path, [
-            ("m1", "s1", "m", 1, 1, 0, 0, 1000, 1),
+            ("m1", "s1", "m", 1, 1, 0, 0, now - 3600_000, 1),
         ])
         app = TrackerApp(str(self.db_path))
         app.sync_mod = SimpleNamespace(run=fake_run)
@@ -352,8 +358,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         def bad_run(**kw):
             raise RuntimeError("disk on fire")
 
+        now = int(time.time() * 1000)
         make_db(self.db_path, [
-            ("m1", "s1", "good", 1, 1, 0, 0, 1000, 1),
+            ("m1", "s1", "good", 1, 1, 0, 0, now - 3600_000, 1),
         ])
         app = TrackerApp(str(self.db_path))
         app.sync_mod = SimpleNamespace(run=bad_run)
@@ -449,7 +456,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test() as pilot:
             await pilot.pause()
             self.assertIn("Last 24 hours", str(app.query_one("#usage-window").content))
-            app.query_one("#usage-range", tui.Select).value = "all"
+            app.query_one("#range", tui.Select).value = "all"
             await pilot.pause()
             self.assertIn("All time", str(app.query_one("#usage-window").content))
 
@@ -491,8 +498,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(len(app.query("#usage-view")), 0)
             self.assertEqual(len(app.query("#usage-sort")), 0)
-            # the range Select is the only Usage control
-            self.assertTrue(app.query_one("#usage-range", tui.Select))
+            # the range Select lives in the shared top bar, not the Usage pane
+            self.assertTrue(app.query_one("#range", tui.Select))
+            self.assertEqual(len(app.query("#tab-usage #range")), 0)
 
     # 19. Summary separates API Total from the display-only Usage Total
     async def test_usage_summary_api_vs_usage_total(self):
@@ -568,9 +576,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 23. Tokens tab Coverage column (col 9) + thousands-separated counts
     async def test_tokens_coverage_value(self):
+        now = int(time.time() * 1000)
         make_db(self.db_path, [
-            ("a", "s1", "m", 1, 1, 0, 0, 1000, 1),
-            ("b", "s1", "m", None, None, None, None, 1001, 0),
+            ("a", "s1", "m", 1, 1, 0, 0, now - 3600_000, 1),
+            ("b", "s1", "m", None, None, None, None, now - 3600_000 + 1, 0),
         ])
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
@@ -614,8 +623,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 25. switching to a tab refreshes that tab's data
     async def test_tab_activation_refreshes_that_tab(self):
+        now = int(time.time() * 1000)
         make_db(self.db_path, [
-            ("m1", "s1", "alpha", 1, 1, 0, 0, 1000, 1),
+            ("m1", "s1", "alpha", 1, 1, 0, 0, now - 3600_000, 1),
         ])
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
@@ -722,10 +732,11 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 31. MCP row select queries history by TOOL (q_history maps mcp -> tool)
     async def test_mcp_row_select_shows_history(self):
+        now = int(time.time() * 1000)
         make_db(self.db_path, [])
         insert_mcp_usage(self.db_path, [
-            ("c1", "srv", "toolA", "s1", "/p", 1000, "completed", 5),
-            ("c2", "srv", "toolA", "s1", "/p", 2000, "completed", 6),
+            ("c1", "srv", "toolA", "s1", "/p", now - 7200_000, "completed", 5),
+            ("c2", "srv", "toolA", "s1", "/p", now - 3600_000, "completed", 6),
         ])
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
@@ -751,10 +762,11 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 32. two tools under one server: unique row keys, no DuplicateKey crash
     async def test_mcp_two_tools_one_server_no_crash(self):
+        now = int(time.time() * 1000)
         make_db(self.db_path, [])
         insert_mcp_usage(self.db_path, [
-            ("c1", "srv", "toolA", "s1", "/p", 1000, "completed", 5),
-            ("c2", "srv", "toolB", "s1", "/p", 2000, "completed", 6),
+            ("c1", "srv", "toolA", "s1", "/p", now - 7200_000, "completed", 5),
+            ("c2", "srv", "toolB", "s1", "/p", now - 3600_000, "completed", 6),
         ])
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
@@ -787,13 +799,14 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 34. count columns use thousands separators (Tools + MCP)
     async def test_counts_thousands_separated(self):
+        now = int(time.time() * 1000)
         make_db(self.db_path, [])
         insert_tool_calls(self.db_path, [
-            (f"t{i}", "s1", "/p", "BigTool", "builtin", 1000 + i, 10,
+            (f"t{i}", "s1", "/p", "BigTool", "builtin", now - 3600_000 + i, 10,
              "completed") for i in range(1234)
         ])
         insert_mcp_usage(self.db_path, [
-            (f"m{i}", "srv", "big", "s1", "/p", 1000 + i, "completed", 1)
+            (f"m{i}", "srv", "big", "s1", "/p", now - 3600_000 + i, "completed", 1)
             for i in range(1234)
         ])
         app = TrackerApp(str(self.db_path))
@@ -807,11 +820,12 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 35. a NULL cell renders "-" (matching fmt_n), never a blank string
     async def test_none_cell_renders_dash(self):
+        now = int(time.time() * 1000)
         make_db(self.db_path, [])
         conn = db.open_db(self.db_path)
         db.ensure_schema(conn)
         conn.execute("INSERT INTO agent_usage(call_id, agent_type, kind, ts)"
-                     " VALUES('a1','myagent',NULL,1000)")
+                     " VALUES('a1','myagent',NULL,?)", (now - 3600_000,))
         conn.commit()
         conn.close()
         app = TrackerApp(str(self.db_path))
@@ -824,11 +838,13 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 36. cursor is restored by ROW KEY, so a re-sort keeps the same entity
     async def test_cursor_restored_by_row_key(self):
+        now = int(time.time() * 1000)
         make_db(self.db_path, [])
         insert_tool_calls(self.db_path, [
-            (f"a{i}", "s1", "/p", "ToolA", "builtin", 1000 + i, 10,
+            (f"a{i}", "s1", "/p", "ToolA", "builtin", now - 3600_000 + i, 10,
              "completed") for i in range(3)
-        ] + [("b0", "s1", "/p", "ToolB", "builtin", 2000, 10, "completed")])
+        ] + [("b0", "s1", "/p", "ToolB", "builtin", now - 3600_000, 10,
+              "completed")])
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -839,13 +855,72 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             # give ToolB more calls so it sorts to row 0
             insert_tool_calls(self.db_path, [
-                (f"c{i}", "s1", "/p", "ToolB", "builtin", 3000 + i, 10,
+                (f"c{i}", "s1", "/p", "ToolB", "builtin", now - 1800_000 + i, 10,
                  "completed") for i in range(5)
             ])
             app.refresh_data()
             await pilot.pause()
             self.assertEqual(all_rows(t)[0][0], "ToolB")   # re-sorted
             self.assertEqual(t.cursor_row, 0)              # cursor followed ToolB
+
+    # 37. the shared range Select filters a non-Usage tab (Tools)
+    async def test_range_filters_tools_tab(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [])
+        insert_tool_calls(self.db_path, [
+            ("recent", "s1", "/p", "Recent", "builtin", now - 3600_000, 10,
+             "completed"),
+            ("old", "s1", "/p", "Old", "builtin", now - 100 * 3600_000, 10,
+             "completed"),
+        ])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            t = app.query_one("#t-tools", tui.DataTable)
+            # default 24h hides the 100h-old row
+            self.assertEqual([r[0] for r in all_rows(t)], ["Recent"])
+            app.query_one("#range", tui.Select).value = "all"
+            await pilot.pause()
+            self.assertEqual(sorted(r[0] for r in all_rows(t)),
+                             ["Old", "Recent"])
+
+    # 38. the shared top bar replaces the built-in Header; palette is disabled
+    async def test_top_bar_replaces_header_and_disables_palette(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self.assertTrue(app.query_one("#topbar"))
+            self.assertTrue(app.query_one("#range", tui.Select))
+            self.assertEqual(len(app.query("Header")), 0)
+            self.assertIs(TrackerApp.ENABLE_COMMAND_PALETTE, False)
+            # the range Select lives in the top bar, not inside the Usage pane
+            self.assertEqual(len(app.query("#tab-usage #range")), 0)
+
+    # 39. Plugins list stays full even when uses fall outside the window
+    async def test_plugins_outside_window_listed_with_zero_uses(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [])
+        conn = db.open_db(self.db_path)
+        db.ensure_schema(conn)
+        conn.execute(
+            "INSERT INTO inventory(kind, name, owner_plugin, version, path,"
+            " source) VALUES('plugin','myplug',NULL,'1.0','/x','user')")
+        conn.execute(
+            "INSERT INTO plugin_usage(plugin, marketplace, kind, target,"
+            " session_id, project, ts) VALUES('myplug','mkt','skill','t','s',"
+            "'/p',?)", (now - 100 * 3600_000,))
+        conn.commit()
+        conn.close()
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-plugins"
+            await pilot.pause()
+            t = app.query_one("#t-plugins", tui.DataTable)
+            row = all_rows(t)[0]
+            self.assertEqual(row[0], "myplug")   # still listed
+            self.assertEqual(row[2], "0")        # uses outside the 24h window
 
 
 if __name__ == "__main__":

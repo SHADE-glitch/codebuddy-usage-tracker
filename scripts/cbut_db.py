@@ -364,51 +364,85 @@ def reset(conn: sqlite3.Connection) -> None:
 
 
 # --- shared queries (used by both the CLI and the TUI) ---------------------
+#
+# NOTE: the aggregate SQL below intentionally duplicates VIEWS_SQL. The views
+# remain the export/back-compat path (`cbut export`, ViewGroupByTest); these
+# ``q_*`` functions aggregate the base tables directly so they can take an
+# optional time window (SQLite views cannot be parameterized).
 
 
-def q_tools(conn, limit=None):
-    sql = "SELECT * FROM v_tools ORDER BY calls DESC"
+def q_tools(conn, limit=None, start_ts=None, end_ts=None):
+    where, params = _time_filter(start_ts, end_ts)
+    sql = ("SELECT tool_name, COUNT(*) AS calls,"
+           " SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,"
+           " SUM(CASE WHEN status='incomplete' THEN 1 ELSE 0 END) AS failed,"
+           " SUM(CASE WHEN status IS NULL THEN 1 ELSE 0 END) AS pending,"
+           " CAST(AVG(duration_ms) AS INTEGER) AS avg_ms,"
+           " MAX(ts) AS last_used, MIN(ts) AS first_used,"
+           " COUNT(DISTINCT project) AS projects,"
+           " COUNT(DISTINCT session_id) AS sessions"
+           f" FROM tool_calls{where} GROUP BY tool_name ORDER BY calls DESC")
     if limit:
         sql += f" LIMIT {int(limit)}"
-    return conn.execute(sql).fetchall()
+    return conn.execute(sql, params).fetchall()
 
 
-def q_skills(conn, limit=None):
-    sql = "SELECT * FROM v_skills ORDER BY calls DESC"
+def q_skills(conn, limit=None, start_ts=None, end_ts=None):
+    where, params = _time_filter(start_ts, end_ts)
+    sql = ("SELECT skill, plugin, COUNT(*) AS calls,"
+           " SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,"
+           " MAX(ts) AS last_used, MIN(ts) AS first_used,"
+           " COUNT(DISTINCT project) AS projects,"
+           " COUNT(DISTINCT session_id) AS sessions"
+           f" FROM skill_usage{where} GROUP BY skill, plugin ORDER BY calls DESC")
     if limit:
         sql += f" LIMIT {int(limit)}"
-    return conn.execute(sql).fetchall()
+    return conn.execute(sql, params).fetchall()
 
 
-def q_agents(conn, limit=None):
-    sql = "SELECT * FROM v_agents ORDER BY calls DESC"
+def q_agents(conn, limit=None, start_ts=None, end_ts=None):
+    where, params = _time_filter(start_ts, end_ts)
+    sql = ("SELECT agent_type, kind, COUNT(*) AS calls,"
+           " MAX(ts) AS last_used, MIN(ts) AS first_used,"
+           " COUNT(DISTINCT project) AS projects,"
+           " COUNT(DISTINCT session_id) AS sessions"
+           f" FROM agent_usage{where} GROUP BY agent_type, kind ORDER BY calls DESC")
     if limit:
         sql += f" LIMIT {int(limit)}"
-    return conn.execute(sql).fetchall()
+    return conn.execute(sql, params).fetchall()
 
 
-def q_mcp(conn, limit=None):
-    sql = "SELECT * FROM v_mcp ORDER BY calls DESC"
+def q_mcp(conn, limit=None, start_ts=None, end_ts=None):
+    where, params = _time_filter(start_ts, end_ts)
+    sql = ("SELECT server, tool, COUNT(*) AS calls,"
+           " SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,"
+           " MAX(ts) AS last_used, MIN(ts) AS first_used,"
+           " COUNT(DISTINCT project) AS projects,"
+           " COUNT(DISTINCT session_id) AS sessions"
+           f" FROM mcp_usage{where} GROUP BY server, tool ORDER BY calls DESC")
     if limit:
         sql += f" LIMIT {int(limit)}"
-    return conn.execute(sql).fetchall()
+    return conn.execute(sql, params).fetchall()
 
 
-def q_plugins(conn):
-    """Installed plugins with their attributed usage counts."""
+def q_plugins(conn, start_ts=None, end_ts=None):
+    """已装插件 + *按窗口* 归因的使用计数。列表来自静态 inventory（无时间戳），
+    故始终列出全部插件；仅 uses/last_used 受窗口限制。谓词放在 LEFT JOIN ON 中，
+    使窗口内无使用的 inventory 行仍返回一行（uses=0）。"""
+    conds = _time_conds(start_ts, end_ts, col="u.ts")
+    on_time = (" AND " + " AND ".join(c for c, _ in conds)) if conds else ""
+    params = [p for _, p in conds]
     return conn.execute(
-        "SELECT i.name AS plugin, i.version, "
-        "  COALESCE(u.uses, 0) AS uses, u.last_used, "
-        "  (SELECT COUNT(*) FROM inventory x"
-        "    WHERE x.owner_plugin = i.name AND x.kind = 'skill')  AS skills,"
-        "  (SELECT COUNT(*) FROM inventory x"
-        "    WHERE x.owner_plugin = i.name AND x.kind = 'agent')  AS agents,"
-        "  (SELECT COUNT(*) FROM inventory x"
-        "    WHERE x.owner_plugin = i.name AND x.kind = 'command') AS commands"
+        "SELECT i.name AS plugin, i.version,"
+        " COUNT(u.id) AS uses, MAX(u.ts) AS last_used,"
+        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = i.name AND x.kind = 'skill')  AS skills,"
+        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = i.name AND x.kind = 'agent')  AS agents,"
+        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = i.name AND x.kind = 'command') AS commands"
         " FROM inventory i"
-        " LEFT JOIN v_plugins u ON u.plugin = i.name"
+        f" LEFT JOIN plugin_usage u ON u.plugin = i.name{on_time}"
         " WHERE i.kind = 'plugin'"
-        " ORDER BY uses DESC, i.name"
+        " GROUP BY i.name, i.version ORDER BY uses DESC, i.name",
+        params,
     ).fetchall()
 
 
@@ -464,7 +498,7 @@ def q_model_responses(conn, limit=50, model=None):
     return conn.execute(sql, params).fetchall()
 
 
-def q_model_tokens(conn):
+def q_model_tokens(conn, start_ts=None, end_ts=None):
     """Per-model token totals.
 
     ``SUM`` skips NULLs, so responses recorded with ``usage_available=0`` add
@@ -485,6 +519,7 @@ def q_model_tokens(conn):
     Rows without cache data contribute no hit (COALESCE to 0), so they are not
     inflated.
     """
+    where, params = _time_filter(start_ts, end_ts)
     return conn.execute(
         "SELECT model,"
         " COUNT(*) AS responses,"
@@ -499,7 +534,8 @@ def q_model_tokens(conn):
         f" {_AGG_TOTAL_EXPR} AS total_tokens,"
         f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
         f" {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens"
-        " FROM model_responses GROUP BY model ORDER BY responses DESC"
+        f" FROM model_responses{where} GROUP BY model ORDER BY responses DESC",
+        params,
     ).fetchall()
 
 
@@ -610,6 +646,24 @@ def _ts_where(start_ts, end_ts):
     if start_ts is None:
         return "ts < ?", [end_ts]
     return "ts >= ? AND ts < ?", [start_ts, end_ts]
+
+
+def _time_conds(start_ts, end_ts, col="ts"):
+    """时间谓词列表 ``(sql, param)``；两者皆 None 时为空（= 全部时间）。"""
+    conds = []
+    if start_ts is not None:
+        conds.append((f"{col} >= ?", start_ts))
+    if end_ts is not None:
+        conds.append((f"{col} < ?", end_ts))
+    return conds
+
+
+def _time_filter(start_ts, end_ts, col="ts"):
+    """返回 ``(where_prefix, params)``；无过滤时为 ``("", [])``。"""
+    conds = _time_conds(start_ts, end_ts, col)
+    if not conds:
+        return "", []
+    return " WHERE " + " AND ".join(c for c, _ in conds), [p for _, p in conds]
 
 
 def q_usage_summary(conn, start_ts, end_ts) -> dict:

@@ -28,7 +28,7 @@ try:
     from textual.containers import Horizontal, Vertical
     from textual.screen import Screen
     from textual.widgets import (
-        DataTable, Footer, Header, Select, Static, TabbedContent, TabPane,
+        DataTable, Footer, Select, Static, TabbedContent, TabPane,
     )
 
     HAVE_TEXTUAL = True
@@ -85,6 +85,31 @@ TOKEN_COLUMNS = ("Model", "Requests", "With usage", "Input", "Output",
 
 if HAVE_TEXTUAL:
 
+    class TopBar(Horizontal):
+        """标题栏 + 共享时间范围选择器（取代 textual 的 Header）。
+
+        去掉两个内置行为：点击不再切换 'tall' 高度；没有左上角图标，不会打开命令面板。
+        只有主界面带选择器；详情屏用 with_range=False。
+        """
+        DEFAULT_CSS = """
+        TopBar { dock: top; width: 100%; height: 1; background: $panel; color: $foreground; }
+        TopBar > #topbar-title { width: 1fr; padding: 0 1; content-align: left middle; }
+        TopBar > #range { width: 30; }
+        TopBar > #range SelectCurrent { border: none; padding: 0 1; background: $panel; }
+        """
+
+        def __init__(self, title: str, *, with_range: bool = False,
+                     id: str | None = None):
+            super().__init__(id=id)
+            self._title = title
+            self._with_range = with_range
+
+        def compose(self) -> ComposeResult:
+            yield Static(self._title, id="topbar-title")
+            if self._with_range:
+                yield Select(RANGE_OPTIONS, value="24h", allow_blank=False,
+                             id="range")
+
     class HistoryScreen(Screen):
         """Recent calls for one entity, pushed on row select."""
 
@@ -97,7 +122,7 @@ if HAVE_TEXTUAL:
             self.heading = display or name  # what the title shows
 
         def compose(self) -> ComposeResult:
-            yield Header(show_clock=True)
+            yield TopBar(f"{self.kind} · {self.heading}")
             yield Vertical(
                 Static(f"[b]{self.kind}[/b] · {self.heading}", id="hist-title"),
                 DataTable(id="hist-table", zebra_stripes=True),
@@ -128,7 +153,7 @@ if HAVE_TEXTUAL:
             self.model = model
 
         def compose(self) -> ComposeResult:
-            yield Header(show_clock=True)
+            yield TopBar(f"Model responses · {self.model}")
             yield Vertical(
                 Static(f"[b]Model responses[/b] · {self.model}", id="resp-title"),
                 DataTable(id="resp-table", zebra_stripes=True),
@@ -173,7 +198,6 @@ if HAVE_TEXTUAL:
            internally, so the Request Logs table below always keeps its rows.
            #usage-panels is a Horizontal (four columns); .compact stacks it. */
         #usage-box { height: 1fr; padding: 0 1; }
-        #usage-range { width: 46; }
         #usage-panels { height: auto; max-height: 40%; overflow-y: auto; }
         .usage-panel {
             border: round $primary;
@@ -203,6 +227,8 @@ if HAVE_TEXTUAL:
             Binding("shift+tab", "previous_tab", "Prev tab", priority=True),
         ]
         TITLE = "CodeBuddy usage tracker"
+        # No built-in Header means no ctrl+p palette; disable it outright too.
+        ENABLE_COMMAND_PALETTE = False
 
         USAGE_LOG_LIMIT = 100
 
@@ -220,7 +246,7 @@ if HAVE_TEXTUAL:
             self._usage_ready = False
 
         def compose(self) -> ComposeResult:
-            yield Header(show_clock=True)
+            yield TopBar(self.TITLE, with_range=True, id="topbar")
             with TabbedContent(initial="tab-tools"):
                 with TabPane("Tools", id="tab-tools"):
                     yield DataTable(id="t-tools", zebra_stripes=True)
@@ -236,8 +262,6 @@ if HAVE_TEXTUAL:
                     yield DataTable(id="t-tokens", zebra_stripes=True)
                 with TabPane("Usage", id="tab-usage"):
                     yield Vertical(
-                        Select(RANGE_OPTIONS, value="24h", allow_blank=False,
-                               id="usage-range"),
                         Horizontal(
                             Vertical(
                                 Static("Window / Requests", classes="panel-title"),
@@ -375,49 +399,49 @@ if HAVE_TEXTUAL:
         def _set_status(self, msg: str) -> None:
             self.query_one("#status", Static).update(msg)
 
-        def _fill_tools(self, conn) -> None:
+        def _fill_tools(self, conn, start=None, end=None) -> None:
             self._fill_or_empty(
                 self.query_one("#t-tools", DataTable),
                 [[r["tool_name"], f"{r['calls']:,}", f"{r['completed']:,}",
                   f"{r['failed']:,}", ms(r["avg_ms"]), ts(r["last_used"])]
-                 for r in db.q_tools(conn)],
+                 for r in db.q_tools(conn, start_ts=start, end_ts=end)],
                 "No tool calls yet", key_kind="tool")
 
-        def _fill_skills(self, conn) -> None:
+        def _fill_skills(self, conn, start=None, end=None) -> None:
             self._fill_or_empty(
                 self.query_one("#t-skills", DataTable),
                 [[r["skill"], r["plugin"] or "-", f"{r['calls']:,}",
                   f"{r['completed']:,}", ts(r["last_used"])]
-                 for r in db.q_skills(conn)],
+                 for r in db.q_skills(conn, start_ts=start, end_ts=end)],
                 "No skills used yet", key_kind="skill")
 
-        def _fill_agents(self, conn) -> None:
+        def _fill_agents(self, conn, start=None, end=None) -> None:
             self._fill_or_empty(
                 self.query_one("#t-agents", DataTable),
                 [[r["agent_type"], r["kind"], f"{r['calls']:,}",
                   ts(r["last_used"])]
-                 for r in db.q_agents(conn)],
+                 for r in db.q_agents(conn, start_ts=start, end_ts=end)],
                 "No agents used yet", key_kind="agent")
 
-        def _fill_plugins(self, conn) -> None:
+        def _fill_plugins(self, conn, start=None, end=None) -> None:
             self._fill_or_empty(
                 self.query_one("#t-plugins", DataTable),
                 [[r["plugin"], r["version"] or "-", f"{r['uses']:,}",
                   f"{r['skills']:,}", f"{r['agents']:,}", f"{r['commands']:,}"]
-                 for r in db.q_plugins(conn)],
+                 for r in db.q_plugins(conn, start_ts=start, end_ts=end)],
                 "No plugins installed")
 
-        def _fill_mcp(self, conn) -> None:
+        def _fill_mcp(self, conn, start=None, end=None) -> None:
             # Row key is unique per (server, tool): v_mcp groups by both, so two
             # tools under one server would otherwise collide and abort the mount.
             self._fill_or_empty(
                 self.query_one("#t-mcp", DataTable),
                 [[r["server"], r["tool"], f"{r['calls']:,}",
                   f"{r['completed']:,}", ts(r["last_used"])]
-                 for r in db.q_mcp(conn)],
+                 for r in db.q_mcp(conn, start_ts=start, end_ts=end)],
                 "No MCP calls yet", key_index=(0, 1), key_kind="mcp")
 
-        def _fill_tokens(self, conn) -> None:
+        def _fill_tokens(self, conn, start=None, end=None) -> None:
             # Reuses q_model_tokens; never re-parses transcripts and never mixes
             # in sessions.tokens (tokenDelta). Total = API total (provider total
             # when present). Usage Total is the display-only re-add of cache hit.
@@ -429,7 +453,7 @@ if HAVE_TEXTUAL:
                      fmt_n(r["prompt_cache_miss_tokens"]),
                      fmt_n(r["prompt_cache_write_tokens"]),
                      self._coverage(r["with_usage"], r["responses"])]
-                    for r in db.q_model_tokens(conn)]
+                    for r in db.q_model_tokens(conn, start_ts=start, end_ts=end)]
             self._fill_or_empty(mt, rows, "No model responses yet",
                                 key_kind="model")
 
@@ -450,13 +474,14 @@ if HAVE_TEXTUAL:
             if own:
                 conn = db.open_db(self.db_path, readonly=True)
             try:
-                self._fill_tools(conn)
-                self._fill_skills(conn)
-                self._fill_agents(conn)
-                self._fill_plugins(conn)
-                self._fill_mcp(conn)
-                self._fill_tokens(conn)
-                o = db.overview(conn)
+                start, end = self._bounds()
+                self._fill_tools(conn, start, end)
+                self._fill_skills(conn, start, end)
+                self._fill_agents(conn, start, end)
+                self._fill_plugins(conn, start, end)
+                self._fill_mcp(conn, start, end)
+                self._fill_tokens(conn, start, end)
+                o = db.overview(conn)          # status bar stays all-time
                 if self._usage_ready:
                     self._refresh_usage(conn)   # same connection, no second open
             finally:
@@ -494,7 +519,8 @@ if HAVE_TEXTUAL:
                 else:
                     fn = self._PANE_FILL.get(pane)
                     if fn:
-                        getattr(self, fn)(conn)
+                        start, end = self._bounds()
+                        getattr(self, fn)(conn, start, end)
             finally:
                 if own:
                     conn.close()
@@ -548,6 +574,23 @@ if HAVE_TEXTUAL:
             # event.size carries the NEW size (self.size still lags here).
             self._apply_responsive_layout(event.size.width)
 
+        def _bounds(self):
+            """Current ``self.usage_range`` as ``(start_ms, end_ms)``, from now.
+
+            Never cached: every refresh derives the window from the current
+            time (see ``_refresh_usage``), so a long-running app does not drift.
+            """
+            return db.window_bounds(self.usage_range, int(time.time() * 1000))
+
+        def _render_usage_window(self) -> None:
+            start, end = self._bounds()
+            shown_start = (local_time(start) if start is not None
+                           else "(no lower bound)")
+            self.query_one("#usage-window", Static).update(
+                f"{db.USAGE_RANGE_LABELS[self.usage_range]}\n"
+                f"{shown_start} — {local_time(end)}"
+            )
+
         def _refresh_usage(self, conn=None) -> None:
             # Recompute the window from the CURRENT time on every refresh — never
             # a cached/opening-time range.
@@ -556,11 +599,7 @@ if HAVE_TEXTUAL:
             now_ms = int(time.time() * 1000)
             start, end = db.window_bounds(self.usage_range, now_ms)
             self._last_refresh = now_ms
-            shown_start = local_time(start) if start is not None else "(no lower bound)"
-            self.query_one("#usage-window", Static).update(
-                f"{db.USAGE_RANGE_LABELS[self.usage_range]}\n"
-                f"{shown_start} — {local_time(end)}"
-            )
+            self._render_usage_window()
             self._render_usage_status()
             own = conn is None
             if own:
@@ -654,10 +693,11 @@ if HAVE_TEXTUAL:
             self._fill(self.query_one("#t-usage", DataTable), out)
 
         def on_select_changed(self, event: Select.Changed) -> None:
-            if event.select.id != "usage-range":
+            if event.select.id != "range":
                 return
             self.usage_range = event.value
-            self._refresh_usage()
+            self._render_usage_window()   # keep the Usage Window panel live
+            self._refresh_active_tab()    # re-query only the visible tab
 
         # --- row select: route to detail screens ---------------------------
 
