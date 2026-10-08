@@ -19,6 +19,8 @@ CLI). Three layers, in dependency order:
 `bin/cbut` is a bash dispatcher. **It is bash on purpose**: it must still run and print a useful
 error when the TUI venv is missing or broken, so it cannot depend on any Python.
 
+This repository is public.
+
 ## Commands
 
 ```bash
@@ -28,6 +30,26 @@ bash -n bin/cbut                                  # syntax-check the dispatcher
 ```
 
 Single file: `python3 -m unittest scripts.tests.test_sync` (or the matching `pytest` form).
+
+## CI
+
+GitHub Actions runs on every `push` and `pull_request` (`.github/workflows/ci.yml`, Python 3.12):
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 -m unittest discover -s scripts/tests
+```
+
+**It must stay green.** A red CI is a broken contract, not a warning: this is the same command as
+the L0 verification tier below, so a change that fails here fails everywhere. Run it locally before
+pushing — do not leave the first run to CI.
+
+## Release / version
+
+The project's version lives in `pyproject.toml` (`[project].version`) and nowhere else; it is
+currently `0.1.0`. Bump it in that one file when a release is cut — the READMEs and `CHANGELOG.md`
+describe behaviour and do not carry a version to keep in sync. There is no PyPI publish step: the
+tool runs from a checkout, so the version only needs to move when a documented change ships.
 
 ## Hard rules
 
