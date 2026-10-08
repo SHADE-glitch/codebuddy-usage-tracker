@@ -239,11 +239,13 @@ if HAVE_TEXTUAL:
             self._sync_running = False
             self._sync_pending = False
             self.sync_mod = None
-            # Range state. The entity tabs share one window (default 7d); the
-            # Usage page keeps its own (default 24h). The Plugins tab has no
-            # window at all — the plugin list is all-time.
-            self.entity_range = "7d"
-            self.usage_range = "24h"
+            # Per-tab range state: each tab keeps its own window, so changing
+            # one tab's range never moves another's. Entity tabs default to 7d,
+            # the Usage page to 24h; Plugins has no window at all (all-time).
+            self.tab_range = {
+                "tab-tools": "7d", "tab-skills": "7d", "tab-agents": "7d",
+                "tab-mcp": "7d", "tab-tokens": "7d", "tab-usage": "24h",
+            }
             self._last_refresh = None      # epoch ms
             self._last_sync = None         # epoch ms
             self._usage_ready = False
@@ -480,13 +482,14 @@ if HAVE_TEXTUAL:
             if own:
                 conn = db.open_db(self.db_path, readonly=True)
             try:
-                start, end = self._entity_bounds()
-                self._fill_tools(conn, start, end)
-                self._fill_skills(conn, start, end)
-                self._fill_agents(conn, start, end)
+                # Each tab is filled with its own window, so one tab's range
+                # never moves another's.
+                self._fill_tools(conn, *self._bounds_for("tab-tools"))
+                self._fill_skills(conn, *self._bounds_for("tab-skills"))
+                self._fill_agents(conn, *self._bounds_for("tab-agents"))
                 self._fill_plugins(conn)          # all-time, no window
-                self._fill_mcp(conn, start, end)
-                self._fill_tokens(conn, start, end)
+                self._fill_mcp(conn, *self._bounds_for("tab-mcp"))
+                self._fill_tokens(conn, *self._bounds_for("tab-tokens"))
                 o = db.overview(conn)          # status bar stays all-time
                 if self._usage_ready:
                     self._refresh_usage(conn)   # same connection, no second open
@@ -525,9 +528,8 @@ if HAVE_TEXTUAL:
                 else:
                     fn = self._PANE_FILL.get(pane)
                     if fn:
-                        # Entity tabs share entity_range; Plugins ignores it.
-                        start, end = self._entity_bounds()
-                        getattr(self, fn)(conn, start, end)
+                        # Plugins ignores its bounds (all-time).
+                        getattr(self, fn)(conn, *self._bounds_for(pane))
             finally:
                 if own:
                     conn.close()
@@ -582,26 +584,33 @@ if HAVE_TEXTUAL:
             # event.size carries the NEW size (self.size still lags here).
             self._apply_responsive_layout(event.size.width)
 
-        def _bounds(self):
-            """Current ``self.usage_range`` as ``(start_ms, end_ms)``, from now.
+        def _range_of(self, pane):
+            """The window key for a pane, or ``None`` for the all-time Plugins
+            tab (which is not in ``self.tab_range``)."""
+            return self.tab_range.get(pane)
+
+        def _bounds_for(self, pane):
+            """``(start_ms, end_ms)`` for a pane's **own** window, from now.
 
             Never cached: every refresh derives the window from the current
-            time (see ``_refresh_usage``), so a long-running app does not drift.
+            time, so a long-running app does not drift. ``None`` as the start
+            means all-time (the Plugins tab).
             """
-            return db.window_bounds(self.usage_range, int(time.time() * 1000))
-
-        def _entity_bounds(self):
-            """The entity tabs' shared window (``self.entity_range``), from now."""
-            return db.window_bounds(self.entity_range, int(time.time() * 1000))
+            rng = self._range_of(pane)
+            now = int(time.time() * 1000)
+            if rng is None:
+                return None, now
+            return db.window_bounds(rng, now)
 
         def _sync_range_widget(self) -> None:
-            """Point the shared range Select at the active tab's window.
+            """Point the shared range Select at the active tab's own window.
 
-            The entity tabs share ``entity_range`` and the Usage page keeps its
-            own ``usage_range``; the Plugins tab has no window, so the Select is
-            hidden there. Setting ``Select.value`` posts a ``Changed`` message,
-            which ``on_select_changed`` ignores when it already matches the
-            active tab's range (so this never re-triggers a refresh loop).
+            Every tab keeps its own range (``self.tab_range``), so switching tabs
+            shows that tab's range, not the one you last picked elsewhere. The
+            Plugins tab has no window, so the Select is hidden there. Setting
+            ``Select.value`` posts a ``Changed`` message, which
+            ``on_select_changed`` ignores when it already matches the active
+            tab's range (so this never re-triggers a refresh loop).
             """
             try:
                 sel = self.query_one("#range", Select)
@@ -612,16 +621,16 @@ if HAVE_TEXTUAL:
                 sel.display = False
                 return
             sel.display = True
-            value = self.usage_range if pane == "tab-usage" else self.entity_range
-            if sel.value != value:
+            value = self._range_of(pane)
+            if value is not None and sel.value != value:
                 sel.value = value
 
         def _render_usage_window(self) -> None:
-            start, end = self._bounds()
+            start, end = self._bounds_for("tab-usage")
             shown_start = (local_time(start) if start is not None
                            else "(no lower bound)")
             self.query_one("#usage-window", Static).update(
-                f"{db.USAGE_RANGE_LABELS[self.usage_range]}\n"
+                f"{db.USAGE_RANGE_LABELS[self.tab_range['tab-usage']]}\n"
                 f"{shown_start} — {local_time(end)}"
             )
 
@@ -631,7 +640,7 @@ if HAVE_TEXTUAL:
             if not self._usage_ready:
                 return
             now_ms = int(time.time() * 1000)
-            start, end = db.window_bounds(self.usage_range, now_ms)
+            start, end = self._bounds_for("tab-usage")
             self._last_refresh = now_ms
             self._render_usage_window()
             self._render_usage_status()
@@ -732,15 +741,11 @@ if HAVE_TEXTUAL:
             pane = self.query_one(TabbedContent).active
             if pane == "tab-plugins":
                 return                    # Plugins has no window
+            if event.value == self._range_of(pane):
+                return                    # programmatic sync, not a user change
+            self.tab_range[pane] = event.value
             if pane == "tab-usage":
-                if event.value == self.usage_range:
-                    return                # programmatic sync, not a user change
-                self.usage_range = event.value
                 self._render_usage_window()   # keep the Usage Window panel live
-            else:
-                if event.value == self.entity_range:
-                    return                # programmatic sync, not a user change
-                self.entity_range = event.value
             self._refresh_active_tab()    # re-query only the visible tab
 
         # --- row select: route to detail screens ---------------------------

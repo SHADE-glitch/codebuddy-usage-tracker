@@ -892,6 +892,30 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             rows = {r[0]: r for r in all_rows(t)}
             self.assertEqual(rows["Old"][1], "1")    # now counted
 
+    # 37b. every tab keeps its OWN range — changing one never moves another
+    async def test_tab_ranges_are_independent(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tc = app.query_one(tui.TabbedContent)
+            sel = app.query_one("#range", tui.Select)
+            self.assertEqual(sel.value, "7d")        # Tools default
+            sel.value = "all"                        # widen only Tools
+            await pilot.pause()
+            self.assertEqual(app.tab_range["tab-tools"], "all")
+            tc.active = "tab-skills"                 # Skills keeps its own default
+            await pilot.pause()
+            self.assertEqual(sel.value, "7d")
+            self.assertEqual(app.tab_range["tab-skills"], "7d")
+            tc.active = "tab-usage"                  # Usage keeps its own default
+            await pilot.pause()
+            self.assertEqual(sel.value, "24h")
+            self.assertEqual(app.tab_range["tab-usage"], "24h")
+            tc.active = "tab-tools"                  # Tools remembers its widening
+            await pilot.pause()
+            self.assertEqual(sel.value, "all")
+
     # 38. the shared top bar replaces the built-in Header; palette is disabled
     async def test_top_bar_replaces_header_and_disables_palette(self):
         make_db(self.db_path, [])

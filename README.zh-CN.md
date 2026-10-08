@@ -43,7 +43,7 @@
 - ⚡ **快速增量同步** —— 约 300 个会话 / 420 MB 约 5 秒完成；之后只读新增字节。
 - 🖥️ **TUI + 无头** —— 给人用的七 tab Textual 界面，给脚本用的 JSON 报告。
 - 🔢 **真实模型 token** —— 按模型的输入 / 输出 / 总计，以及缓存 hit / miss / write，直接来自 `providerData.rawUsage`；总计优先使用 provider 自报值。
-- 📊 **滚动窗口** —— 顶部栏的范围选择器（`24h`/`48h`/`72h`/`7d`/`30d`/全部时间）作用于实体 tab（默认 **7 天**）与 Usage 页（默认 **24 小时**）；Plugins 恒为全时段。窗口只缩小**计数**，列表始终完整。
+- 📊 **滚动窗口，每个 tab 独立** —— 顶部栏的范围选择器（`24h`/`48h`/`72h`/`7d`/`30d`/全部时间）**按 tab 各自保存**，改一个不会影响别的：实体 tab 默认 **7 天**，Usage 页默认 **24 小时**，Plugins 恒为全时段。窗口只缩小**计数**，列表始终完整。
 - 🔐 **只存元数据** —— 名称、耗时、状态、项目。绝不存消息正文或参数值。
 
 ## 🤔 为什么做这个
@@ -77,7 +77,7 @@ CodeBuddy 其实**已经在写**你需要的数据，只是**从不展示**。�
 
 ## 📊 七个 tab
 
-tab 上方有一条共享顶部栏，其中放着范围选择器。实体 tab（Tools、Skills、Agents、MCP、Tokens）共用一个窗口 —— 默认 **7 天**；Usage 页自带一个，默认 **24 小时**。**Plugins** tab 完全没有窗口：它的列表是全时段，所以那里会隐藏选择器。窗口只改变**计数**，绝不丢行 —— 因为每个 tab 都以名字为主键。
+tab 上方有一条共享顶部栏，其中放着范围选择器，且**每个 tab 各自保存自己的范围** —— 改一个 tab 的窗口不会影响其他 tab。实体 tab（Tools、Skills、Agents、MCP、Tokens）默认 **7 天**；Usage 页默认 **24 小时**。**Plugins** tab 完全没有窗口：它的列表是全时段，所以那里会隐藏选择器。窗口只改变**计数**，绝不丢行 —— 因为每个 tab 都以名字为主键。
 
 | | Tab | 内容 |
 |---|-----|------|
@@ -101,7 +101,7 @@ tab 上方有一条共享顶部栏，其中放着范围选择器。实体 tab（
 
 Usage tab 仿照会话用量面板的样式，但每个数字都来自磁盘上的转录：
 
-- **Usage 页自带范围**（默认 **24 小时**），在 Usage tab 激活时显示在共享顶部栏里；实体 tab 另有一个窗口（默认 **7 天**）。选项为 `24h` / `48h` / `72h` / `7d` / `30d` / `全部时间`，均从当前时钟往回计算，**不是**自然日，也**不是** tracker 首次运行的时刻。本页的 **Window / Requests** 面板会显示当前范围的精确边界。
+- **Usage 页保留自己的范围**（默认 **24 小时**），在 Usage tab 激活时显示在共享顶部栏里；其他每个 tab 也各自保留，互不影响。选项为 `24h` / `48h` / `72h` / `7d` / `30d` / `全部时间`，均从当前时钟往回计算，**不是**自然日，也**不是** tracker 首次运行的时刻。本页的 **Window / Requests** 面板会显示当前范围的精确边界。
 - **单一的 Request Logs 列表**，最近的请求在前。列顺序对齐 cc-switch 的请求记录 —— 时间 · 模型 · 输入 · 输出 · API 总计 · usage 总计 · 缓存读取(hit) · 缓存未命中(miss) · 缓存创建(write) · usage（Real / Partial / Missing） · 来源。cc-switch 的供应商、费用、耗时、HTTP 状态码列在转录里没有数据源，因此**略去而非估算**。优先列在最左；缓存明细可通过横向滚动查看。
 - **与 Tokens 相同的准确性规则** —— **API 总计** = 有 provider 原始值时用原始值，否则 `输入 + 输出`，汇总里还会显示其 `Source`（`provider` / `derived` / `mixed`）。另有一个 **Usage 总计**（`输入 + 输出 + 缓存 hit`）仅供参照，并明确标注它会重复计入缓存 hit（约 2 倍 API 总计）。缓存 hit/miss/write 绝不并入 API 总计，缺失值保持 `-`。
 - **缓存命中率** = `缓存 hit / (缓存 hit + 缓存 miss + 缓存 write)` —— 即「可缓存输入」，与 cc-switch 一致；某个窗口没有缓存数据时显示 `-`。
@@ -176,7 +176,7 @@ cbut health              # 🩺  数据库与数据源检查
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 162 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 163 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -185,7 +185,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 162 tests ... OK
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
 | `test_sync.py` | 61 | 转录解析、工具归类、增量同步与 `--full` 重建 |
-| `test_tui.py` | 45 | tab 接线与报告结构，走 Textual 自带的 `run_test` |
+| `test_tui.py` | 46 | tab 接线与报告结构，走 Textual 自带的 `run_test` |
 | `test_usage.py` | 47 | 滚动窗口（24h / 48h / 72h / 7d / 30d / 全部）从**当前时刻**往回算 |
 | `test_readme_bilingual.py` | 3 | 两份 README 始终是「一份文档、两种语言」 |
 | `test_record_coverage.py` | 6 | 每个被覆盖的提交都记录进 `CHANGELOG.md` |
@@ -200,7 +200,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 162 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
 | `scripts/cbut-tui.py` | 七个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 162 个用例 |
+| `scripts/tests/` | 上面那 163 个用例 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
 

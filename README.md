@@ -43,7 +43,7 @@
 - ⚡ **Fast incremental sync** — ~5 s to index ~300 sessions / ~420 MB; only new bytes after that.
 - 🖥️ **TUI + headless** — a seven-tab Textual UI for humans, JSON reports for scripts.
 - 🔢 **Real model tokens** — per-model input / output / total plus cache hit / miss / write, straight from `providerData.rawUsage`; total prefers the provider's own reported value.
-- 📊 **Rolling windows** — a top-bar range (`24h`/`48h`/`72h`/`7d`/`30d`/All time) scales the entity tabs (default **7 days**) and the Usage page (default **24 hours**); Plugins is always all-time. A window only shrinks the **counts** — the list stays full.
+- 📊 **Rolling windows, per tab** — the top-bar range (`24h`/`48h`/`72h`/`7d`/`30d`/All time) is kept **per tab**, so changing one never moves another: entity tabs default to **7 days**, the Usage page to **24 hours**, and Plugins is always all-time. A window only shrinks the **counts** — the list stays full.
 - 🔐 **Metadata only** — names, timings, statuses, projects. Never message bodies or argument values.
 
 ## 🤔 Why this exists
@@ -81,11 +81,12 @@ index. It never touches CodeBuddy's files, installs no hook, and adds no runtime
 
 ## 📊 The seven tabs
 
-A shared top bar above the tabs carries the range selector. The entity tabs (Tools,
-Skills, Agents, MCP, Tokens) share one window — default **7 days** — while the Usage
-page keeps its own, default **24 hours**. The **Plugins** tab has no window at all: its
-list is all-time, so the selector is hidden there. A window only changes the **counts**;
-it never drops a row, because every tab is keyed by name.
+A shared top bar above the tabs carries the range selector, and **each tab keeps its own
+range** — changing one tab's window never moves another's. The entity tabs (Tools,
+Skills, Agents, MCP, Tokens) default to **7 days**; the Usage page defaults to **24
+hours**. The **Plugins** tab has no window at all: its list is all-time, so the selector
+is hidden there. A window only changes the **counts**; it never drops a row, because
+every tab is keyed by name.
 
 | | Tab | What it shows |
 |---|-----|---------------|
@@ -121,9 +122,9 @@ credited to a plugin only when the plugin inventory maps that name to it.
 The Usage tab mirrors the style of a session-usage panel, but every number comes from
 the transcripts on disk:
 
-- **The Usage page has its own range** (default **24 hours**), shown in the shared top
-  bar while the Usage tab is active; the entity tabs keep a separate window (default
-  **7 days**). Options are `24h` / `48h` / `72h` / `7d` / `30d` / `All time`, each
+- **The Usage page keeps its own range** (default **24 hours**), shown in the shared top
+  bar while the Usage tab is active; every other tab keeps its own too, so moving one
+  never moves another. Options are `24h` / `48h` / `72h` / `7d` / `30d` / `All time`, each
   computed back from the current clock, **not** natural calendar days and **not** from
   when the tracker first ran. Its **Window / Requests** panel shows the exact bounds of
   the active range.
@@ -216,7 +217,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 162 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 163 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -226,7 +227,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | Suite | Tests | Covers |
 |---|---:|---|
 | `test_sync.py` | 61 | transcript parsing, tool classification, incremental vs `--full` re-sync |
-| `test_tui.py` | 45 | tab wiring and report shapes, through Textual's own `run_test` harness |
+| `test_tui.py` | 46 | tab wiring and report shapes, through Textual's own `run_test` harness |
 | `test_usage.py` | 47 | the rolling windows (24h / 48h / 72h / 7d / 30d / all) measured back from *now* |
 | `test_readme_bilingual.py` | 3 | the two READMEs stay one document in two languages |
 | `test_record_coverage.py` | 6 | every covered commit is recorded in `CHANGELOG.md` |
@@ -241,7 +242,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
 | `scripts/cbut-tui.py` | the seven-tab Textual UI |
-| `scripts/tests/` | the 162 tests above |
+| `scripts/tests/` | the 163 tests above |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
 
