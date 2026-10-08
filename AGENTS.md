@@ -44,6 +44,22 @@ python3 -m unittest discover -s scripts/tests
 the L0 verification tier below, so a change that fails here fails everywhere. Run it locally before
 pushing — do not leave the first run to CI.
 
+- **Keep CI in step with the code.** Update `.github/workflows/ci.yml` in the *same change* that
+  makes it stale — never as a later cleanup.
+- **New or renamed tests need no CI edit** as long as CI runs the discovery command
+  (`python3 -m unittest discover -s scripts/tests`); it does, so it picks them up automatically.
+  Only touch CI if the *command itself* changes.
+- **Environment changes** — a new dependency, a Python version bump, or a new system tool — mean
+  updating the workflow's setup/install steps.
+- **Renamed or moved code**: the record-coverage test watches a declared list of code paths. If a
+  watched path moves, update that list; the test goes red until you do.
+- **After a refactor**, confirm CI still exercises the real code and the declared paths still cover
+  it. A green CI that no longer touches the changed code is worse than a red one.
+- **A new verification tier** (e.g. a live/TUI layer) — decide explicitly whether CI runs it; do not
+  add it silently.
+- If what CI runs changes, update this section too. CI is a signal, not a gate, until branch protection
+  is enabled — read the result after every push.
+
 ## Release / version
 
 The project's version lives in `pyproject.toml` (`[project].version`) and nowhere else; it is
