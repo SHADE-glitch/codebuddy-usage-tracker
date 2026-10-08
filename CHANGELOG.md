@@ -57,3 +57,19 @@ Evidence L0 2026-10-08: forcing the timer to fire every 50ms while cycling tabs 
 Cost     None — the guard only skips work there is nothing to render anyway; it does not change
          timer cadence while the app is live
 Commit   4ff3243
+
+### D-004 · 2026-10-08 · guard
+Symptom  The TUI read "now" straight from the wall clock, so the two Dashboard window tests only
+         passed when the suite ran outside the first hour after local midnight — a `now - 1h`
+         fixture otherwise lands on yesterday and drops out of a Today window. A time-of-day flake
+         that CI (UTC) can hit for any runner's local midnight
+Change   `TrackerApp` takes an optional `clock` (default `time.time`); `_bounds_for`, `_refresh_usage`
+         and `_on_sync_done` now read "now" through `_now_ms()`. The Dashboard tests pin the clock
+         to local noon, and a new test pins the seam itself
+Evidence L0 2026-10-08: with the clock pinned to noon the two tests no longer depend on the run
+         hour; `test_injected_clock_drives_the_window` asserts the window end equals the pinned
+         instant and its start equals `window_bounds("1d", pinned)` (so it fails if `time.time` is
+         read directly again); full suite 173 tests green
+Cost     One level of indirection for "now"; the default leaves a real run identical (no behaviour
+         change), and any future call site must go through `_now_ms()` to stay pinnable
+Commit   fe2d2c6
