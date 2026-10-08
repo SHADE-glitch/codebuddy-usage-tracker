@@ -43,3 +43,17 @@ Evidence L2 2026-10-08: after `cbut sync --full` against the real logs, `q_agent
 Cost     None — the default is the Agent tool's own contract, not a guess; a CodeBuddy build that
          changes that default would need this line revisited
 Commit   19c0b60
+
+### D-003 · 2026-10-08 · fix
+Symptom  CI failed on the Dashboard commit: `test_tab_cycle_wraps` raised `NoMatches: No nodes match
+         '#dash-note'` — the 5s auto-refresh timer fired once more during `run_test` teardown, after
+         the widgets were unmounted, so `query_one` blew up from inside the timer
+Change   `_auto_refresh_tick` returns early when `self.is_running` is false, and a regression test
+         pins that a tick outside a running app is a no-op (it fails, with the same `NoMatches`,
+         if the guard is removed)
+Evidence L0 2026-10-08: forcing the timer to fire every 50ms while cycling tabs failed 2–3 times
+         in 6 runs before the guard and 0 in 6 after; the new test fails without the guard and
+         passes with it; full suite 172 tests green
+Cost     None — the guard only skips work there is nothing to render anyway; it does not change
+         timer cadence while the app is live
+Commit   4ff3243

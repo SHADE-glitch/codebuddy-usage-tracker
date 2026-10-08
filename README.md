@@ -218,7 +218,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 171 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 172 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -228,7 +228,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | Suite | Tests | Covers |
 |---|---:|---|
 | `test_sync.py` | 61 | transcript parsing, tool classification, incremental vs `--full` re-sync |
-| `test_tui.py` | 51 | tab wiring and report shapes, through Textual's own `run_test` harness |
+| `test_tui.py` | 52 | tab wiring and report shapes, through Textual's own `run_test` harness |
 | `test_usage.py` | 50 | the calendar-day windows (Today / 2 / 3 / 7 / 30 days / all), the token totals and the Dashboard KPI |
 | `test_readme_bilingual.py` | 3 | the two READMEs stay one document in two languages |
 | `test_record_coverage.py` | 6 | every covered commit is recorded in `CHANGELOG.md` |
@@ -243,7 +243,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 171 tests above |
+| `scripts/tests/` | the 172 tests above |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
 
