@@ -699,6 +699,35 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = TrackerApp(str(self.db_path))
         self.assertTrue(callable(app._auto_refresh_tick))
 
+    # 28c. a refresh tick that fires while the app is not running (e.g. once
+    # more during run_test teardown) must be a no-op. Otherwise query_one on the
+    # now-unmounted widgets raises NoMatches from inside the timer and fails the
+    # whole test run — the flake CI caught on test_tab_cycle_wraps.
+    async def test_auto_refresh_tick_is_noop_when_not_running(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-dashboard"
+            await pilot.pause()
+            ran = {"n": 0}
+            real = app._refresh_active_tab
+
+            def spy(*a, **k):
+                ran["n"] += 1
+                return real(*a, **k)
+
+            app._refresh_active_tab = spy
+            # is_running is True inside run_test, so the tick still refreshes...
+            app._auto_refresh_tick()
+            self.assertEqual(ran["n"], 1)
+
+        # ...but once the app has stopped it must return before touching the DOM
+        # (query_one would raise NoMatches here).
+        self.assertFalse(app.is_running)
+        app._auto_refresh_tick()
+        self.assertEqual(ran["n"], 1)
+
     # 29. narrow terminals switch the panels to a compact (stacked) layout
     async def test_usage_summary_compact_fallback(self):
         make_db(self.db_path, [])
