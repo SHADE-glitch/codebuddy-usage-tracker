@@ -20,7 +20,7 @@
 - [✨ Features](#-features)
 - [🤔 Why this exists](#-why-this-exists)
 - [🏗️ How it works](#️-how-it-works)
-- [📊 The seven tabs](#-the-seven-tabs)
+- [📊 The eight tabs](#-the-eight-tabs)
 - [📋 Requirements](#-requirements)
 - [🚀 Install](#-install)
 - [🧭 Usage](#-usage)
@@ -35,15 +35,15 @@
 
 ## ✨ Features
 
-- 🧰 **Seven views, one command** — tools, skills, agents, plugins, MCP, tokens, usage.
+- 🧰 **Eight views, one command** — a dashboard, tools, skills, agents, plugins, MCP, tokens, usage.
 - 📜 **Full history, instantly** — backfills every session already on disk.
 - 🔑 **Keyed by name — nothing ever disappears** — every tab lists what you have **ever** used *and* what is installed, keyed by name alone: a renamed, updated or removed entity keeps its history, and the same name from two owners is one merged row.
 - 🪶 **Passive & read-only** — no hook, no plugin, no CodeBuddy source changes.
 - 🗃️ **One local SQLite file** — no network, no upload, no telemetry.
 - ⚡ **Fast incremental sync** — ~5 s to index ~300 sessions / ~420 MB; only new bytes after that.
-- 🖥️ **TUI + headless** — a seven-tab Textual UI for humans, JSON reports for scripts.
+- 🖥️ **TUI + headless** — an eight-tab Textual UI for humans, JSON reports for scripts.
 - 🔢 **Real model tokens** — per-model input / output / total plus cache hit / miss / write, straight from `providerData.rawUsage`; total prefers the provider's own reported value.
-- 📊 **Calendar-day windows, per tab** — the top-bar range (Today / 2 days / 3 days / 7 days / 30 days / All time) is kept **per tab**, so changing one never moves another: entity tabs default to **7 days**, the Usage page to **Today**, and Plugins is always all-time. Windows are whole local calendar days (00:00 → now), never "now minus N hours". A window only shrinks the **counts** — the list stays full.
+- 📊 **Calendar-day windows, per tab** — the top-bar range (Today / 2 days / 3 days / 7 days / 30 days / All time) is kept **per tab**, so changing one never moves another: entity tabs default to **7 days**, the Dashboard and the Usage page to **Today**, and Plugins is always all-time. Windows are whole local calendar days (00:00 → now), never "now minus N hours". A window only shrinks the **counts** — the list stays full.
 - 🔐 **Metadata only** — names, timings, statuses, projects. Never message bodies or argument values.
 
 ## 🤔 Why this exists
@@ -79,17 +79,19 @@ per-tool / per-skill / per-plugin breakdown. That gap is what `cbut` fills.
 `cbut` is a **passive reader**: it parses the logs CodeBuddy already writes and builds an
 index. It never touches CodeBuddy's files, installs no hook, and adds no runtime overhead.
 
-## 📊 The seven tabs
+## 📊 The eight tabs
 
-A shared top bar above the tabs carries the range selector, and **each tab keeps its own
-range** — changing one tab's window never moves another's. The entity tabs (Tools,
-Skills, Agents, MCP, Tokens) default to **7 days**; the Usage page defaults to **Today**.
-The **Plugins** tab has no window at all: its list is all-time, so the selector
-is hidden there. A window only changes the **counts**; it never drops a row, because
-every tab is keyed by name.
+The **Dashboard** opens first: an at-a-glance summary of the important numbers, so you
+know where to look before drilling in. A shared top bar above the tabs carries the range
+selector, and **each tab keeps its own range** — changing one tab's window never moves
+another's. The entity tabs (Tools, Skills, Agents, MCP, Tokens) default to **7 days**;
+the Dashboard and the Usage page default to **Today**. The **Plugins** tab has no window
+at all: its list is all-time, so the selector is hidden there. A window only changes the
+**counts**; it never drops a row, because every tab is keyed by name.
 
 | | Tab | What it shows |
 |---|-----|---------------|
+| 🧭 | **Dashboard** | two panels — usage KPIs (tool/skill/agent/MCP/plugin counts) and a token summary (requests, input/output, API total, usage total, cache hit rate) — each for the Dashboard's own window |
 | 🧰 | **Tools** | tool calls by name, completion, average duration, last used |
 | 🎯 | **Skills** | skill invocations by name (merged across owners), last use |
 | 🤖 | **Agents** | subagent types by name, call count, last use |
@@ -189,7 +191,7 @@ with your session for CPU. Check it with `systemctl --user status cbut-sync.time
 ## 🧭 Usage
 
 ```bash
-cbut                     # 🖥️  interactive TUI (seven tabs)
+cbut                     # 🖥️  interactive TUI (eight tabs)
 cbut sync                # 🔄  incremental index of new log data
 cbut sync --full         # ♻️  rebuild the database from scratch
 cbut stats               # 📊  overview of all categories
@@ -216,7 +218,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 163 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 171 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -226,8 +228,8 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | Suite | Tests | Covers |
 |---|---:|---|
 | `test_sync.py` | 61 | transcript parsing, tool classification, incremental vs `--full` re-sync |
-| `test_tui.py` | 45 | tab wiring and report shapes, through Textual's own `run_test` harness |
-| `test_usage.py` | 47 | the calendar-day windows (Today / 2 / 3 / 7 / 30 days / all) and the token totals |
+| `test_tui.py` | 51 | tab wiring and report shapes, through Textual's own `run_test` harness |
+| `test_usage.py` | 50 | the calendar-day windows (Today / 2 / 3 / 7 / 30 days / all), the token totals and the Dashboard KPI |
 | `test_readme_bilingual.py` | 3 | the two READMEs stay one document in two languages |
 | `test_record_coverage.py` | 6 | every covered commit is recorded in `CHANGELOG.md` |
 
@@ -240,8 +242,8 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `scripts/cbut_db.py` | SQLite schema and the query helpers every entry point shares |
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
-| `scripts/cbut-tui.py` | the seven-tab Textual UI |
-| `scripts/tests/` | the 162 tests above |
+| `scripts/cbut-tui.py` | the eight-tab Textual UI |
+| `scripts/tests/` | the 171 tests above |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
 

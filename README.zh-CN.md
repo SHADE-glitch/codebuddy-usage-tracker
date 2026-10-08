@@ -20,7 +20,7 @@
 - [✨ 特性](#-特性)
 - [🤔 为什么做这个](#-为什么做这个)
 - [🏗️ 工作原理](#️-工作原理)
-- [📊 七个 tab](#-七个-tab)
+- [📊 八个 tab](#-八个-tab)
 - [📋 环境要求](#-环境要求)
 - [🚀 安装](#-安装)
 - [🧭 用法](#-用法)
@@ -35,15 +35,15 @@
 
 ## ✨ 特性
 
-- 🧰 **七个视图，一条命令** —— 工具、skill、agent、插件、MCP、token、用量。
+- 🧰 **八个视图，一条命令** —— Dashboard、工具、skill、agent、插件、MCP、token、用量。
 - 📜 **完整历史，即刻可得** —— 回填磁盘上已有的全部会话。
 - 🔑 **以名字为准，什么都不丢** —— 每个 tab 都同时列出你**用过**的和已安装的，仅以名字为主键：改名、升级或被删除的对象都保留历史，同名但来自不同归属的合并成一行。
 - 🪶 **被动只读** —— 无 hook、无插件、不改 CodeBuddy 源码。
 - 🗃️ **单个本地 SQLite 文件** —— 不联网、不上传、无遥测。
 - ⚡ **快速增量同步** —— 约 300 个会话 / 420 MB 约 5 秒完成；之后只读新增字节。
-- 🖥️ **TUI + 无头** —— 给人用的七 tab Textual 界面，给脚本用的 JSON 报告。
+- 🖥️ **TUI + 无头** —— 给人用的八 tab Textual 界面，给脚本用的 JSON 报告。
 - 🔢 **真实模型 token** —— 按模型的输入 / 输出 / 总计，以及缓存 hit / miss / write，直接来自 `providerData.rawUsage`；总计优先使用 provider 自报值。
-- 📊 **自然日窗口，每个 tab 独立** —— 顶部栏的范围选择器（今天 / 2 天 / 3 天 / 7 天 / 30 天 / 全部时间）**按 tab 各自保存**，改一个不会影响别的：实体 tab 默认 **7 天**，Usage 页默认 **今天**，Plugins 恒为全时段。窗口按**本地自然日**（00:00 → 当前），绝不是「当前减 N 小时」。窗口只缩小**计数**，列表始终完整。
+- 📊 **自然日窗口，每个 tab 独立** —— 顶部栏的范围选择器（今天 / 2 天 / 3 天 / 7 天 / 30 天 / 全部时间）**按 tab 各自保存**，改一个不会影响别的：实体 tab 默认 **7 天**，Dashboard 与 Usage 页默认 **今天**，Plugins 恒为全时段。窗口按**本地自然日**（00:00 → 当前），绝不是「当前减 N 小时」。窗口只缩小**计数**，列表始终完整。
 - 🔐 **只存元数据** —— 名称、耗时、状态、项目。绝不存消息正文或参数值。
 
 ## 🤔 为什么做这个
@@ -75,12 +75,13 @@ CodeBuddy 其实**已经在写**你需要的数据，只是**从不展示**。�
 
 `cbut` 是一个**被动读取器**：解析 CodeBuddy 已经写好的日志并建立索引。它不碰 CodeBuddy 的任何文件、不装 hook、不增加运行时开销。
 
-## 📊 七个 tab
+## 📊 八个 tab
 
-tab 上方有一条共享顶部栏，其中放着范围选择器，且**每个 tab 各自保存自己的范围** —— 改一个 tab 的窗口不会影响其他 tab。实体 tab（Tools、Skills、Agents、MCP、Tokens）默认 **7 天**；Usage 页默认 **今天**。**Plugins** tab 完全没有窗口：它的列表是全时段，所以那里会隐藏选择器。窗口只改变**计数**，绝不丢行 —— 因为每个 tab 都以名字为主键。
+**Dashboard** 最先打开：一屏概览重要数字，让你知道该往哪里深入。tab 上方有一条共享顶部栏，其中放着范围选择器，且**每个 tab 各自保存自己的范围** —— 改一个 tab 的窗口不会影响其他 tab。实体 tab（Tools、Skills、Agents、MCP、Tokens）默认 **7 天**；Dashboard 与 Usage 页默认 **今天**。**Plugins** tab 完全没有窗口：它的列表是全时段，所以那里会隐藏选择器。窗口只改变**计数**，绝不丢行 —— 因为每个 tab 都以名字为主键。
 
 | | Tab | 内容 |
 |---|-----|------|
+| 🧭 | **Dashboard** | 两个面板 —— 用量 KPI（工具/skill/agent/MCP/插件 调用数）与 token 摘要（请求数、输入/输出、API 总计、usage 总计、缓存命中率），均取 Dashboard 自己的窗口 |
 | 🧰 | **Tools** | 按名称统计的工具调用、完成率、平均耗时、最近使用 |
 | 🎯 | **Skills** | 按名称统计的 skill 调用（跨归属合并）、最近使用 |
 | 🤖 | **Agents** | 按名称统计的子代理类型、调用次数、最近使用 |
@@ -151,7 +152,7 @@ systemctl --user enable --now cbut-sync.timer
 ## 🧭 用法
 
 ```bash
-cbut                     # 🖥️  交互式 TUI（七个 tab）
+cbut                     # 🖥️  交互式 TUI（八个 tab）
 cbut sync                # 🔄  增量索引新日志
 cbut sync --full         # ♻️  从零重建数据库
 cbut stats               # 📊  各类总览
@@ -176,7 +177,7 @@ cbut health              # 🩺  数据库与数据源检查
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 163 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 171 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -185,8 +186,8 @@ python3 -m unittest discover -s scripts/tests     # Ran 163 tests ... OK
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
 | `test_sync.py` | 61 | 转录解析、工具归类、增量同步与 `--full` 重建 |
-| `test_tui.py` | 45 | tab 接线与报告结构，走 Textual 自带的 `run_test` |
-| `test_usage.py` | 47 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）与 token 汇总 |
+| `test_tui.py` | 51 | tab 接线与报告结构，走 Textual 自带的 `run_test` |
+| `test_usage.py` | 50 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）、token 汇总与 Dashboard KPI |
 | `test_readme_bilingual.py` | 3 | 两份 README 始终是「一份文档、两种语言」 |
 | `test_record_coverage.py` | 6 | 每个被覆盖的提交都记录进 `CHANGELOG.md` |
 
@@ -199,8 +200,8 @@ python3 -m unittest discover -s scripts/tests     # Ran 163 tests ... OK
 | `scripts/cbut_db.py` | SQLite 结构，以及各入口共用的查询辅助 |
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
-| `scripts/cbut-tui.py` | 七个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 162 个用例 |
+| `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
+| `scripts/tests/` | 上面那 171 个用例 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
 

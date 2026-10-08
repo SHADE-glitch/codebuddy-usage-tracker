@@ -5,7 +5,7 @@ Guidance for AI coding agents working in this repository.
 ## What this is
 
 A **passive** usage tracker for CodeBuddy Code: it parses the logs CodeBuddy already writes and
-builds a local SQLite index, then shows it in a seven-tab Textual TUI (plus a headless `cbut stats`
+builds a local SQLite index, then shows it in an eight-tab Textual TUI (plus a headless `cbut stats`
 CLI). Three layers, in dependency order:
 
 1. `scripts/cbut-sync.py` — the **only writer**. Parses `~/.codebuddy/projects/**/*.jsonl` and
