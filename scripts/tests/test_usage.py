@@ -6,8 +6,8 @@ Run:  python3 -m unittest discover -s scripts/tests
 import sqlite3
 import sys
 import tempfile
-import time
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1]
@@ -40,38 +40,56 @@ def make_db(path, rows):
 class WindowTest(unittest.TestCase):
     NOW = 1_000_000_000_000
 
-    def test_24h_is_now_minus_24h(self):
-        start, end = db.window_bounds("24h", self.NOW)
-        self.assertEqual(end, self.NOW)
-        self.assertEqual(start, self.NOW - 24 * HOUR)
+    def _midnight(self, ms):
+        return datetime.fromtimestamp(ms / 1000).replace(
+            hour=0, minute=0, second=0, microsecond=0)
 
-    def test_48h_and_72h(self):
-        self.assertEqual(db.window_bounds("48h", self.NOW)[0], self.NOW - 48 * HOUR)
-        self.assertEqual(db.window_bounds("72h", self.NOW)[0], self.NOW - 72 * HOUR)
+    def _day_start(self, days_back):
+        m = self._midnight(self.NOW) - timedelta(days=days_back)
+        return int(m.timestamp() * 1000)
+
+    def test_1d_is_today_midnight_to_now(self):
+        # Windows are whole local calendar days ending at ``now``: "1d" is
+        # today, from local midnight (not "now minus 24 hours").
+        start, end = db.window_bounds("1d", self.NOW)
+        self.assertEqual(end, self.NOW)
+        self.assertEqual(start, self._day_start(0))
+
+    def test_2d_and_3d_span_whole_days(self):
+        self.assertEqual(db.window_bounds("2d", self.NOW)[0], self._day_start(1))
+        self.assertEqual(db.window_bounds("3d", self.NOW)[0], self._day_start(2))
 
     def test_7d_and_30d(self):
-        self.assertEqual(db.window_bounds("7d", self.NOW)[0], self.NOW - 168 * HOUR)
-        self.assertEqual(db.window_bounds("30d", self.NOW)[0], self.NOW - 720 * HOUR)
+        self.assertEqual(db.window_bounds("7d", self.NOW)[0], self._day_start(6))
+        self.assertEqual(db.window_bounds("30d", self.NOW)[0], self._day_start(29))
 
     def test_all_time_has_no_lower_bound(self):
         start, end = db.window_bounds("all", self.NOW)
         self.assertIsNone(start)
         self.assertEqual(end, self.NOW)
 
-    def test_start_is_derived_from_now_not_natural_day_or_startup(self):
-        # Exactly now-hours back proves neither a natural-day boundary nor the
-        # process start time is used.
-        start, _ = db.window_bounds("24h", self.NOW)
-        self.assertEqual(self.NOW - start, 24 * HOUR)
-        # a different "now" yields a different start (no cached/fixed range)
-        self.assertNotEqual(db.window_bounds("24h", self.NOW + 5 * HOUR)[0], start)
+    def test_start_is_a_natural_day_boundary_not_now_minus_hours(self):
+        # A local 00:00:00 boundary proves the window is calendar-day aligned,
+        # not derived from "now minus N hours".
+        start, _ = db.window_bounds("1d", self.NOW)
+        d = datetime.fromtimestamp(start / 1000)
+        self.assertEqual((d.hour, d.minute, d.second, d.microsecond),
+                         (0, 0, 0, 0))
+        self.assertNotEqual(start, self.NOW - 24 * HOUR)
+        # a later "now" on the same day keeps the same lower bound (fixed day)
+        self.assertEqual(db.window_bounds("1d", self.NOW + 1 * HOUR)[0], start)
 
 
 class QueryTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.p = Path(self.tmp.name) / "u.db"
-        self.now = int(time.time() * 1000)
+        # Noon today (local) so a "now - 1h" row is unambiguously inside the
+        # calendar-day window and a "now - 100h" row unambiguously outside —
+        # regardless of the hour the suite runs at.
+        noon = datetime.now().replace(hour=12, minute=0, second=0,
+                                      microsecond=0)
+        self.now = int(noon.timestamp() * 1000)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -82,8 +100,8 @@ class QueryTest(unittest.TestCase):
     def _all(self):
         return db.window_bounds("all", self.now)
 
-    def _24h(self):
-        return db.window_bounds("24h", self.now)
+    def _today(self):
+        return db.window_bounds("1d", self.now)
 
     def test_summary_only_counts_window(self):
         make_db(self.p, [
@@ -91,7 +109,7 @@ class QueryTest(unittest.TestCase):
             ("out", "m", 20, 4, 0, 0, 0, self.now - 100 * HOUR, 1),
         ])
         conn = self._conn()
-        s = db.q_usage_summary(conn, *self._24h())
+        s = db.q_usage_summary(conn, *self._today())
         conn.close()
         self.assertEqual(s["requests"], 1)
         self.assertEqual(s["with_usage"], 1)
@@ -196,7 +214,7 @@ class QueryTest(unittest.TestCase):
             ("b", "m", 5, 5, 0, 0, 0, self.now - 1 * HOUR, 1),
         ])
         conn = self._conn()
-        s = db.q_usage_summary(conn, *self._24h())
+        s = db.q_usage_summary(conn, *self._today())
         conn.close()
         self.assertEqual(s["total_tokens"], 999 + 10)   # 999 + (5+5)
         self.assertEqual(s["total_tokens_source"], "mixed")
@@ -207,7 +225,7 @@ class QueryTest(unittest.TestCase):
             ("b", "m", 3, 3, 0, 0, 0, self.now - 1 * HOUR, 1, 6),
         ])
         conn = self._conn()
-        s = db.q_usage_summary(conn, *self._24h())
+        s = db.q_usage_summary(conn, *self._today())
         conn.close()
         self.assertEqual(s["total_tokens"], 18)
         self.assertEqual(s["total_tokens_source"], "provider")
@@ -215,7 +233,7 @@ class QueryTest(unittest.TestCase):
     def test_summary_source_derived_when_none_provider(self):
         make_db(self.p, [("a", "m", 10, 2, 0, 0, 0, self.now - 1 * HOUR, 1)])
         conn = self._conn()
-        s = db.q_usage_summary(conn, *self._24h())
+        s = db.q_usage_summary(conn, *self._today())
         conn.close()
         self.assertEqual(s["total_tokens_source"], "derived")
 
@@ -226,7 +244,7 @@ class QueryTest(unittest.TestCase):
             ("a", "m", 100, 20, 80, 15, 5, self.now - 1 * HOUR, 1),
         ])
         conn = self._conn()
-        s = db.q_usage_summary(conn, *self._24h())
+        s = db.q_usage_summary(conn, *self._today())
         conn.close()
         self.assertEqual(s["total_tokens"], 120)        # API total (derived)
         self.assertEqual(s["usage_total_tokens"], 200)  # 100 + 20 + 80
@@ -239,7 +257,7 @@ class QueryTest(unittest.TestCase):
             ("b", "m", 5, 5, None, None, None, self.now - 1 * HOUR, 1),
         ])
         conn = self._conn()
-        s = db.q_usage_summary(conn, *self._24h())
+        s = db.q_usage_summary(conn, *self._today())
         conn.close()
         self.assertEqual(s["usage_total_tokens"], 200 + 10)
 
@@ -247,7 +265,7 @@ class QueryTest(unittest.TestCase):
         make_db(self.p, [("a", "m", None, None, 80, 15, 5,
                           self.now - 1 * HOUR, 0)])
         conn = self._conn()
-        s = db.q_usage_summary(conn, *self._24h())
+        s = db.q_usage_summary(conn, *self._today())
         conn.close()
         self.assertIsNone(s["usage_total_tokens"])
 
@@ -263,7 +281,7 @@ class QueryTest(unittest.TestCase):
     def test_summary_source_null_when_no_rows(self):
         make_db(self.p, [("a", "m", 1, 1, 0, 0, 0, self.now - 100 * HOUR, 1)])
         conn = self._conn()
-        s = db.q_usage_summary(conn, *self._24h())
+        s = db.q_usage_summary(conn, *self._today())
         conn.close()
         self.assertIsNone(s["total_tokens"])
         self.assertIsNone(s["total_tokens_source"])
@@ -276,8 +294,8 @@ class QueryTest(unittest.TestCase):
             ("der", "m", 4, 6, 0, 0, 0, self.now - 1 * HOUR, 1),   # no provider
         ])
         conn = self._conn()
-        s = db.q_usage_summary(conn, *self._24h())
-        m = {r["model"]: r for r in db.q_usage_model_stats(conn, *self._24h())}
+        s = db.q_usage_summary(conn, *self._today())
+        m = {r["model"]: r for r in db.q_usage_model_stats(conn, *self._today())}
         conn.close()
         self.assertEqual(s["total_tokens"], 110)     # 100 + (4+6)
         self.assertEqual(m["m"]["total_tokens"], 110)
@@ -316,8 +334,8 @@ class QueryTest(unittest.TestCase):
             ("a", "m", 10, 20, 999999, 888888, 7, self.now - 1 * HOUR, 1, 30),
         ])
         conn = self._conn()
-        s = db.q_usage_summary(conn, *self._24h())
-        r = db.q_usage_request_logs(conn, *self._24h())[0]
+        s = db.q_usage_summary(conn, *self._today())
+        r = db.q_usage_request_logs(conn, *self._today())[0]
         conn.close()
         self.assertEqual(s["total_tokens"], 30)
         self.assertEqual(r["total_tokens"], 30)
@@ -625,17 +643,18 @@ class ViewGroupByTest(unittest.TestCase):
         self.assertNotIn("plugin", cols)        # the source plugin is gone
 
     def test_agents_merge_by_name(self):
-        self.conn.execute("INSERT INTO agent_usage(call_id, agent_type, kind, ts)"
-                          " VALUES('a1','shared','active',1)")
-        self.conn.execute("INSERT INTO agent_usage(call_id, agent_type, kind, ts)"
-                          " VALUES('a2','shared','internal',2)")
+        self.conn.execute("INSERT INTO agent_usage(call_id, agent_type, ts)"
+                          " VALUES('a1','shared',1)")
+        self.conn.execute("INSERT INTO agent_usage(call_id, agent_type, ts)"
+                          " VALUES('a2','shared',2)")
         self.conn.commit()
         rows = self.conn.execute(
-            "SELECT agent_type, kind, calls FROM v_agents"
+            "SELECT agent_type, calls FROM v_agents"
             " WHERE agent_type='shared'").fetchall()
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 1)          # one merged row, not two
         self.assertEqual(rows[0]["calls"], 2)
-        self.assertEqual(rows[0]["kind"], "internal")   # MAX(kind), deterministic
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(v_agents)")}
+        self.assertNotIn("kind", cols)          # kind carries no signal
 
     def test_plugins_merge_by_name_and_drop_marketplace(self):
         self.conn.execute(

@@ -136,6 +136,18 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    async def _usage_all_time(self, app, pilot):
+        """Open the Usage tab and widen it to all-time.
+
+        Usage defaults to Today (a calendar-day window), so a fixture row at
+        "now - 1h" would fall outside it when the suite runs just after local
+        midnight. All-time removes that time-of-day dependency.
+        """
+        app.query_one(tui.TabbedContent).active = "tab-usage"
+        await pilot.pause()
+        app.query_one("#range", tui.Select).value = "all"
+        await pilot.pause()
+
     # 1. seven tabs present (Tokens + the new Usage page)
     async def test_seven_tabs_present(self):
         make_db(self.db_path, [])
@@ -183,9 +195,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             t = app.query_one("#t-tokens", tui.DataTable)
             row = all_rows(t)[0]
             self.assertEqual(row[0], "m")
-            # Input / Output / API Total / Usage Total / Cache columns are "-",
-            # never "0"
-            for i in range(3, 10):
+            self.assertEqual(row[1], "-")    # Usage Total (no API parts)
+            self.assertEqual(row[2], "1")    # Requests (the row exists)
+            # Input / Output / API Total / Cache columns are "-", never "0"
+            for i in range(3, 9):
                 self.assertEqual(row[i], "-", f"col {i} should be '-'")
 
     # 5. prompt / completion / total / cache shown in separate columns
@@ -199,13 +212,16 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             t = app.query_one("#t-tokens", tui.DataTable)
             row = all_rows(t)[0]
+            # Order: Model · Usage Total · Requests · Input · Output ·
+            #        API Total · Cache hit · Cache miss · Cache write
+            self.assertEqual(row[1], "37")   # Usage Total = 10 + 20 + 7
+            self.assertEqual(row[2], "1")    # Requests
             self.assertEqual(row[3], "10")   # Input  = prompt_tokens
             self.assertEqual(row[4], "20")   # Output = completion_tokens
             self.assertEqual(row[5], "30")   # API Total = Input + Output
-            self.assertEqual(row[6], "37")   # Usage Total = 10 + 20 + 7
-            self.assertEqual(row[7], "7")    # Cache hit
-            self.assertEqual(row[8], "8")    # Cache miss
-            self.assertEqual(row[9], "9")    # Cache write
+            self.assertEqual(row[6], "7")    # Cache hit
+            self.assertEqual(row[7], "8")    # Cache miss
+            self.assertEqual(row[8], "9")    # Cache write
 
     # 5b. explicit 0 is shown as "0", absent stays "-"
     async def test_zero_vs_null_distinction(self):
@@ -219,12 +235,12 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             t = app.query_one("#t-tokens", tui.DataTable)
             rows = {r[0]: r for r in all_rows(t)}
-            self.assertEqual(rows["zeroed"][7], "0")     # real 0
+            self.assertEqual(rows["zeroed"][6], "0")     # real 0
+            self.assertEqual(rows["zeroed"][7], "0")
             self.assertEqual(rows["zeroed"][8], "0")
-            self.assertEqual(rows["zeroed"][9], "0")
-            self.assertEqual(rows["nulled"][7], "-")     # NULL, not 0
+            self.assertEqual(rows["nulled"][6], "-")     # NULL, not 0
+            self.assertEqual(rows["nulled"][7], "-")
             self.assertEqual(rows["nulled"][8], "-")
-            self.assertEqual(rows["nulled"][9], "-")
 
     # 5c. Total is not inflated by cache hit/miss
     async def test_total_excludes_cache(self):
@@ -238,9 +254,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             t = app.query_one("#t-tokens", tui.DataTable)
             row = all_rows(t)[0]
             self.assertEqual(row[5], "30")           # API Total, not +cache
-            self.assertEqual(row[7], "999,999")      # cache hit still shown
+            self.assertEqual(row[6], "999,999")      # cache hit still shown
 
-    # 5d. Tokens tab has all ten expected columns
+    # 5d. Tokens tab has exactly the expected columns
     async def test_tokens_tab_columns(self):
         make_db(self.db_path, [])
         app = TrackerApp(str(self.db_path))
@@ -248,10 +264,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             t = app.query_one("#t-tokens", tui.DataTable)
             labels = [str(c.label) for c in t.columns.values()]
-            for want in ("Model", "Requests", "With usage", "Input", "Output",
-                         "API Total", "Usage Total", "Cache hit", "Cache miss",
-                         "Cache write", "Coverage"):
-                self.assertIn(want, labels)
+            self.assertEqual(labels, ["Model", "Usage Total", "Requests",
+                                      "Input", "Output", "API Total",
+                                      "Cache hit", "Cache miss", "Cache write"])
 
     # 6. Tab cycling wraps around, no AttributeError (the old crash)
     async def test_tab_cycle_wraps(self):
@@ -455,16 +470,16 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
-            # Usage keeps its own range (default 24h); the Select drives it only
-            # while the Usage tab is active.
+            # Usage keeps its own range (default Today); the Select drives it
+            # only while the Usage tab is active.
             app.query_one(tui.TabbedContent).active = "tab-usage"
             await pilot.pause()
-            self.assertIn("Last 24 hours", str(app.query_one("#usage-window").content))
+            self.assertIn("Today", str(app.query_one("#usage-window").content))
             app.query_one("#range", tui.Select).value = "all"
             await pilot.pause()
             self.assertIn("All time", str(app.query_one("#usage-window").content))
 
-    # 17. Request Logs: Total = in + out, cache shown separately
+    # 17. Request Logs: Usage Total first after Model; cache hit rate last
     async def test_usage_logs_total_excludes_cache(self):
         now = int(time.time() * 1000)
         make_db(self.db_path, [
@@ -473,17 +488,21 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
+            await self._usage_all_time(app, pilot)
             t = app.query_one("#t-usage", tui.DataTable)
             row = all_rows(t)[0]
-            # column order: Time Model In Out API-Total Usage-Total
-            #               Cache-hit Cache-miss Cache-write Usage Source
-            self.assertEqual(row[1], "m")            # model (no provider column)
-            self.assertEqual(row[4], "30")           # API Total, not +cache
-            self.assertEqual(row[5], "1,000,029")    # Usage Total = 10+20+999999
+            # Order: Time · Model · Usage Total · Input · Output · API Total ·
+            #        Cache hit · Cache miss · Cache write · Cache hit rate
+            self.assertEqual(row[1], "m")            # model
+            self.assertEqual(row[2], "1,000,029")    # Usage Total = 10+20+999999
+            self.assertEqual(row[3], "10")           # Input
+            self.assertEqual(row[4], "20")           # Output
+            self.assertEqual(row[5], "30")           # API Total, not +cache
             self.assertEqual(row[6], "999,999")      # Cache hit (read)
             self.assertEqual(row[7], "888,888")      # Cache miss
             self.assertEqual(row[8], "7")            # Cache write (create)
-            self.assertEqual(row[9], "Real")
+            # 999999 / (999999 + 888888 + 7) = 52.9%
+            self.assertEqual(row[9], "52.9%")        # Cache hit rate
 
     # 17b. empty window shows an explicit empty state, never a blank region
     async def test_usage_empty_state(self):
@@ -515,6 +534,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
+            await self._usage_all_time(app, pilot)
             api = str(app.query_one("#sum-total").content)
             usage = str(app.query_one("#sum-usage-total").content)
             self.assertIn("API Total", api)
@@ -555,31 +575,16 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                         "#panel-runtime"):
                 self.assertTrue(app.query_one(pid))
             for wid in ("#sum-requests", "#sum-input", "#sum-total",
-                        "#sum-cache-hit", "#sum-hit-rate", "#sum-total-source",
-                        "#sum-usage-total", "#usage-status"):
+                        "#sum-cache-hit", "#sum-hit-rate", "#sum-usage-total",
+                        "#sum-missing", "#usage-status"):
                 self.assertTrue(app.query_one(wid))
+            # the dropped widgets are gone
+            self.assertEqual(len(app.query("#sum-with-usage")), 0)
+            self.assertEqual(len(app.query("#sum-coverage")), 0)
+            self.assertEqual(len(app.query("#sum-total-source")), 0)
 
-    # 22. #sum-total-source shows provider vs derived
-    async def test_usage_total_source_displayed(self):
-        now = int(time.time() * 1000)
-        p1 = Path(self.tmp.name) / "prov.db"
-        make_db(p1, [("a", "s1", "m", 10, 2, 0, 0, now - 3600_000, 1)],
-                ptotals={"a": 12})
-        app = TrackerApp(str(p1))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            self.assertIn("provider",
-                          str(app.query_one("#sum-total-source").content))
-        p2 = Path(self.tmp.name) / "der.db"
-        make_db(p2, [("b", "s1", "m", 10, 2, 0, 0, now - 3600_000, 1)])
-        app = TrackerApp(str(p2))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            self.assertIn("derived",
-                          str(app.query_one("#sum-total-source").content))
-
-    # 23. Tokens tab Coverage column (col 9) + thousands-separated counts
-    async def test_tokens_coverage_value(self):
+    # 23. Tokens tab: Usage Total + Requests columns (no Coverage)
+    async def test_tokens_usage_total_and_requests(self):
         now = int(time.time() * 1000)
         make_db(self.db_path, [
             ("a", "s1", "m", 1, 1, 0, 0, now - 3600_000, 1),
@@ -590,9 +595,8 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             t = app.query_one("#t-tokens", tui.DataTable)
             row = all_rows(t)[0]
-            self.assertEqual(row[1], "2")        # Requests
-            self.assertEqual(row[2], "1")        # With usage
-            self.assertEqual(row[10], "50.0%")   # Coverage
+            self.assertEqual(row[1], "2")        # Usage Total = 1 + 1
+            self.assertEqual(row[2], "2")        # Requests
 
     # 24. hidden tabs are not re-queried by the 5s refresh
     async def test_hidden_tab_not_requeried(self):
@@ -717,8 +721,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.query_one(tui.TabbedContent).active = "tab-usage"
-            await pilot.pause()
+            await self._usage_all_time(app, pilot)
             box = app.query_one("#usage-box")
             tbl = app.query_one("#t-usage", tui.DataTable)
             for (w, h) in ((80, 24), (100, 30), (120, 40), (140, 45)):
@@ -828,17 +831,20 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         make_db(self.db_path, [])
         conn = db.open_db(self.db_path)
         db.ensure_schema(conn)
-        conn.execute("INSERT INTO agent_usage(call_id, agent_type, kind, ts)"
-                     " VALUES('a1','myagent',NULL,?)", (now - 3600_000,))
+        conn.execute(
+            "INSERT INTO tool_calls(call_id, session_id, project, tool_name,"
+            " category, ts, duration_ms, status)"
+            " VALUES('c1','s1','/p','toolX','builtin',?,NULL,'completed')",
+            (now - 3600_000,))
         conn.commit()
         conn.close()
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
-            t = app.query_one("#t-agents", tui.DataTable)
+            t = app.query_one("#t-tools", tui.DataTable)
             row = all_rows(t)[0]
-            self.assertEqual(row[0], "myagent")
-            self.assertEqual(row[1], "-")   # NULL kind, not ""
+            self.assertEqual(row[0], "toolX")
+            self.assertEqual(row[4], "-")   # NULL avg, not ""
 
     # 36. cursor is restored by ROW KEY, so a re-sort keeps the same entity
     async def test_cursor_restored_by_row_key(self):
@@ -910,8 +916,8 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.tab_range["tab-skills"], "7d")
             tc.active = "tab-usage"                  # Usage keeps its own default
             await pilot.pause()
-            self.assertEqual(sel.value, "24h")
-            self.assertEqual(app.tab_range["tab-usage"], "24h")
+            self.assertEqual(sel.value, "1d")
+            self.assertEqual(app.tab_range["tab-usage"], "1d")
             tc.active = "tab-tools"                  # Tools remembers its widening
             await pilot.pause()
             self.assertEqual(sel.value, "all")
