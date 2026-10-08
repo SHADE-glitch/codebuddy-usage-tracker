@@ -120,9 +120,9 @@ def cmd_stats(conn, args):
     print()
 
     print("Skills")
-    rows = _rows(db.q_skills(conn), ["skill", "plugin", "calls", "last_used"])
-    print(table(["skill", "plugin", "calls", "last used"],
-                [[r[0], r[1] or "-", r[2], ts(r[3])] for r in rows]) or "  (none)")
+    rows = _rows(db.q_skills(conn), ["skill", "calls", "last_used"])
+    print(table(["skill", "calls", "last used"],
+                [[r[0], r[1], ts(r[2])] for r in rows]) or "  (none)")
     print()
 
     print("Agents")
@@ -131,10 +131,10 @@ def cmd_stats(conn, args):
                 [[r[0], r[1], r[2], ts(r[3])] for r in rows]) or "  (none)")
     print()
 
-    print("Plugins (installed, by attributed usage)")
-    rows = _rows(db.q_plugins(conn), ["plugin", "version", "uses", "skills", "agents", "commands"])
-    print(table(["plugin", "version", "uses", "skills", "agents", "cmds"],
-                [[r[0], r[1] or "-", r[2], r[3], r[4], r[5]] for r in rows]))
+    print("Plugins (installed ∪ used, by attributed usage)")
+    rows = _rows(db.q_plugins(conn), ["plugin", "uses", "skills", "agents", "commands"])
+    print(table(["plugin", "uses", "skills", "agents", "cmds"],
+                [[r[0], r[1], r[2], r[3], r[4]] for r in rows]))
     print()
 
     print("MCP")
@@ -155,9 +155,9 @@ def cmd_tools(conn, args):
 
 def cmd_skills(conn, args):
     rows = _rows(db.q_skills(conn, args.limit),
-                 ["skill", "plugin", "calls", "completed", "last_used", "projects"])
-    print(table(["skill", "plugin", "calls", "ok", "last used", "proj"],
-                [[r[0], r[1] or "-", r[2], r[3], ts(r[4]), r[5]] for r in rows]) or "(none)")
+                 ["skill", "calls", "completed", "last_used", "projects"])
+    print(table(["skill", "calls", "ok", "last used", "proj"],
+                [[r[0], r[1], r[2], ts(r[3]), r[4]] for r in rows]) or "(none)")
 
 
 def cmd_agents(conn, args):
@@ -241,9 +241,9 @@ def cmd_models(conn, args):
 
 def cmd_plugins(conn, args):
     rows = _rows(db.q_plugins(conn),
-                 ["plugin", "version", "uses", "skills", "agents", "commands", "last_used"])
-    print(table(["plugin", "version", "uses", "skills", "agents", "cmds", "last used"],
-                [[r[0], r[1] or "-", r[2], r[3], r[4], r[5], ts(r[6])] for r in rows]))
+                 ["plugin", "uses", "skills", "agents", "commands", "last_used"])
+    print(table(["plugin", "uses", "skills", "agents", "cmds", "last used"],
+                [[r[0], r[1], r[2], r[3], r[4], ts(r[5])] for r in rows]))
 
 
 def cmd_show(conn, args):

@@ -66,13 +66,13 @@ def local_time(ms):
 RANGE_OPTIONS = [(db.USAGE_RANGE_LABELS[k], k)
                  for k in ("24h", "48h", "72h", "7d", "30d", "all")]
 # The Usage page is a single Request Logs list. Column order follows the
-# requested cc-switch-style request record: time · provider · model · input ·
-# output · API total · usage total · cache hit/miss/write · usage · source.
-# cc-switch's cost / duration / HTTP-status columns have no transcript source,
-# so they are deliberately absent rather than estimated. Time/Provider/Model/
-# Input/Output/Total/Usage are the priority columns (leftmost); the cache
-# detail is reachable by horizontal scroll and by the row detail screen.
-USAGE_COLUMNS = ("Time", "Provider", "Model", "Input", "Output",
+# requested cc-switch-style request record: time · model · input · output ·
+# API total · usage total · cache hit/miss/write · usage · source.
+# cc-switch's provider / cost / duration / HTTP-status columns have no
+# transcript source, so they are deliberately absent rather than estimated.
+# Time/Model/Input/Output/Total/Usage are the priority columns (leftmost); the
+# cache detail is reachable by horizontal scroll and by the row detail screen.
+USAGE_COLUMNS = ("Time", "Model", "Input", "Output",
                  "API Total", "Usage Total", "Cache hit", "Cache miss",
                  "Cache write", "Usage", "Source")
 
@@ -107,7 +107,7 @@ if HAVE_TEXTUAL:
         def compose(self) -> ComposeResult:
             yield Static(self._title, id="topbar-title")
             if self._with_range:
-                yield Select(RANGE_OPTIONS, value="24h", allow_blank=False,
+                yield Select(RANGE_OPTIONS, value="7d", allow_blank=False,
                              id="range")
 
     class HistoryScreen(Screen):
@@ -239,7 +239,10 @@ if HAVE_TEXTUAL:
             self._sync_running = False
             self._sync_pending = False
             self.sync_mod = None
-            # Usage page state (a single Request Logs list; range only).
+            # Range state. The entity tabs share one window (default 7d); the
+            # Usage page keeps its own (default 24h). The Plugins tab has no
+            # window at all — the plugin list is all-time.
+            self.entity_range = "7d"
             self.usage_range = "24h"
             self._last_refresh = None      # epoch ms
             self._last_sync = None         # epoch ms
@@ -306,9 +309,9 @@ if HAVE_TEXTUAL:
         def on_mount(self) -> None:
             for tid, cols in (
                 ("t-tools", ("tool", "calls", "ok", "fail", "avg", "last used")),
-                ("t-skills", ("skill", "plugin", "calls", "ok", "last used")),
+                ("t-skills", ("skill", "calls", "ok", "last used")),
                 ("t-agents", ("agent", "kind", "calls", "last used")),
-                ("t-plugins", ("plugin", "version", "uses", "skills", "agents", "cmds")),
+                ("t-plugins", ("plugin", "uses", "skills", "agents", "cmds")),
                 ("t-mcp", ("server", "tool", "calls", "ok", "last used")),
             ):
                 t = self.query_one(f"#{tid}", DataTable)
@@ -410,8 +413,8 @@ if HAVE_TEXTUAL:
         def _fill_skills(self, conn, start=None, end=None) -> None:
             self._fill_or_empty(
                 self.query_one("#t-skills", DataTable),
-                [[r["skill"], r["plugin"] or "-", f"{r['calls']:,}",
-                  f"{r['completed']:,}", ts(r["last_used"])]
+                [[r["skill"], f"{r['calls']:,}", f"{r['completed']:,}",
+                  ts(r["last_used"])]
                  for r in db.q_skills(conn, start_ts=start, end_ts=end)],
                 "No skills used yet", key_kind="skill")
 
@@ -424,11 +427,14 @@ if HAVE_TEXTUAL:
                 "No agents used yet", key_kind="agent")
 
         def _fill_plugins(self, conn, start=None, end=None) -> None:
+            # No time window: the plugin list is all-time (the inventory carries
+            # no timestamps), so start/end are accepted for the shared fill
+            # signature but ignored. Name is the key; version is not shown.
             self._fill_or_empty(
                 self.query_one("#t-plugins", DataTable),
-                [[r["plugin"], r["version"] or "-", f"{r['uses']:,}",
-                  f"{r['skills']:,}", f"{r['agents']:,}", f"{r['commands']:,}"]
-                 for r in db.q_plugins(conn, start_ts=start, end_ts=end)],
+                [[r["plugin"], f"{r['uses']:,}", f"{r['skills']:,}",
+                  f"{r['agents']:,}", f"{r['commands']:,}"]
+                 for r in db.q_plugins(conn)],
                 "No plugins installed")
 
         def _fill_mcp(self, conn, start=None, end=None) -> None:
@@ -474,11 +480,11 @@ if HAVE_TEXTUAL:
             if own:
                 conn = db.open_db(self.db_path, readonly=True)
             try:
-                start, end = self._bounds()
+                start, end = self._entity_bounds()
                 self._fill_tools(conn, start, end)
                 self._fill_skills(conn, start, end)
                 self._fill_agents(conn, start, end)
-                self._fill_plugins(conn, start, end)
+                self._fill_plugins(conn)          # all-time, no window
                 self._fill_mcp(conn, start, end)
                 self._fill_tokens(conn, start, end)
                 o = db.overview(conn)          # status bar stays all-time
@@ -519,7 +525,8 @@ if HAVE_TEXTUAL:
                 else:
                     fn = self._PANE_FILL.get(pane)
                     if fn:
-                        start, end = self._bounds()
+                        # Entity tabs share entity_range; Plugins ignores it.
+                        start, end = self._entity_bounds()
                         getattr(self, fn)(conn, start, end)
             finally:
                 if own:
@@ -528,8 +535,9 @@ if HAVE_TEXTUAL:
         def on_tabbed_content_tab_activated(
                 self, event: TabbedContent.TabActivated) -> None:
             # Populate the tab the user just switched to (hidden tabs are not
-            # polled by the 5s timer).
+            # polled by the 5s timer) and point the range Select at its window.
             if self._usage_ready:
+                self._sync_range_widget()
                 self._refresh_active_tab()
 
         # --- Usage Statistics page -----------------------------------------
@@ -581,6 +589,32 @@ if HAVE_TEXTUAL:
             time (see ``_refresh_usage``), so a long-running app does not drift.
             """
             return db.window_bounds(self.usage_range, int(time.time() * 1000))
+
+        def _entity_bounds(self):
+            """The entity tabs' shared window (``self.entity_range``), from now."""
+            return db.window_bounds(self.entity_range, int(time.time() * 1000))
+
+        def _sync_range_widget(self) -> None:
+            """Point the shared range Select at the active tab's window.
+
+            The entity tabs share ``entity_range`` and the Usage page keeps its
+            own ``usage_range``; the Plugins tab has no window, so the Select is
+            hidden there. Setting ``Select.value`` posts a ``Changed`` message,
+            which ``on_select_changed`` ignores when it already matches the
+            active tab's range (so this never re-triggers a refresh loop).
+            """
+            try:
+                sel = self.query_one("#range", Select)
+            except Exception:
+                return
+            pane = self.query_one(TabbedContent).active
+            if pane == "tab-plugins":
+                sel.display = False
+                return
+            sel.display = True
+            value = self.usage_range if pane == "tab-usage" else self.entity_range
+            if sel.value != value:
+                sel.value = value
 
         def _render_usage_window(self) -> None:
             start, end = self._bounds()
@@ -682,7 +716,7 @@ if HAVE_TEXTUAL:
                     "No requests in this window — widen the time range above."
                 )
             out = [[
-                local_time(r["ts"]), db.UNKNOWN_PROVIDER, r["model"] or "-",
+                local_time(r["ts"]), r["model"] or "-",
                 fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
                 fmt_n(r["total_tokens"]), fmt_n(r["usage_total_tokens"]),
                 fmt_n(r["prompt_cache_hit_tokens"]),
@@ -695,8 +729,18 @@ if HAVE_TEXTUAL:
         def on_select_changed(self, event: Select.Changed) -> None:
             if event.select.id != "range":
                 return
-            self.usage_range = event.value
-            self._render_usage_window()   # keep the Usage Window panel live
+            pane = self.query_one(TabbedContent).active
+            if pane == "tab-plugins":
+                return                    # Plugins has no window
+            if pane == "tab-usage":
+                if event.value == self.usage_range:
+                    return                # programmatic sync, not a user change
+                self.usage_range = event.value
+                self._render_usage_window()   # keep the Usage Window panel live
+            else:
+                if event.value == self.entity_range:
+                    return                # programmatic sync, not a user change
+                self.entity_range = event.value
             self._refresh_active_tab()    # re-query only the visible tab
 
         # --- row select: route to detail screens ---------------------------

@@ -187,36 +187,6 @@ class QueryTest(unittest.TestCase):
         conn.close()
         self.assertEqual([r["model"] for r in rows], ["alpha", "zeta"])
 
-    def test_provider_stats_is_single_unknown_row(self):
-        make_db(self.p, [
-            ("a", "deepseek-v4.1-flash", 1, 1, 0, 0, 0, self.now - 1 * HOUR, 1),
-            ("b", "gpt-5.6-luna", 1, 1, 0, 0, 0, self.now - 1 * HOUR, 1),
-        ])
-        conn = self._conn()
-        rows = db.q_usage_provider_stats(conn, *self._all())
-        conn.close()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["provider"], db.UNKNOWN_PROVIDER)
-        self.assertEqual(rows[0]["models"], 2)
-
-    def test_provider_label_independent_of_model_name(self):
-        # No matter the model, the provider is never inferred.
-        make_db(self.p, [
-            ("a", "claude-opus", 1, 1, 0, 0, 0, self.now - 1 * HOUR, 1),
-            ("b", "国内版-xyz", 1, 1, 0, 0, 0, self.now - 1 * HOUR, 1),
-        ])
-        conn = self._conn()
-        rows = db.q_usage_provider_stats(conn, *self._all())
-        conn.close()
-        self.assertEqual({r["provider"] for r in rows}, {db.UNKNOWN_PROVIDER})
-
-    def test_provider_stats_empty_window_is_empty(self):
-        make_db(self.p, [("a", "m", 1, 1, 0, 0, 0, self.now - 100 * HOUR, 1)])
-        conn = self._conn()
-        rows = db.q_usage_provider_stats(conn, *self._24h())
-        conn.close()
-        self.assertEqual(rows, [])
-
     # -- provider_total_tokens precedence + provenance --------------------
 
     def test_summary_total_prefers_provider_and_is_mixed_source(self):
@@ -340,14 +310,6 @@ class QueryTest(unittest.TestCase):
         self.assertEqual(rows[0]["total_tokens"], 77)
         self.assertEqual(rows[0]["total_tokens_source"], "provider")
 
-    def test_provider_stats_total_prefers_provider(self):
-        make_db(self.p, [("a", "m", 1, 1, 0, 0, 0, self.now - 1 * HOUR, 1, 42)])
-        conn = self._conn()
-        rows = db.q_usage_provider_stats(conn, *self._all())
-        conn.close()
-        self.assertEqual(rows[0]["total_tokens"], 42)
-        self.assertEqual(rows[0]["total_tokens_source"], "provider")
-
     def test_cache_never_in_total_with_provider(self):
         # provider total 30 while cache hit/miss are huge -> Total stays 30
         make_db(self.p, [
@@ -401,9 +363,11 @@ class QueryTest(unittest.TestCase):
 class WindowedQueryTest(unittest.TestCase):
     """The non-Usage ``q_*`` queries accept an optional time window.
 
-    ``start_ts``/``end_ts`` are both None by default (= all time, no WHERE),
-    which is what the headless CLI and the pre-existing tests rely on. A window
-    is half-open: ``start_ts <= ts < end_ts``.
+    ``start_ts``/``end_ts`` are both None by default (= all time), which is what
+    the headless CLI relies on. A window is half-open: ``start_ts <= ts <
+    end_ts``. Every query is keyed by NAME and unions "ever used" with the
+    static inventory, so a window only shrinks the *counts* — an entity whose
+    calls all fall outside the window is still listed, with a zero count.
     """
 
     NOW = 2_000_000_000_000
@@ -473,11 +437,15 @@ class WindowedQueryTest(unittest.TestCase):
         self._tool("a", "Recent", self.NOW - HOUR)
         self._tool("b", "Old", self.NOW - 100 * HOUR)
         self.conn.commit()
-        recent = db.q_tools(self.conn, start_ts=self._recent(), end_ts=self.NOW)
-        self.assertEqual([r["tool_name"] for r in recent], ["Recent"])
-        alltime = db.q_tools(self.conn)          # both bounds None = all time
-        self.assertEqual(sorted(r["tool_name"] for r in alltime),
-                         ["Old", "Recent"])
+        # Name is the key, so the list stays full under a window; only the
+        # count is windowed ('Old' is listed with 0 in-window calls).
+        recent = {r["tool_name"]: r for r in db.q_tools(
+            self.conn, start_ts=self._recent(), end_ts=self.NOW)}
+        self.assertEqual(set(recent), {"Recent", "Old"})
+        self.assertEqual(recent["Recent"]["calls"], 1)
+        self.assertEqual(recent["Old"]["calls"], 0)
+        alltime = {r["tool_name"]: r for r in db.q_tools(self.conn)}
+        self.assertEqual(alltime["Old"]["calls"], 1)
 
     def test_q_tools_limit_is_second_positional(self):
         # cbut-stats calls q_tools(conn, 10): ``limit`` must stay the second
@@ -497,40 +465,41 @@ class WindowedQueryTest(unittest.TestCase):
         self._mcp("m2", "srv", "old-tool", self.NOW - 100 * HOUR)
         self.conn.commit()
         start, end = self._recent(), self.NOW
-        self.assertEqual(
-            [r["skill"] for r in db.q_skills(self.conn, start_ts=start,
-                                             end_ts=end)],
-            ["recent-skill"])
-        self.assertEqual(
-            [r["agent_type"] for r in db.q_agents(self.conn, start_ts=start,
-                                                  end_ts=end)],
-            ["recent-agent"])
-        self.assertEqual(
-            [r["tool"] for r in db.q_mcp(self.conn, start_ts=start,
-                                         end_ts=end)],
-            ["recent-tool"])
-        # no bounds = all time: both rows of each entity
+        # The list stays full; only the counts are windowed.
+        skills = {r["skill"]: r for r in db.q_skills(
+            self.conn, start_ts=start, end_ts=end)}
+        self.assertEqual(set(skills), {"recent-skill", "old-skill"})
+        self.assertEqual(skills["recent-skill"]["calls"], 1)
+        self.assertEqual(skills["old-skill"]["calls"], 0)
+        agents = {r["agent_type"]: r for r in db.q_agents(
+            self.conn, start_ts=start, end_ts=end)}
+        self.assertEqual(set(agents), {"recent-agent", "old-agent"})
+        self.assertEqual(agents["old-agent"]["calls"], 0)
+        mcp = {(r["server"], r["tool"]): r for r in db.q_mcp(
+            self.conn, start_ts=start, end_ts=end)}
+        self.assertEqual(set(mcp), {("srv", "recent-tool"),
+                                    ("srv", "old-tool")})
+        self.assertEqual(mcp[("srv", "old-tool")]["calls"], 0)
+        # no bounds = all time: every entity keeps its real count
         self.assertEqual(len(db.q_skills(self.conn)), 2)
         self.assertEqual(len(db.q_agents(self.conn)), 2)
         self.assertEqual(len(db.q_mcp(self.conn)), 2)
 
-    # -- q_plugins: full list, windowed uses ------------------------------
+    # -- q_plugins: all-time union keyed by name --------------------------
 
-    def test_q_plugins_window_keeps_unused_and_windows_uses(self):
+    def test_q_plugins_unions_installed_and_used_by_name(self):
         self._plugin("used")
         self._plugin("unused")
-        self._plugin_use("used", "t", self.NOW - HOUR)          # in window
-        self._plugin_use("used", "t2", self.NOW - 100 * HOUR)   # out of window
+        self._plugin_use("used", "t", self.NOW - HOUR)
+        self._plugin_use("used", "t2", self.NOW - 100 * HOUR)
+        # a used-but-not-installed plugin must still appear (history survives)
+        self._plugin_use("ghost", "t3", self.NOW - 5 * HOUR)
         self.conn.commit()
-        rows = {r["plugin"]: r for r in db.q_plugins(
-            self.conn, start_ts=self._recent(), end_ts=self.NOW)}
-        self.assertEqual(set(rows), {"used", "unused"})  # list stays full
-        self.assertEqual(rows["used"]["uses"], 1)        # only in-window use
-        self.assertEqual(rows["unused"]["uses"], 0)      # still listed
-        # all time counts both uses
-        alltime = {r["plugin"]: r for r in db.q_plugins(self.conn)}
-        self.assertEqual(alltime["used"]["uses"], 2)
-        self.assertEqual(alltime["unused"]["uses"], 0)
+        rows = {r["plugin"]: r for r in db.q_plugins(self.conn)}
+        self.assertEqual(set(rows), {"used", "unused", "ghost"})
+        self.assertEqual(rows["used"]["uses"], 2)     # all-time, no window
+        self.assertEqual(rows["unused"]["uses"], 0)   # installed, never used
+        self.assertEqual(rows["ghost"]["uses"], 1)    # used, not installed
 
     # -- q_model_tokens ---------------------------------------------------
 
@@ -627,8 +596,10 @@ class MigrateTest(unittest.TestCase):
 
 
 class ViewGroupByTest(unittest.TestCase):
-    """The v_* views must group by every non-aggregated column, or SQLite
-    silently picks an arbitrary row when two names collide."""
+    """The v_* views merge by NAME (name is the primary key), so the same name
+    appearing under several owners becomes a single row. A bare column that is
+    not functionally dependent on the name would let SQLite pick an arbitrary
+    row, so only name-dependent columns survive."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -640,27 +611,33 @@ class ViewGroupByTest(unittest.TestCase):
         self.conn.close()
         self.tmp.cleanup()
 
-    def test_skills_grouped_by_skill_and_plugin(self):
+    def test_skills_merge_by_name(self):
         self.conn.execute("INSERT INTO skill_usage(call_id, skill, plugin, ts)"
                           " VALUES('c1','shared','pA',1)")
         self.conn.execute("INSERT INTO skill_usage(call_id, skill, plugin, ts)"
                           " VALUES('c2','shared','pB',2)")
         self.conn.commit()
         rows = self.conn.execute(
-            "SELECT plugin FROM v_skills WHERE skill='shared'").fetchall()
-        self.assertEqual({r["plugin"] for r in rows}, {"pA", "pB"})
+            "SELECT skill, calls FROM v_skills WHERE skill='shared'").fetchall()
+        self.assertEqual(len(rows), 1)          # one merged row, not two
+        self.assertEqual(rows[0]["calls"], 2)
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(v_skills)")}
+        self.assertNotIn("plugin", cols)        # the source plugin is gone
 
-    def test_agents_grouped_by_type_and_kind(self):
+    def test_agents_merge_by_name(self):
         self.conn.execute("INSERT INTO agent_usage(call_id, agent_type, kind, ts)"
                           " VALUES('a1','shared','active',1)")
         self.conn.execute("INSERT INTO agent_usage(call_id, agent_type, kind, ts)"
                           " VALUES('a2','shared','internal',2)")
         self.conn.commit()
         rows = self.conn.execute(
-            "SELECT kind FROM v_agents WHERE agent_type='shared'").fetchall()
-        self.assertEqual({r["kind"] for r in rows}, {"active", "internal"})
+            "SELECT agent_type, kind, calls FROM v_agents"
+            " WHERE agent_type='shared'").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["calls"], 2)
+        self.assertEqual(rows[0]["kind"], "internal")   # MAX(kind), deterministic
 
-    def test_plugins_grouped_by_plugin_and_marketplace(self):
+    def test_plugins_merge_by_name_and_drop_marketplace(self):
         self.conn.execute(
             "INSERT INTO plugin_usage(plugin, marketplace, kind, target,"
             " session_id, ts) VALUES('p','m1','skill','t','s',1)")
@@ -668,9 +645,13 @@ class ViewGroupByTest(unittest.TestCase):
             "INSERT INTO plugin_usage(plugin, marketplace, kind, target,"
             " session_id, ts) VALUES('p','m2','skill','t','s',2)")
         self.conn.commit()
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(v_plugins)")}
+        self.assertNotIn("marketplace", cols)
+        self.assertNotIn("version", cols)
         rows = self.conn.execute(
-            "SELECT marketplace FROM v_plugins WHERE plugin='p'").fetchall()
-        self.assertEqual({r["marketplace"] for r in rows}, {"m1", "m2"})
+            "SELECT plugin, uses FROM v_plugins WHERE plugin='p'").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["uses"], 2)
 
 
 class IndexTest(unittest.TestCase):

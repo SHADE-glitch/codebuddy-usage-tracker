@@ -190,69 +190,119 @@ CREATE TABLE IF NOT EXISTS sync_state (
 );
 """
 
-VIEWS_SQL = """
+# --- name sets for the "used ∪ installed" union ---------------------------
+#
+# Every panel lists the union of what is *installed/available* (the static
+# ``inventory``) and what has *ever been used* (the usage tables), keyed by
+# NAME alone. Name is the primary key: a renamed, updated or removed entity
+# keeps its history, a name that appears under several owners merges into one
+# row, and an installed-but-unused entity still shows with a zero count. Under
+# a time window only the counts shrink — the list itself stays full.
+#
+# These CTEs are shared by the v_* views (all-time, for ``cbut export``) and by
+# the q_* functions (which add the optional window in the LEFT JOIN's ON clause
+# so an out-of-window entity still yields a zero-count row).
+_TOOL_NAMES_CTE = (
+    "WITH names AS ("
+    " SELECT name FROM inventory WHERE kind='tool'"
+    " UNION SELECT DISTINCT tool_name FROM tool_calls WHERE tool_name IS NOT NULL)")
+_SKILL_NAMES_CTE = (
+    "WITH names AS ("
+    " SELECT name FROM inventory WHERE kind='skill'"
+    " UNION SELECT DISTINCT skill FROM skill_usage WHERE skill IS NOT NULL)")
+_AGENT_NAMES_CTE = (
+    "WITH names AS ("
+    " SELECT name FROM inventory WHERE kind='agent'"
+    " UNION SELECT DISTINCT agent_type FROM agent_usage WHERE agent_type IS NOT NULL)")
+_PLUGIN_NAMES_CTE = (
+    "WITH names AS ("
+    " SELECT name FROM inventory WHERE kind='plugin'"
+    " UNION SELECT DISTINCT plugin FROM plugin_usage WHERE plugin IS NOT NULL)")
+# MCP is keyed by (server, tool). A configured server with no usage yet is
+# listed once as (server, NULL) so the tab shows configured-but-unused servers
+# without forking a server that already has recorded calls.
+_MCP_NAMES_CTE = (
+    "WITH pairs AS ("
+    " SELECT server, tool FROM mcp_usage"
+    " UNION SELECT name, NULL FROM inventory i WHERE kind='mcp'"
+    "   AND NOT EXISTS (SELECT 1 FROM mcp_usage m WHERE m.server = i.name))")
+
+VIEWS_SQL = f"""
 DROP VIEW IF EXISTS v_tools;
 CREATE VIEW v_tools AS
-SELECT tool_name,
-       COUNT(*)                                            AS calls,
-       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-       SUM(CASE WHEN status = 'incomplete' THEN 1 ELSE 0 END) AS failed,
-       SUM(CASE WHEN status IS NULL THEN 1 ELSE 0 END)     AS pending,
-       CAST(AVG(duration_ms) AS INTEGER)                   AS avg_ms,
-       MAX(ts)                                             AS last_used,
-       MIN(ts)                                             AS first_used,
-       COUNT(DISTINCT project)                             AS projects,
-       COUNT(DISTINCT session_id)                          AS sessions
-FROM tool_calls
-GROUP BY tool_name;
+{_TOOL_NAMES_CTE}
+SELECT n.name AS tool_name,
+       COUNT(c.call_id)                                      AS calls,
+       SUM(CASE WHEN c.status = 'completed' THEN 1 ELSE 0 END) AS completed,
+       SUM(CASE WHEN c.status = 'incomplete' THEN 1 ELSE 0 END) AS failed,
+       SUM(CASE WHEN c.call_id IS NOT NULL AND c.status IS NULL THEN 1 ELSE 0 END) AS pending,
+       CAST(AVG(c.duration_ms) AS INTEGER)                   AS avg_ms,
+       MAX(c.ts)                                             AS last_used,
+       MIN(c.ts)                                             AS first_used,
+       COUNT(DISTINCT c.project)                             AS projects,
+       COUNT(DISTINCT c.session_id)                          AS sessions
+FROM names n
+LEFT JOIN tool_calls c ON c.tool_name = n.name
+GROUP BY n.name;
 
 DROP VIEW IF EXISTS v_skills;
 CREATE VIEW v_skills AS
-SELECT skill,
-       plugin,
-       COUNT(*)                                            AS calls,
-       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-       MAX(ts)                                             AS last_used,
-       MIN(ts)                                             AS first_used,
-       COUNT(DISTINCT project)                             AS projects,
-       COUNT(DISTINCT session_id)                          AS sessions
-FROM skill_usage
-GROUP BY skill, plugin;
+{_SKILL_NAMES_CTE}
+SELECT n.name AS skill,
+       COUNT(s.call_id)                                      AS calls,
+       SUM(CASE WHEN s.status = 'completed' THEN 1 ELSE 0 END) AS completed,
+       MAX(s.ts)                                             AS last_used,
+       MIN(s.ts)                                             AS first_used,
+       COUNT(DISTINCT s.project)                             AS projects,
+       COUNT(DISTINCT s.session_id)                          AS sessions
+FROM names n
+LEFT JOIN skill_usage s ON s.skill = n.name
+GROUP BY n.name;
 
 DROP VIEW IF EXISTS v_agents;
 CREATE VIEW v_agents AS
-SELECT agent_type,
-       kind,
-       COUNT(*)                                            AS calls,
-       MAX(ts)                                             AS last_used,
-       MIN(ts)                                             AS first_used,
-       COUNT(DISTINCT project)                             AS projects,
-       COUNT(DISTINCT session_id)                          AS sessions
-FROM agent_usage
-GROUP BY agent_type, kind;
+{_AGENT_NAMES_CTE}
+SELECT n.name AS agent_type,
+       MAX(a.kind)                                           AS kind,
+       COUNT(a.call_id)                                      AS calls,
+       MAX(a.ts)                                             AS last_used,
+       MIN(a.ts)                                             AS first_used,
+       COUNT(DISTINCT a.project)                             AS projects,
+       COUNT(DISTINCT a.session_id)                          AS sessions
+FROM names n
+LEFT JOIN agent_usage a ON a.agent_type = n.name
+GROUP BY n.name;
 
 DROP VIEW IF EXISTS v_mcp;
 CREATE VIEW v_mcp AS
-SELECT server,
-       tool,
-       COUNT(*)                                            AS calls,
-       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-       MAX(ts)                                             AS last_used,
-       MIN(ts)                                             AS first_used,
-       COUNT(DISTINCT project)                             AS projects,
-       COUNT(DISTINCT session_id)                          AS sessions
-FROM mcp_usage
-GROUP BY server, tool;
+{_MCP_NAMES_CTE}
+SELECT p.server,
+       p.tool,
+       COUNT(m.call_id)                                      AS calls,
+       SUM(CASE WHEN m.status = 'completed' THEN 1 ELSE 0 END) AS completed,
+       MAX(m.ts)                                             AS last_used,
+       MIN(m.ts)                                             AS first_used,
+       COUNT(DISTINCT m.project)                             AS projects,
+       COUNT(DISTINCT m.session_id)                          AS sessions
+FROM pairs p
+LEFT JOIN mcp_usage m ON m.server = p.server AND m.tool = p.tool
+GROUP BY p.server, p.tool;
 
 DROP VIEW IF EXISTS v_plugins;
 CREATE VIEW v_plugins AS
-SELECT plugin,
-       marketplace,
-       COUNT(*)                                            AS uses,
-       MAX(ts)                                             AS last_used,
-       COUNT(DISTINCT session_id)                          AS sessions
-FROM plugin_usage
-GROUP BY plugin, marketplace;
+{_PLUGIN_NAMES_CTE}
+SELECT n.name AS plugin,
+       COUNT(u.id)                                           AS uses,
+       MAX(u.ts)                                             AS last_used,
+       (SELECT COUNT(*) FROM inventory x
+          WHERE x.owner_plugin = n.name AND x.kind = 'skill')   AS skills,
+       (SELECT COUNT(*) FROM inventory x
+          WHERE x.owner_plugin = n.name AND x.kind = 'agent')   AS agents,
+       (SELECT COUNT(*) FROM inventory x
+          WHERE x.owner_plugin = n.name AND x.kind = 'command') AS commands
+FROM names n
+LEFT JOIN plugin_usage u ON u.plugin = n.name
+GROUP BY n.name;
 """
 
 SCHEMA_SQL = TABLES_SQL + VIEWS_SQL
@@ -371,78 +421,104 @@ def reset(conn: sqlite3.Connection) -> None:
 # optional time window (SQLite views cannot be parameterized).
 
 
+def _on_time(conds) -> tuple[str, list]:
+    """``(" AND <pred> AND ...", params)`` for the LEFT JOIN's ON clause.
+
+    The window lives in ON (never WHERE) so an out-of-window entity still
+    yields a row with a zero count instead of dropping out of the list.
+    """
+    if not conds:
+        return "", []
+    return (" AND " + " AND ".join(c for c, _ in conds),
+            [p for _, p in conds])
+
+
 def q_tools(conn, limit=None, start_ts=None, end_ts=None):
-    where, params = _time_filter(start_ts, end_ts)
-    sql = ("SELECT tool_name, COUNT(*) AS calls,"
-           " SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,"
-           " SUM(CASE WHEN status='incomplete' THEN 1 ELSE 0 END) AS failed,"
-           " SUM(CASE WHEN status IS NULL THEN 1 ELSE 0 END) AS pending,"
-           " CAST(AVG(duration_ms) AS INTEGER) AS avg_ms,"
-           " MAX(ts) AS last_used, MIN(ts) AS first_used,"
-           " COUNT(DISTINCT project) AS projects,"
-           " COUNT(DISTINCT session_id) AS sessions"
-           f" FROM tool_calls{where} GROUP BY tool_name ORDER BY calls DESC")
+    on_time, params = _on_time(_time_conds(start_ts, end_ts, col="c.ts"))
+    sql = (f"{_TOOL_NAMES_CTE}"
+           " SELECT n.name AS tool_name, COUNT(c.call_id) AS calls,"
+           " SUM(CASE WHEN c.status='completed' THEN 1 ELSE 0 END) AS completed,"
+           " SUM(CASE WHEN c.status='incomplete' THEN 1 ELSE 0 END) AS failed,"
+           " SUM(CASE WHEN c.call_id IS NOT NULL AND c.status IS NULL"
+           "          THEN 1 ELSE 0 END) AS pending,"
+           " CAST(AVG(c.duration_ms) AS INTEGER) AS avg_ms,"
+           " MAX(c.ts) AS last_used, MIN(c.ts) AS first_used,"
+           " COUNT(DISTINCT c.project) AS projects,"
+           " COUNT(DISTINCT c.session_id) AS sessions"
+           " FROM names n LEFT JOIN tool_calls c ON c.tool_name = n.name"
+           f"{on_time} GROUP BY n.name ORDER BY calls DESC, n.name")
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, params).fetchall()
 
 
 def q_skills(conn, limit=None, start_ts=None, end_ts=None):
-    where, params = _time_filter(start_ts, end_ts)
-    sql = ("SELECT skill, plugin, COUNT(*) AS calls,"
-           " SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,"
-           " MAX(ts) AS last_used, MIN(ts) AS first_used,"
-           " COUNT(DISTINCT project) AS projects,"
-           " COUNT(DISTINCT session_id) AS sessions"
-           f" FROM skill_usage{where} GROUP BY skill, plugin ORDER BY calls DESC")
+    """Skills keyed by NAME only — a skill name that ships under several
+    plugins is merged into one row (no ``plugin`` column)."""
+    on_time, params = _on_time(_time_conds(start_ts, end_ts, col="s.ts"))
+    sql = (f"{_SKILL_NAMES_CTE}"
+           " SELECT n.name AS skill, COUNT(s.call_id) AS calls,"
+           " SUM(CASE WHEN s.status='completed' THEN 1 ELSE 0 END) AS completed,"
+           " MAX(s.ts) AS last_used, MIN(s.ts) AS first_used,"
+           " COUNT(DISTINCT s.project) AS projects,"
+           " COUNT(DISTINCT s.session_id) AS sessions"
+           " FROM names n LEFT JOIN skill_usage s ON s.skill = n.name"
+           f"{on_time} GROUP BY n.name ORDER BY calls DESC, n.name")
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, params).fetchall()
 
 
 def q_agents(conn, limit=None, start_ts=None, end_ts=None):
-    where, params = _time_filter(start_ts, end_ts)
-    sql = ("SELECT agent_type, kind, COUNT(*) AS calls,"
-           " MAX(ts) AS last_used, MIN(ts) AS first_used,"
-           " COUNT(DISTINCT project) AS projects,"
-           " COUNT(DISTINCT session_id) AS sessions"
-           f" FROM agent_usage{where} GROUP BY agent_type, kind ORDER BY calls DESC")
+    """Agents keyed by NAME only; ``kind`` is the name's own attribute."""
+    on_time, params = _on_time(_time_conds(start_ts, end_ts, col="a.ts"))
+    sql = (f"{_AGENT_NAMES_CTE}"
+           " SELECT n.name AS agent_type, MAX(a.kind) AS kind,"
+           " COUNT(a.call_id) AS calls,"
+           " MAX(a.ts) AS last_used, MIN(a.ts) AS first_used,"
+           " COUNT(DISTINCT a.project) AS projects,"
+           " COUNT(DISTINCT a.session_id) AS sessions"
+           " FROM names n LEFT JOIN agent_usage a ON a.agent_type = n.name"
+           f"{on_time} GROUP BY n.name ORDER BY calls DESC, n.name")
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, params).fetchall()
 
 
 def q_mcp(conn, limit=None, start_ts=None, end_ts=None):
-    where, params = _time_filter(start_ts, end_ts)
-    sql = ("SELECT server, tool, COUNT(*) AS calls,"
-           " SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,"
-           " MAX(ts) AS last_used, MIN(ts) AS first_used,"
-           " COUNT(DISTINCT project) AS projects,"
-           " COUNT(DISTINCT session_id) AS sessions"
-           f" FROM mcp_usage{where} GROUP BY server, tool ORDER BY calls DESC")
+    on_time, params = _on_time(_time_conds(start_ts, end_ts, col="m.ts"))
+    sql = (f"{_MCP_NAMES_CTE}"
+           " SELECT p.server, p.tool, COUNT(m.call_id) AS calls,"
+           " SUM(CASE WHEN m.status='completed' THEN 1 ELSE 0 END) AS completed,"
+           " MAX(m.ts) AS last_used, MIN(m.ts) AS first_used,"
+           " COUNT(DISTINCT m.project) AS projects,"
+           " COUNT(DISTINCT m.session_id) AS sessions"
+           " FROM pairs p"
+           " LEFT JOIN mcp_usage m ON m.server = p.server AND m.tool = p.tool"
+           f"{on_time} GROUP BY p.server, p.tool"
+           " ORDER BY calls DESC, p.server, p.tool")
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, params).fetchall()
 
 
-def q_plugins(conn, start_ts=None, end_ts=None):
-    """已装插件 + *按窗口* 归因的使用计数。列表来自静态 inventory（无时间戳），
-    故始终列出全部插件；仅 uses/last_used 受窗口限制。谓词放在 LEFT JOIN ON 中，
-    使窗口内无使用的 inventory 行仍返回一行（uses=0）。"""
-    conds = _time_conds(start_ts, end_ts, col="u.ts")
-    on_time = (" AND " + " AND ".join(c for c, _ in conds)) if conds else ""
-    params = [p for _, p in conds]
+def q_plugins(conn):
+    """Every plugin, keyed by NAME: installed (static inventory) ∪ ever used.
+
+    No version column and no time window: name is the primary key, so a version
+    bump never forks a plugin and an uninstalled-but-used plugin keeps its row.
+    ``uses`` counts every attributed skill/agent/command invocation.
+    """
     return conn.execute(
-        "SELECT i.name AS plugin, i.version,"
+        f"{_PLUGIN_NAMES_CTE}"
+        " SELECT n.name AS plugin,"
         " COUNT(u.id) AS uses, MAX(u.ts) AS last_used,"
-        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = i.name AND x.kind = 'skill')  AS skills,"
-        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = i.name AND x.kind = 'agent')  AS agents,"
-        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = i.name AND x.kind = 'command') AS commands"
-        " FROM inventory i"
-        f" LEFT JOIN plugin_usage u ON u.plugin = i.name{on_time}"
-        " WHERE i.kind = 'plugin'"
-        " GROUP BY i.name, i.version ORDER BY uses DESC, i.name",
-        params,
+        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = n.name AND x.kind = 'skill')  AS skills,"
+        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = n.name AND x.kind = 'agent')  AS agents,"
+        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = n.name AND x.kind = 'command') AS commands"
+        " FROM names n"
+        " LEFT JOIN plugin_usage u ON u.plugin = n.name"
+        " GROUP BY n.name ORDER BY uses DESC, n.name",
     ).fetchall()
 
 
@@ -549,9 +625,8 @@ USAGE_RANGE_LABELS = {
     "7d": "Last 7 days", "30d": "Last 30 days", "all": "All time",
 }
 
-# No provider/account/site/endpoint field exists in the transcripts, so every
-# record is honestly grouped under this label (never inferred from the model).
-UNKNOWN_PROVIDER = "Transcript / Unknown"
+# No provider/account/site/endpoint field exists in the transcripts, so the
+# tracker does not model a provider at all (nothing to infer it from).
 
 # Per-row total: prefer the provider's own rawUsage total, else fall back to
 # prompt + completion. NULL only when neither is available (never a fabricated 0).
@@ -713,29 +788,6 @@ def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0):
         " ORDER BY ts DESC, message_id LIMIT ? OFFSET ?"
     )
     return conn.execute(sql, params + [int(limit), int(offset)]).fetchall()
-
-
-def q_usage_provider_stats(conn, start_ts, end_ts):
-    """Provider rollup. There is no provider field, so a non-empty window
-    yields one Unknown row; an empty window yields ``[]`` (``GROUP BY`` over no
-    rows produces no group)."""
-    where, params = _ts_where(start_ts, end_ts)
-    return conn.execute(
-        f"SELECT '{UNKNOWN_PROVIDER}' AS provider,"
-        " COUNT(*) AS requests,"
-        " SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END) AS with_usage,"
-        " SUM(prompt_tokens) AS prompt_tokens,"
-        " SUM(completion_tokens) AS completion_tokens,"
-        f" {_AGG_TOTAL_EXPR} AS total_tokens,"
-        f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
-        " SUM(prompt_cache_hit_tokens) AS cache_hit,"
-        " SUM(prompt_cache_miss_tokens) AS cache_miss,"
-        " SUM(prompt_cache_write_tokens) AS cache_write,"
-        " COUNT(DISTINCT model) AS models"
-        f" FROM model_responses WHERE {where}"
-        " GROUP BY provider",
-        params,
-    ).fetchall()
 
 
 # Whitelisted orderings for q_usage_model_stats (never user-supplied SQL).

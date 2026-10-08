@@ -455,6 +455,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
+            # Usage keeps its own range (default 24h); the Select drives it only
+            # while the Usage tab is active.
+            app.query_one(tui.TabbedContent).active = "tab-usage"
+            await pilot.pause()
             self.assertIn("Last 24 hours", str(app.query_one("#usage-window").content))
             app.query_one("#range", tui.Select).value = "all"
             await pilot.pause()
@@ -471,15 +475,15 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             t = app.query_one("#t-usage", tui.DataTable)
             row = all_rows(t)[0]
-            # column order: Time Provider Model In Out API-Total Usage-Total
+            # column order: Time Model In Out API-Total Usage-Total
             #               Cache-hit Cache-miss Cache-write Usage Source
-            self.assertEqual(row[1], "Transcript / Unknown")  # honest provider
-            self.assertEqual(row[5], "30")           # API Total, not +cache
-            self.assertEqual(row[6], "1,000,029")    # Usage Total = 10+20+999999
-            self.assertEqual(row[7], "999,999")      # Cache hit (read)
-            self.assertEqual(row[8], "888,888")      # Cache miss
-            self.assertEqual(row[9], "7")            # Cache write (create)
-            self.assertEqual(row[10], "Real")
+            self.assertEqual(row[1], "m")            # model (no provider column)
+            self.assertEqual(row[4], "30")           # API Total, not +cache
+            self.assertEqual(row[5], "1,000,029")    # Usage Total = 10+20+999999
+            self.assertEqual(row[6], "999,999")      # Cache hit (read)
+            self.assertEqual(row[7], "888,888")      # Cache miss
+            self.assertEqual(row[8], "7")            # Cache write (create)
+            self.assertEqual(row[9], "Real")
 
     # 17b. empty window shows an explicit empty state, never a blank region
     async def test_usage_empty_state(self):
@@ -863,26 +867,30 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(all_rows(t)[0][0], "ToolB")   # re-sorted
             self.assertEqual(t.cursor_row, 0)              # cursor followed ToolB
 
-    # 37. the shared range Select filters a non-Usage tab (Tools)
+    # 37. the shared range Select filters a non-Usage tab (Tools), default 7d
     async def test_range_filters_tools_tab(self):
         now = int(time.time() * 1000)
         make_db(self.db_path, [])
         insert_tool_calls(self.db_path, [
             ("recent", "s1", "/p", "Recent", "builtin", now - 3600_000, 10,
              "completed"),
-            ("old", "s1", "/p", "Old", "builtin", now - 100 * 3600_000, 10,
+            ("old", "s1", "/p", "Old", "builtin", now - 200 * 3600_000, 10,
              "completed"),
         ])
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
             t = app.query_one("#t-tools", tui.DataTable)
-            # default 24h hides the 100h-old row
-            self.assertEqual([r[0] for r in all_rows(t)], ["Recent"])
+            # Default entity range is 7d. Name is the key, so both tools are
+            # listed; Old's calls (200h ago) fall outside 7d and count 0.
+            rows = {r[0]: r for r in all_rows(t)}
+            self.assertEqual(set(rows), {"Recent", "Old"})
+            self.assertEqual(rows["Recent"][1], "1")
+            self.assertEqual(rows["Old"][1], "0")
             app.query_one("#range", tui.Select).value = "all"
             await pilot.pause()
-            self.assertEqual(sorted(r[0] for r in all_rows(t)),
-                             ["Old", "Recent"])
+            rows = {r[0]: r for r in all_rows(t)}
+            self.assertEqual(rows["Old"][1], "1")    # now counted
 
     # 38. the shared top bar replaces the built-in Header; palette is disabled
     async def test_top_bar_replaces_header_and_disables_palette(self):
@@ -897,8 +905,8 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             # the range Select lives in the top bar, not inside the Usage pane
             self.assertEqual(len(app.query("#tab-usage #range")), 0)
 
-    # 39. Plugins list stays full even when uses fall outside the window
-    async def test_plugins_outside_window_listed_with_zero_uses(self):
+    # 39. Plugins is all-time, keyed by name, no version column, no range Select
+    async def test_plugins_all_time_no_version_no_range(self):
         now = int(time.time() * 1000)
         make_db(self.db_path, [])
         conn = db.open_db(self.db_path)
@@ -918,9 +926,23 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             app.query_one(tui.TabbedContent).active = "tab-plugins"
             await pilot.pause()
             t = app.query_one("#t-plugins", tui.DataTable)
+            labels = [str(c.label) for c in t.columns.values()]
+            self.assertNotIn("version", labels)
             row = all_rows(t)[0]
             self.assertEqual(row[0], "myplug")   # still listed
-            self.assertEqual(row[2], "0")        # uses outside the 24h window
+            self.assertEqual(row[1], "1")        # all-time use (no window)
+            # the range Select is hidden while the Plugins tab is active
+            self.assertFalse(app.query_one("#range", tui.Select).display)
+
+    # 39b. the Skills tab has no plugin column (name is the key)
+    async def test_skills_tab_has_no_plugin_column(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            t = app.query_one("#t-skills", tui.DataTable)
+            labels = [str(c.label) for c in t.columns.values()]
+            self.assertNotIn("plugin", labels)
 
 
 if __name__ == "__main__":
