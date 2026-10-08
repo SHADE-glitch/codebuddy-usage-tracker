@@ -124,6 +124,20 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual(row["agent_type"], "Explore")
         self.assertEqual(row["kind"], "active")
 
+    def test_agent_without_subagent_type_defaults_to_general_purpose(self):
+        # The Agent tool runs as general-purpose when subagent_type is omitted,
+        # so a call carrying only description/prompt must not fragment into a
+        # "?" row.
+        write_records(self.tr, [
+            {"type": "function_call", "name": "Agent", "callId": "c5",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps({"description": "x", "prompt": "y"})},
+        ])
+        self.index()
+        row = self.conn.execute("SELECT * FROM agent_usage").fetchone()
+        self.assertEqual(row["agent_type"], "general-purpose")
+        self.assertEqual(row["kind"], "active")
+
     # -- incremental / idempotent ------------------------------------------
 
     def test_incremental_offset_and_idempotency(self):

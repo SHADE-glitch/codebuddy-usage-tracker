@@ -43,6 +43,12 @@ BUILTIN_TOOLS = {
 META_TOOLS = {"ToolSearch", "DeferExecuteTool", "WaitForMcpServers",
               "ListMcpResources", "ReadMcpResource"}
 
+# The Agent tool's own contract: when the caller omits ``subagent_type`` the
+# call runs as ``general-purpose``. A call carrying neither ``subagent_type``
+# nor ``agent_type`` is therefore recorded under this name, never a "?" — the
+# placeholder used to fragment real general-purpose usage into an unknown row.
+DEFAULT_AGENT_TYPE = "general-purpose"
+
 # Built-in agents (name -> kind). "internal" = background/auxiliary.
 BUILTIN_AGENTS = {
     "general-purpose": "active", "Explore": "active", "Plan": "active",
@@ -406,7 +412,8 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner) -> None:
                  skill_owner.get(skill), sid, project, ts),
             )
         elif category == "agent":
-            atype = args.get("subagent_type") or args.get("agent_type") or "?"
+            atype = (args.get("subagent_type") or args.get("agent_type")
+                     or DEFAULT_AGENT_TYPE)
             conn.execute(
                 "INSERT OR IGNORE INTO agent_usage"
                 "(call_id, agent_type, description, kind, source, session_id, project, ts)"
