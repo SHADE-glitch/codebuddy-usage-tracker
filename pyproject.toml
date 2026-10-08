@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codebuddy-usage-tracker"
+version = "0.1.0"
+description = "Passive usage tracker for CodeBuddy Code: parses its logs into a local SQLite index, shown in a Textual TUI."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+# The headless subcommands (sync/stats/export/...) are pure stdlib. The TUI's only
+# runtime dependency (textual) is listed in requirements.txt, the authoritative flat
+# list install.sh installs from; it is not duplicated here.
+dependencies = []
