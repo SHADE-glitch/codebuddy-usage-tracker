@@ -126,9 +126,9 @@ def cmd_stats(conn, args):
     print()
 
     print("Agents")
-    rows = _rows(db.q_agents(conn), ["agent_type", "kind", "calls", "last_used"])
-    print(table(["agent", "kind", "calls", "last used"],
-                [[r[0], r[1], r[2], ts(r[3])] for r in rows]) or "  (none)")
+    rows = _rows(db.q_agents(conn), ["agent_type", "calls", "last_used"])
+    print(table(["agent", "calls", "last used"],
+                [[r[0], r[1], ts(r[2])] for r in rows]) or "  (none)")
     print()
 
     print("Plugins (installed ∪ used, by attributed usage)")
@@ -162,9 +162,9 @@ def cmd_skills(conn, args):
 
 def cmd_agents(conn, args):
     rows = _rows(db.q_agents(conn, args.limit),
-                 ["agent_type", "kind", "calls", "last_used", "projects"])
-    print(table(["agent", "kind", "calls", "last used", "proj"],
-                [[r[0], r[1], r[2], ts(r[3]), r[4]] for r in rows]) or "(none)")
+                 ["agent_type", "calls", "last_used", "projects"])
+    print(table(["agent", "calls", "last used", "proj"],
+                [[r[0], r[1], ts(r[2]), r[3]] for r in rows]) or "(none)")
 
 
 def cmd_mcp(conn, args):
@@ -179,7 +179,6 @@ def cmd_mcp(conn, args):
 MODEL_TABLE_COLUMNS = (
     ("model", "model"),
     ("resp", "responses"),
-    ("usage", "with_usage"),
     ("in", "prompt_tokens"),
     ("out", "completion_tokens"),
     ("total", "total_tokens"),
@@ -187,15 +186,15 @@ MODEL_TABLE_COLUMNS = (
     ("cache miss", "prompt_cache_miss_tokens"),
     ("cache write", "prompt_cache_write_tokens"),
 )
-# Dropped left-to-right until the table fits; model/in/out/total always survive.
-_MODEL_DROP_ORDER = ("cache write", "cache miss", "cache hit", "usage", "resp")
+# Dropped left-to-right until the table fits; model/resp/in/out always survive.
+_MODEL_DROP_ORDER = ("cache write", "cache miss", "cache hit", "resp")
 _MODEL_ALWAYS_KEEP = 4
 
 
 def _fit_model_columns(width, headers, rows):
     """Reduce (headers, rows) to fit ``width`` by dropping cache, then resp/usage.
 
-    Never drops below the first four columns (model / in / out / total).
+    Never drops below the first four columns (model / resp / in / out).
     """
     headers = list(headers)
     rows = [list(r) for r in rows]
