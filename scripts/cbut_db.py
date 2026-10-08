@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 
 SCHEMA_VERSION = 4
@@ -263,7 +264,6 @@ DROP VIEW IF EXISTS v_agents;
 CREATE VIEW v_agents AS
 {_AGENT_NAMES_CTE}
 SELECT n.name AS agent_type,
-       MAX(a.kind)                                           AS kind,
        COUNT(a.call_id)                                      AS calls,
        MAX(a.ts)                                             AS last_used,
        MIN(a.ts)                                             AS first_used,
@@ -470,11 +470,15 @@ def q_skills(conn, limit=None, start_ts=None, end_ts=None):
 
 
 def q_agents(conn, limit=None, start_ts=None, end_ts=None):
-    """Agents keyed by NAME only; ``kind`` is the name's own attribute."""
+    """Agents keyed by NAME only.
+
+    ``kind`` (active/internal) is deliberately not exposed: internal agents live
+    in the OTel traces, which are not ingested, so the column is always
+    ``active`` (or absent for an unused installed agent) and carries no signal.
+    """
     on_time, params = _on_time(_time_conds(start_ts, end_ts, col="a.ts"))
     sql = (f"{_AGENT_NAMES_CTE}"
-           " SELECT n.name AS agent_type, MAX(a.kind) AS kind,"
-           " COUNT(a.call_id) AS calls,"
+           " SELECT n.name AS agent_type, COUNT(a.call_id) AS calls,"
            " MAX(a.ts) AS last_used, MIN(a.ts) AS first_used,"
            " COUNT(DISTINCT a.project) AS projects,"
            " COUNT(DISTINCT a.session_id) AS sessions"
@@ -615,14 +619,15 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
     ).fetchall()
 
 
-# --- usage statistics (rolling time windows) -------------------------------
+# --- usage statistics (calendar-day windows) -------------------------------
 
-# Rolling window sizes in hours; None = All time (no lower bound).
-USAGE_RANGES = {"24h": 24, "48h": 48, "72h": 72, "7d": 24 * 7, "30d": 24 * 30,
-                "all": None}
+# Window sizes in CALENDAR days; None = All time (no lower bound). A window is
+# whole local days ending *now*: "1d" starts at today's local 00:00, "2d" at
+# yesterday's 00:00, and so on — never "now minus N hours".
+USAGE_RANGES = {"1d": 1, "2d": 2, "3d": 3, "7d": 7, "30d": 30, "all": None}
 USAGE_RANGE_LABELS = {
-    "24h": "Last 24 hours", "48h": "Last 48 hours", "72h": "Last 72 hours",
-    "7d": "Last 7 days", "30d": "Last 30 days", "all": "All time",
+    "1d": "Today", "2d": "2 days", "3d": "3 days",
+    "7d": "7 days", "30d": "30 days", "all": "All time",
 }
 
 # No provider/account/site/endpoint field exists in the transcripts, so the
@@ -683,17 +688,23 @@ _AGG_USAGE_TOTAL_EXPR = f"SUM({_USAGE_TOTAL_EXPR})"
 
 
 def window_bounds(range_key: str, now_ms: int):
-    """``(start_ms, end_ms)`` for a rolling window ending at ``now_ms``.
+    """``(start_ms, end_ms)`` for a whole-calendar-day window ending at ``now_ms``.
 
-    ``start_ms`` is ``None`` for ``"all"`` (no lower bound). Never uses
-    natural-day boundaries or the process start time — always the caller's
-    ``now_ms``.
+    The window is a whole number of **local** calendar days: ``"1d"`` runs from
+    today's local 00:00 to ``now_ms``, ``"2d"`` from yesterday's 00:00, and so
+    on. It never uses "now minus N hours", so the bounds are stable through the
+    day and match what a person means by "today" / "the last 2 days".
+
+    ``start_ms`` is ``None`` for ``"all"`` (no lower bound).
     """
-    hours = USAGE_RANGES[range_key]
+    days = USAGE_RANGES[range_key]
     end = int(now_ms)
-    if hours is None:
+    if days is None:
         return None, end
-    return end - hours * 3600 * 1000, end
+    midnight = datetime.fromtimestamp(end / 1000).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    start = midnight - timedelta(days=days - 1)
+    return int(start.timestamp() * 1000), end
 
 
 def cache_hit_rate(hit, miss, write=None):
