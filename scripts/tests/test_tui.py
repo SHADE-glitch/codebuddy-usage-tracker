@@ -1157,7 +1157,11 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("50", str(app.query_one("#dash-rt-avg").content))  # (40+60)/2
             # leaderboards pick the entities with calls
             self.assertIn("alpha", str(app.query_one("#dash-models").content))
-            self.assertIn("Bash", str(app.query_one("#dash-tools").content))
+            tools = str(app.query_one("#dash-tools").content)
+            self.assertIn("Bash", tools)
+            self.assertIn("2 calls", tools)          # Bash had two calls
+            self.assertNotIn("1 calls", tools)       # Edit/Read had one -> singular
+            self.assertIn("1 call ", tools)
             # sparkline has a bar for the busy day + a range/peak caption
             self.assertTrue(str(app.query_one("#dash-activity").content).strip())
             self.assertIn("peak", str(app.query_one("#dash-activity-axis").content))

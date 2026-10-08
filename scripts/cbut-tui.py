@@ -879,8 +879,9 @@ if HAVE_TEXTUAL:
             if not top:
                 self.query_one("#dash-tools", Static).update("nothing in this window")
                 return
-            lines = [f"{i}. {r['tool_name']:<22}{r['calls']:>7,} calls"
-                     f"  {fmt_n(r['avg_ms'])} ms"
+            lines = [f"{i}. {r['tool_name']:<22}{r['calls']:>7,}"
+                     f" {'call' if r['calls'] == 1 else 'calls':<5}"
+                     f" {fmt_n(r['avg_ms'])} ms"
                      for i, r in enumerate(top, 1)]
             self.query_one("#dash-tools", Static).update("\n".join(lines))
 
