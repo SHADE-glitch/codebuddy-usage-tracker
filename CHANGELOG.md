@@ -77,7 +77,8 @@ Commit   fe2d2c6
 ### D-005 · 2026-10-08 · fix
 Symptom  The Dashboard's Top tools list read "1 calls" for a single-call tool
 Change   Pick the singular "call" when the count is 1 (the noun is padded so the trailing "ms"
-         column stays aligned), and assert the plural in `test_dashboard_extras_render`
+         column stays aligned), and have `test_dashboard_extras_render` assert both forms — "2 calls"
+         present, "1 calls" absent
 Evidence L0 2026-10-08: the test now asserts "2 calls" is present and "1 calls" is not; full suite
          177 tests green
 Cost     None — a display-only noun; the numeric column and ordering are unchanged
