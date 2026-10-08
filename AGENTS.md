@@ -40,6 +40,9 @@ python3 -m pip install -r requirements.txt
 python3 -m unittest discover -s scripts/tests
 ```
 
+The checkout must fetch full history (`fetch-depth: 0`): the record-coverage test walks
+`git log <anchor>..HEAD` back to the coverage anchor, which a shallow clone cannot resolve.
+
 **It must stay green.** A red CI is a broken contract, not a warning: this is the same command as
 the L0 verification tier below, so a change that fails here fails everywhere. Run it locally before
 pushing — do not leave the first run to CI.
