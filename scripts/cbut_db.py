@@ -854,6 +854,47 @@ def q_usage_model_stats(conn, start_ts, end_ts, order_by="total_tokens"):
     ).fetchall()
 
 
+def q_usage_activity(conn, start_ts=None, end_ts=None) -> dict:
+    """Windowed tool-runtime rollup for the Dashboard's "more metrics" panel.
+
+    How the calls in the window behaved: ``completed``/``incomplete`` split the
+    ``calls`` total, ``avg_ms`` is the mean tool duration (NULL when nothing
+    ran, never a fabricated 0), and ``sessions``/``projects`` are the DISTINCT
+    ids seen in the window — the windowed form of the all-time ``overview()``
+    counts. Both bounds ``None`` means all-time.
+    """
+    where, params = _time_filter(start_ts, end_ts, col="ts")
+    row = conn.execute(
+        "SELECT COUNT(*) AS calls,"
+        " SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,"
+        " SUM(CASE WHEN status='incomplete' THEN 1 ELSE 0 END) AS incomplete,"
+        " CAST(AVG(duration_ms) AS INTEGER) AS avg_ms,"
+        " COUNT(DISTINCT session_id) AS sessions,"
+        " COUNT(DISTINCT project) AS projects"
+        f" FROM tool_calls{where}",
+        params,
+    ).fetchone()
+    return dict(row)
+
+
+def q_usage_daily(conn, start_ts=None, end_ts=None):
+    """Tool-call counts per LOCAL calendar day in the window, oldest first.
+
+    Rows are ``{"day": "YYYY-MM-DD", "calls": n}`` for days that have calls.
+    The day is bucketed in local time (``localtime``) so it lines up with the
+    local-day windows; the Dashboard draws the series as a sparkline. Days with
+    no calls are simply absent — the caller fills the gaps.
+    """
+    where, params = _time_filter(start_ts, end_ts, col="ts")
+    return conn.execute(
+        "SELECT strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime') AS day,"
+        " COUNT(*) AS calls"
+        f" FROM tool_calls{where}"
+        " GROUP BY day ORDER BY day",
+        params,
+    ).fetchall()
+
+
 def q_inventory(conn, kind=None):
     sql = "SELECT * FROM inventory"
     params = ()

@@ -1032,22 +1032,31 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             labels = [str(c.label) for c in t.columns.values()]
             self.assertNotIn("plugin", labels)
 
-    # 40. Dashboard: two panels, no table, all expected widgets
+    # 40. Dashboard: a grid of panel rows, no table, all expected widgets
     async def test_dashboard_layout(self):
         make_db(self.db_path, [])
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
-            self.assertTrue(app.query_one("#dash-panels"))
-            self.assertTrue(app.query_one("#panel-dash-kpi"))
-            self.assertTrue(app.query_one("#panel-dash-tokens"))
+            for rid in ("#dash-row-1", "#dash-row-2", "#dash-row-3"):
+                self.assertTrue(app.query_one(rid))
+            for pid in ("#panel-dash-kpi", "#panel-dash-tokens",
+                        "#panel-dash-cache", "#panel-dash-models",
+                        "#panel-dash-tools", "#panel-dash-runtime",
+                        "#panel-dash-activity"):
+                self.assertTrue(app.query_one(pid))
             for wid in ("#dash-kpi-tools", "#dash-kpi-skills",
                         "#dash-kpi-agents", "#dash-kpi-mcp", "#dash-kpi-plugins",
                         "#dash-tok-requests", "#dash-tok-input",
                         "#dash-tok-output", "#dash-tok-api", "#dash-tok-usage",
-                        "#dash-tok-hit-rate", "#dash-note"):
+                        "#dash-tok-hit-rate", "#dash-cache-hit",
+                        "#dash-cache-miss", "#dash-cache-write",
+                        "#dash-rt-completed", "#dash-rt-incomplete",
+                        "#dash-rt-avg", "#dash-rt-sessions", "#dash-rt-projects",
+                        "#dash-models", "#dash-tools",
+                        "#dash-activity", "#dash-activity-axis", "#dash-note"):
                 self.assertTrue(app.query_one(wid))
-            # exactly two blocks: no leaderboard / activity table
+            # the leaderboards and the trend are text, not tables
             self.assertEqual(len(app.query("#tab-dashboard DataTable")), 0)
 
     # 40b. Dashboard has its own range, defaulting to Today
@@ -1108,19 +1117,50 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             # All time: 200 + (10 + 2)
             self.assertIn("212", str(app.query_one("#dash-tok-usage").content))
 
-    # 40f. narrow terminals stack the Dashboard panels (shared compact class)
+    # 40f. narrow terminals stack the Dashboard rows (shared compact class)
     async def test_dashboard_compact_fallback(self):
         make_db(self.db_path, [])
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
-            panels = app.query_one("#dash-panels")
+            rows = [app.query_one(f"#dash-row-{i}") for i in (1, 2, 3)]
             await pilot.resize_terminal(70, 24)
             await pilot.pause()
-            self.assertTrue(panels.has_class("compact"))
+            for r in rows:
+                self.assertTrue(r.has_class("compact"))
             await pilot.resize_terminal(140, 40)
             await pilot.pause()
-            self.assertFalse(panels.has_class("compact"))
+            for r in rows:
+                self.assertFalse(r.has_class("compact"))
+
+    # 40g. Dashboard extras render: cache, runtime, leaderboards, sparkline
+    async def test_dashboard_extras_render(self):
+        now = self._noon_ms()
+        make_db(self.db_path, [
+            ("m1", "s1", "alpha", 100, 20, 80, 15, now - 3600_000, 1),
+        ], cache={"m1": (80, 15, 5)})
+        insert_tool_calls(self.db_path, [
+            ("c1", "s1", "/p", "Bash", "builtin", now - 3600_000, 40, "completed"),
+            ("c2", "s1", "/p", "Bash", "builtin", now - 3500_000, 60, "completed"),
+            ("c3", "s1", "/p", "Read", "builtin", now - 3400_000, None, "incomplete"),
+        ])
+        app = self._pinned_app(now)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # cache panel: absolute hit/miss/write
+            self.assertIn("80", str(app.query_one("#dash-cache-hit").content))
+            self.assertIn("15", str(app.query_one("#dash-cache-miss").content))
+            self.assertIn("5", str(app.query_one("#dash-cache-write").content))
+            # runtime panel
+            self.assertIn("2", str(app.query_one("#dash-rt-completed").content))
+            self.assertIn("1", str(app.query_one("#dash-rt-incomplete").content))
+            self.assertIn("50", str(app.query_one("#dash-rt-avg").content))  # (40+60)/2
+            # leaderboards pick the entities with calls
+            self.assertIn("alpha", str(app.query_one("#dash-models").content))
+            self.assertIn("Bash", str(app.query_one("#dash-tools").content))
+            # sparkline has a bar for the busy day + a range/peak caption
+            self.assertTrue(str(app.query_one("#dash-activity").content).strip())
+            self.assertIn("peak", str(app.query_one("#dash-activity-axis").content))
 
     # 41. the injected clock drives "now", and therefore the tab windows
     async def test_injected_clock_drives_the_window(self):

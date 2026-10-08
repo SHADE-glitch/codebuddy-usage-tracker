@@ -16,7 +16,7 @@ import importlib.util
 import sqlite3
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -193,11 +193,13 @@ if HAVE_TEXTUAL:
         #hist-title, #resp-title { padding: 1 2; }
         DataTable { height: 1fr; }
         #status { padding: 0 2; color: $text-muted; }
-        /* Summary pages (Dashboard + Usage): the panels are height-capped and
-           scroll internally, so any table below them always keeps its rows.
-           .summary-panels is a Horizontal (a row of columns); .compact stacks
-           it. Both pages share .usage-panel / .panel-title. */
+        /* Summary pages (Dashboard + Usage). Both share .usage-panel /
+           .panel-title. The Usage page has one .summary-panels row (height
+           capped, scrolls internally so its table below keeps its rows). The
+           Dashboard is a stack of .dash-row rows; #dash-box scrolls. Each row
+           is a Horizontal; .compact stacks it on narrow terminals. */
         #usage-box, #dash-box { height: 1fr; padding: 0 1; }
+        #dash-box { overflow-y: auto; }
         .summary-panels { height: auto; max-height: 40%; overflow-y: auto; }
         .usage-panel {
             border: round $primary;
@@ -206,13 +208,18 @@ if HAVE_TEXTUAL:
             width: 1fr;
             height: auto;
         }
-        #panel-runtime, #panel-dash-tokens { margin: 0; }
+        #panel-runtime, #panel-dash-cache, #panel-dash-tools,
+        #panel-dash-activity { margin: 0; }
         .panel-title { text-style: bold; color: $accent; }
         #usage-status, #usage-window { padding: 0; }
         #usage-note, #dash-note { padding: 0 1; color: $text-muted; }
+        #dash-activity { color: $accent; }
+        #dash-activity-axis { color: $text-muted; }
         #t-usage { height: 1fr; min-height: 6; }
-        .summary-panels.compact { layout: vertical; }
-        .summary-panels.compact .usage-panel { width: 100%; margin: 0 0 1 0; }
+        .summary-panels.compact, .dash-row.compact { layout: vertical; }
+        .summary-panels.compact .usage-panel,
+        .dash-row.compact .usage-panel { width: 100%; margin: 0 0 1 0; }
+        .dash-row { height: auto; margin: 0 0 1 0; }
         """
         # Pane ids in display order. Used for wrap-around tab cycling.
         TAB_IDS = [
@@ -235,6 +242,7 @@ if HAVE_TEXTUAL:
         ENABLE_COMMAND_PALETTE = False
 
         USAGE_LOG_LIMIT = 100
+        DASH_TOP = 5            # rows in the Dashboard's Top models / Top tools
 
         def __init__(self, db_path, clock=None):
             super().__init__()
@@ -269,6 +277,7 @@ if HAVE_TEXTUAL:
             with TabbedContent(initial=self.INITIAL_TAB):
                 with TabPane("Dashboard", id="tab-dashboard"):
                     yield Vertical(
+                        # Row 1: headline counts, tokens, cache totals.
                         Horizontal(
                             Vertical(
                                 Static("Usage", classes="panel-title"),
@@ -289,7 +298,47 @@ if HAVE_TEXTUAL:
                                 Static(id="dash-tok-hit-rate"),
                                 classes="usage-panel", id="panel-dash-tokens",
                             ),
-                            classes="summary-panels", id="dash-panels",
+                            Vertical(
+                                Static("Cache", classes="panel-title"),
+                                Static(id="dash-cache-hit"),
+                                Static(id="dash-cache-miss"),
+                                Static(id="dash-cache-write"),
+                                classes="usage-panel", id="panel-dash-cache",
+                            ),
+                            classes="dash-row", id="dash-row-1",
+                        ),
+                        # Row 2: the leaderboards.
+                        Horizontal(
+                            Vertical(
+                                Static("Top models", classes="panel-title"),
+                                Static(id="dash-models"),
+                                classes="usage-panel", id="panel-dash-models",
+                            ),
+                            Vertical(
+                                Static("Top tools", classes="panel-title"),
+                                Static(id="dash-tools"),
+                                classes="usage-panel", id="panel-dash-tools",
+                            ),
+                            classes="dash-row", id="dash-row-2",
+                        ),
+                        # Row 3: runtime health + the per-day trend.
+                        Horizontal(
+                            Vertical(
+                                Static("Runtime", classes="panel-title"),
+                                Static(id="dash-rt-completed"),
+                                Static(id="dash-rt-incomplete"),
+                                Static(id="dash-rt-avg"),
+                                Static(id="dash-rt-sessions"),
+                                Static(id="dash-rt-projects"),
+                                classes="usage-panel", id="panel-dash-runtime",
+                            ),
+                            Vertical(
+                                Static("Calls per day", classes="panel-title"),
+                                Static(id="dash-activity"),
+                                Static(id="dash-activity-axis"),
+                                classes="usage-panel", id="panel-dash-activity",
+                            ),
+                            classes="dash-row", id="dash-row-3",
                         ),
                         Static(id="dash-note"),
                         id="dash-box",
@@ -608,8 +657,10 @@ if HAVE_TEXTUAL:
             if width is None:
                 width = self.size.width
             try:
-                for el in self.query(".summary-panels"):
-                    el.set_class(width < self.COMPACT_WIDTH, "compact")
+                compact = width < self.COMPACT_WIDTH
+                for selector in (".summary-panels", ".dash-row"):
+                    for el in self.query(selector):
+                        el.set_class(compact, "compact")
             except Exception:
                 pass
 
@@ -744,15 +795,20 @@ if HAVE_TEXTUAL:
         # --- Dashboard page ------------------------------------------------
 
         def _fill_dashboard(self, conn, start=None, end=None) -> None:
-            """Render the two Dashboard panels for this tab's own window.
+            """Render every Dashboard panel for this tab's own window.
 
-            KPI = windowed call counts (q_usage_kpi); Tokens = the same
-            summary the Usage page uses (q_usage_summary). Both reflect the
-            Dashboard's window only — the other tabs are untouched.
+            All panels reflect the Dashboard's window only — the other tabs are
+            untouched. Every query takes the same ``(start, end)`` so the tab
+            always agrees with itself.
             """
             try:
                 kpi = db.q_usage_kpi(conn, start, end)
                 s = db.q_usage_summary(conn, start, end)
+                act = db.q_usage_activity(conn, start, end)
+                models = db.q_usage_model_stats(conn, start, end)
+                tools = db.q_tools(conn, limit=self.DASH_TOP,
+                                   start_ts=start, end_ts=end)
+                daily = db.q_usage_daily(conn, start, end)
             except sqlite3.Error as e:
                 # e.g. an un-migrated DB where the newer columns are missing.
                 self.query_one("#dash-note", Static).update(
@@ -760,6 +816,11 @@ if HAVE_TEXTUAL:
                 return
             self._render_dashboard_kpi(kpi)
             self._render_dashboard_tokens(s)
+            self._render_dashboard_cache(s)
+            self._render_dashboard_runtime(act)
+            self._render_dashboard_models(models)
+            self._render_dashboard_tools(tools)
+            self._render_dashboard_activity(daily, start, end)
             if not any(kpi.values()) and not (s["requests"] or 0):
                 self.query_one("#dash-note", Static).update(
                     "No data in this window — widen the range above.")
@@ -768,28 +829,101 @@ if HAVE_TEXTUAL:
                     "Range: the top bar · this tab keeps its own window")
             self._apply_responsive_layout()
 
-        def _render_dashboard_kpi(self, k: dict) -> None:
-            def put(wid: str, label: str, val: str) -> None:
-                self.query_one(wid, Static).update(self._panel_line(label, val))
+        def _put_panel(self, wid: str, label: str, val: str) -> None:
+            self.query_one(wid, Static).update(self._panel_line(label, val))
 
+        def _render_dashboard_kpi(self, k: dict) -> None:
             # COUNT(*) is authoritative -> a real 0, never a dash.
-            put("#dash-kpi-tools", "Tool calls", f"{k['tool_calls']:,}")
-            put("#dash-kpi-skills", "Skills", f"{k['skills']:,}")
-            put("#dash-kpi-agents", "Agents", f"{k['agents']:,}")
-            put("#dash-kpi-mcp", "MCP", f"{k['mcp']:,}")
-            put("#dash-kpi-plugins", "Plugins", f"{k['plugins']:,}")
+            self._put_panel("#dash-kpi-tools", "Tool calls", f"{k['tool_calls']:,}")
+            self._put_panel("#dash-kpi-skills", "Skills", f"{k['skills']:,}")
+            self._put_panel("#dash-kpi-agents", "Agents", f"{k['agents']:,}")
+            self._put_panel("#dash-kpi-mcp", "MCP", f"{k['mcp']:,}")
+            self._put_panel("#dash-kpi-plugins", "Plugins", f"{k['plugins']:,}")
 
         def _render_dashboard_tokens(self, s: dict) -> None:
-            def put(wid: str, label: str, val: str) -> None:
-                self.query_one(wid, Static).update(self._panel_line(label, val))
+            self._put_panel("#dash-tok-requests", "Requests", f"{s['requests'] or 0:,}")
+            self._put_panel("#dash-tok-input", "Input", fmt_n(s["prompt_tokens"]))
+            self._put_panel("#dash-tok-output", "Output", fmt_n(s["completion_tokens"]))
+            self._put_panel("#dash-tok-api", "API Total", fmt_n(s["total_tokens"]))
+            self._put_panel("#dash-tok-usage", "Usage Total", fmt_n(s["usage_total_tokens"]))
+            self._put_panel("#dash-tok-hit-rate", "Hit rate",
+                            self._hit_rate(s["cache_hit"], s["cache_miss"],
+                                           s["cache_write"]))
 
-            put("#dash-tok-requests", "Requests", f"{s['requests'] or 0:,}")
-            put("#dash-tok-input", "Input", fmt_n(s["prompt_tokens"]))
-            put("#dash-tok-output", "Output", fmt_n(s["completion_tokens"]))
-            put("#dash-tok-api", "API Total", fmt_n(s["total_tokens"]))
-            put("#dash-tok-usage", "Usage Total", fmt_n(s["usage_total_tokens"]))
-            put("#dash-tok-hit-rate", "Hit rate",
-                self._hit_rate(s["cache_hit"], s["cache_miss"], s["cache_write"]))
+        def _render_dashboard_cache(self, s: dict) -> None:
+            self._put_panel("#dash-cache-hit", "Cache hit", fmt_n(s["cache_hit"]))
+            self._put_panel("#dash-cache-miss", "Cache miss", fmt_n(s["cache_miss"]))
+            self._put_panel("#dash-cache-write", "Cache write", fmt_n(s["cache_write"]))
+
+        def _render_dashboard_runtime(self, a: dict) -> None:
+            # counts are COUNT-based -> a real 0; avg_ms is NULL when nothing ran.
+            self._put_panel("#dash-rt-completed", "Completed", f"{a['completed'] or 0:,}")
+            self._put_panel("#dash-rt-incomplete", "Incomplete", f"{a['incomplete'] or 0:,}")
+            self._put_panel("#dash-rt-avg", "Avg tool ms", fmt_n(a["avg_ms"]))
+            self._put_panel("#dash-rt-sessions", "Sessions", f"{a['sessions'] or 0:,}")
+            self._put_panel("#dash-rt-projects", "Projects", f"{a['projects'] or 0:,}")
+
+        def _render_dashboard_models(self, rows) -> None:
+            top = rows[: self.DASH_TOP]
+            if not top:
+                self.query_one("#dash-models", Static).update("nothing in this window")
+                return
+            lines = [f"{i}. {r['model']:<26}{fmt_n(r['total_tokens']):>12}"
+                     f"  {r['requests']:>5} req"
+                     for i, r in enumerate(top, 1)]
+            self.query_one("#dash-models", Static).update("\n".join(lines))
+
+        def _render_dashboard_tools(self, rows) -> None:
+            # The name-keyed list keeps 0-call tools under a window; drop them.
+            top = [r for r in rows if r["calls"]][: self.DASH_TOP]
+            if not top:
+                self.query_one("#dash-tools", Static).update("nothing in this window")
+                return
+            lines = [f"{i}. {r['tool_name']:<22}{r['calls']:>7,} calls"
+                     f"  {fmt_n(r['avg_ms'])} ms"
+                     for i, r in enumerate(top, 1)]
+            self.query_one("#dash-tools", Static).update("\n".join(lines))
+
+        # Block characters for the per-day sparkline (index 0 = no activity).
+        _SPARK = " ▁▂▃▄▅▆▇█"
+
+        def _sparkline(self, values) -> str:
+            peak = max(values) if values else 0
+            if peak <= 0:
+                return ""
+            out = []
+            for v in values:
+                level = 0 if v <= 0 else min(8, max(1, round(v / peak * 8)))
+                out.append(self._SPARK[level])
+            return "".join(out)
+
+        def _render_dashboard_activity(self, daily, start, end) -> None:
+            """A one-line sparkline of calls per local day across the window.
+
+            ``daily`` only carries days that had calls, so the gaps are filled
+            from the window bounds. For the all-time range the series starts at
+            the first day with data (never from the epoch).
+            """
+            counts = {r["day"]: r["calls"] for r in daily}
+            now = self._now_ms() if end is None else end
+            end_day = datetime.fromtimestamp(now / 1000).date()
+            if start is not None:
+                start_day = datetime.fromtimestamp(start / 1000).date()
+            elif daily:
+                start_day = datetime.strptime(daily[0]["day"], "%Y-%m-%d").date()
+            else:
+                start_day = end_day
+            days, d = [], start_day
+            while d <= end_day:
+                days.append(d)
+                d += timedelta(days=1)
+            series = [counts.get(day.isoformat(), 0) for day in days]
+            self.query_one("#dash-activity", Static).update(self._sparkline(series))
+            if series:
+                self.query_one("#dash-activity-axis", Static).update(
+                    f"{days[0]:%m-%d} → {days[-1]:%m-%d} · peak {max(series):,}/day")
+            else:
+                self.query_one("#dash-activity-axis", Static).update("no activity")
 
         @staticmethod
         def _hit_rate(hit, miss, write) -> str:

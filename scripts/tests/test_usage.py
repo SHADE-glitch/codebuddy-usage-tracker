@@ -593,6 +593,52 @@ class WindowedQueryTest(unittest.TestCase):
         self.assertEqual(k["mcp"], sum(
             r["calls"] for r in db.q_mcp(self.conn, start_ts=start, end_ts=end)))
 
+    # -- q_usage_activity / q_usage_daily (Dashboard extras) --------------
+
+    def test_q_usage_activity_window(self):
+        ins = ("INSERT INTO tool_calls(call_id, session_id, project, tool_name,"
+               " category, ts, duration_ms, status) VALUES(?,?,?,?,?,?,?,?)")
+        self.conn.executemany(ins, [
+            ("r1", "s1", "/pA", "T", "builtin", self.NOW - HOUR, 100, "completed"),
+            ("r2", "s1", "/pA", "T", "builtin", self.NOW - 2 * HOUR, 300, "completed"),
+            ("r3", "s2", "/pB", "T", "builtin", self.NOW - 3 * HOUR, None, "incomplete"),
+            ("old", "s3", "/pC", "T", "builtin", self.NOW - 100 * HOUR, 50, "completed"),
+        ])
+        self.conn.commit()
+        a = db.q_usage_activity(self.conn, self._recent(), self.NOW)
+        self.assertEqual(a["calls"], 3)
+        self.assertEqual(a["completed"], 2)
+        self.assertEqual(a["incomplete"], 1)
+        self.assertEqual(a["avg_ms"], 200)        # (100 + 300 + NULL) / 2
+        self.assertEqual(a["sessions"], 2)        # s1, s2 (old s3 is outside)
+        self.assertEqual(a["projects"], 2)        # /pA, /pB
+        allt = db.q_usage_activity(self.conn)     # both bounds None = all-time
+        self.assertEqual(allt["calls"], 4)
+        self.assertEqual(allt["sessions"], 3)
+
+    def test_q_usage_activity_empty(self):
+        self.assertEqual(db.q_usage_activity(self.conn),
+                         {"calls": 0, "completed": None, "incomplete": None,
+                          "avg_ms": None, "sessions": 0, "projects": 0})
+
+    def test_q_usage_daily_buckets_by_local_day(self):
+        mid = datetime.fromtimestamp(self.NOW / 1000).replace(
+            hour=12, minute=0, second=0, microsecond=0)
+        day0 = int((mid - timedelta(days=2)).timestamp() * 1000)
+        d1 = int(mid.timestamp() * 1000)                    # noon
+        d1_later = int(mid.replace(hour=13).timestamp() * 1000)  # same local day
+        self.conn.executemany(
+            "INSERT INTO tool_calls(call_id, session_id, project, tool_name,"
+            " category, ts, duration_ms, status) VALUES(?,?,?,?,?,?,?,?)",
+            [("a", "s", "/p", "T", "builtin", day0, 1, "completed"),
+             ("b", "s", "/p", "T", "builtin", d1, 1, "completed"),
+             ("c", "s", "/p", "T", "builtin", d1_later, 1, "completed")])
+        self.conn.commit()
+        got = db.q_usage_daily(self.conn)
+        key = lambda ms: datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
+        self.assertEqual([(r["day"], r["calls"]) for r in got],
+                         [(key(day0), 1), (key(d1), 2)])
+
 
 class HitRateTest(unittest.TestCase):
     def test_rate(self):
