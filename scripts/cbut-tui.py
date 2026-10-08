@@ -236,9 +236,15 @@ if HAVE_TEXTUAL:
 
         USAGE_LOG_LIMIT = 100
 
-        def __init__(self, db_path):
+        def __init__(self, db_path, clock=None):
             super().__init__()
             self.db_path = str(db_path)
+            # Injectable wall clock (seconds since the epoch). Defaults to
+            # time.time, so a real run is unchanged; tests pass a fixed value to
+            # pin "now". The calendar-day windows are derived from this clock,
+            # so without a pin a `now - 1h` fixture falls out of a Today window
+            # when the suite runs in the first hour after local midnight.
+            self._clock = clock or time.time
             self._auto_sync = True
             self._sync_running = False
             self._sync_pending = False
@@ -616,6 +622,10 @@ if HAVE_TEXTUAL:
             tab (which is not in ``self.tab_range``)."""
             return self.tab_range.get(pane)
 
+        def _now_ms(self) -> int:
+            """The current time in epoch milliseconds, via the injectable clock."""
+            return int(self._clock() * 1000)
+
         def _bounds_for(self, pane):
             """``(start_ms, end_ms)`` for a pane's **own** window, from now.
 
@@ -624,7 +634,7 @@ if HAVE_TEXTUAL:
             means all-time (the Plugins tab).
             """
             rng = self._range_of(pane)
-            now = int(time.time() * 1000)
+            now = self._now_ms()
             if rng is None:
                 return None, now
             return db.window_bounds(rng, now)
@@ -672,7 +682,7 @@ if HAVE_TEXTUAL:
             # a cached/opening-time range.
             if not self._usage_ready:
                 return
-            now_ms = int(time.time() * 1000)
+            now_ms = self._now_ms()
             start, end = self._bounds_for("tab-usage")
             self._last_refresh = now_ms
             self._render_usage_window()
@@ -918,7 +928,7 @@ if HAVE_TEXTUAL:
         def _on_sync_done(self, ok: bool, stats, err) -> None:
             self._sync_running = False
             if ok:
-                self._last_sync = int(time.time() * 1000)
+                self._last_sync = self._now_ms()
                 if (stats or {}).get("files_indexed", 0) > 0:
                     self.refresh_data()          # new rows can touch any tab
                 else:

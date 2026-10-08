@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -147,6 +148,21 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         await pilot.pause()
         app.query_one("#range", tui.Select).value = "all"
         await pilot.pause()
+
+    def _noon_ms(self) -> int:
+        """Local noon today, in epoch ms.
+
+        The app's calendar-day windows derive from its clock. Pinning that clock
+        to noon makes a `now - 1h` fixture unambiguously inside the Today window
+        (and `now - 100h` unambiguously outside) at whatever hour the suite
+        actually runs — rather than holding only after 01:00 local.
+        """
+        noon = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+        return int(noon.timestamp() * 1000)
+
+    def _pinned_app(self, ms: int):
+        """A TrackerApp whose clock is frozen at ``ms`` (see :meth:`_noon_ms`)."""
+        return TrackerApp(str(self.db_path), clock=lambda: ms / 1000)
 
     # 1. eight tabs present (Dashboard + the entity tabs + Tokens + Usage)
     async def test_eight_tabs_present(self):
@@ -1055,21 +1071,16 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 40d. KPI reflects the Dashboard's own window (recent vs 200h-old rows)
     async def test_dashboard_kpi_reflects_window(self):
-        now = int(time.time() * 1000)
-        # Anchor the "recent" rows inside Today's calendar window: `now - 1h`
-        # is right except in the first hour after local midnight, when it lands
-        # on yesterday and drops out of a Today window. Clamp to today's 00:00
-        # so the fixture holds at any run hour.
-        recent = max(now - 3600_000, db.window_bounds("1d", now)[0])
+        now = self._noon_ms()
         make_db(self.db_path, [])
         insert_tool_calls(self.db_path, [
-            (f"r{i}", "s1", "/p", "T", "builtin", recent + i, 1,
+            (f"r{i}", "s1", "/p", "T", "builtin", now - 3600_000 + i, 1,
              "completed") for i in range(1234)
         ] + [
             (f"o{i}", "s1", "/p", "T", "builtin", now - 200 * 3600_000 + i, 1,
              "completed") for i in range(1000)
         ])
-        app = TrackerApp(str(self.db_path))
+        app = self._pinned_app(now)          # clock pinned, so "now - 1h" is Today
         async with app.run_test() as pilot:
             await pilot.pause()
             # Today: only the 1,234 recent calls
@@ -1082,14 +1093,12 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
     # 40e. Tokens block reflects the Dashboard's own window too
     async def test_dashboard_tokens_reflect_window(self):
-        now = int(time.time() * 1000)
-        # Same midnight-robust anchor as 40d.
-        recent = max(now - 3600_000, db.window_bounds("1d", now)[0])
+        now = self._noon_ms()
         make_db(self.db_path, [
-            ("r", "s1", "m", 100, 20, 0, 0, recent, 1),
+            ("r", "s1", "m", 100, 20, 0, 0, now - 3600_000, 1),
             ("o", "s1", "m", 10, 2, 0, 0, now - 200 * 3600_000, 1),
         ], cache={"r": (80, 15, 5)})
-        app = TrackerApp(str(self.db_path))
+        app = self._pinned_app(now)
         async with app.run_test() as pilot:
             await pilot.pause()
             # Today: Usage Total = 100 + 20 + 80
@@ -1112,6 +1121,19 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.resize_terminal(140, 40)
             await pilot.pause()
             self.assertFalse(panels.has_class("compact"))
+
+    # 41. the injected clock drives "now", and therefore the tab windows
+    async def test_injected_clock_drives_the_window(self):
+        pinned = 1_700_000_000_000          # a fixed instant (seconds*1000)
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: pinned / 1000)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self.assertEqual(app._now_ms(), pinned)
+            # the window is derived from the pinned clock, not the wall clock
+            start, end = app._bounds_for("tab-dashboard")
+            self.assertEqual(end, pinned)
+            self.assertEqual(start, db.window_bounds("1d", pinned)[0])
 
 
 if __name__ == "__main__":
