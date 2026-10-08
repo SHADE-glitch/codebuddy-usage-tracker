@@ -91,7 +91,7 @@ at all: its list is all-time, so the selector is hidden there. A window only cha
 
 | | Tab | What it shows |
 |---|-----|---------------|
-| 🧭 | **Dashboard** | two panels — usage KPIs (tool/skill/agent/MCP/plugin counts) and a token summary (requests, input/output, API total, usage total, cache hit rate) — each for the Dashboard's own window |
+| 🧭 | **Dashboard** | a grid of panels, all for the Dashboard's own window: usage KPIs (tool/skill/agent/MCP/plugin counts), a token summary (requests, input/output, API total, usage total, cache hit rate), absolute cache hit/miss/write, runtime health (completed/incomplete, average tool ms, distinct sessions/projects), Top 5 models and Top 5 tools, and a per-day call sparkline |
 | 🧰 | **Tools** | tool calls by name, completion, average duration, last used |
 | 🎯 | **Skills** | skill invocations by name (merged across owners), last use |
 | 🤖 | **Agents** | subagent types by name, call count, last use |
@@ -218,7 +218,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 173 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 177 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -228,8 +228,8 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | Suite | Tests | Covers |
 |---|---:|---|
 | `test_sync.py` | 61 | transcript parsing, tool classification, incremental vs `--full` re-sync |
-| `test_tui.py` | 53 | tab wiring and report shapes, through Textual's own `run_test` harness |
-| `test_usage.py` | 50 | the calendar-day windows (Today / 2 / 3 / 7 / 30 days / all), the token totals and the Dashboard KPI |
+| `test_tui.py` | 54 | tab wiring and report shapes, through Textual's own `run_test` harness |
+| `test_usage.py` | 53 | the calendar-day windows (Today / 2 / 3 / 7 / 30 days / all), the token totals and the Dashboard queries |
 | `test_readme_bilingual.py` | 3 | the two READMEs stay one document in two languages |
 | `test_record_coverage.py` | 6 | every covered commit is recorded in `CHANGELOG.md` |
 
@@ -243,7 +243,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 173 tests above |
+| `scripts/tests/` | the 177 tests above |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
 

@@ -81,7 +81,7 @@ CodeBuddy 其实**已经在写**你需要的数据，只是**从不展示**。�
 
 | | Tab | 内容 |
 |---|-----|------|
-| 🧭 | **Dashboard** | 两个面板 —— 用量 KPI（工具/skill/agent/MCP/插件 调用数）与 token 摘要（请求数、输入/输出、API 总计、usage 总计、缓存命中率），均取 Dashboard 自己的窗口 |
+| 🧭 | **Dashboard** | 一组面板，均取 Dashboard 自己的窗口：用量 KPI（工具/skill/agent/MCP/插件 调用数）、token 摘要（请求数、输入/输出、API 总计、usage 总计、缓存命中率）、缓存 hit/miss/write 绝对值、运行时健康（完成/未完成、平均工具耗时、去重 session/project 数）、Top 5 模型与 Top 5 工具，以及按天调用量 sparkline |
 | 🧰 | **Tools** | 按名称统计的工具调用、完成率、平均耗时、最近使用 |
 | 🎯 | **Skills** | 按名称统计的 skill 调用（跨归属合并）、最近使用 |
 | 🤖 | **Agents** | 按名称统计的子代理类型、调用次数、最近使用 |
@@ -177,7 +177,7 @@ cbut health              # 🩺  数据库与数据源检查
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 173 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 177 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -186,8 +186,8 @@ python3 -m unittest discover -s scripts/tests     # Ran 173 tests ... OK
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
 | `test_sync.py` | 61 | 转录解析、工具归类、增量同步与 `--full` 重建 |
-| `test_tui.py` | 53 | tab 接线与报告结构，走 Textual 自带的 `run_test` |
-| `test_usage.py` | 50 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）、token 汇总与 Dashboard KPI |
+| `test_tui.py` | 54 | tab 接线与报告结构，走 Textual 自带的 `run_test` |
+| `test_usage.py` | 53 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）、token 汇总与 Dashboard 查询 |
 | `test_readme_bilingual.py` | 3 | 两份 README 始终是「一份文档、两种语言」 |
 | `test_record_coverage.py` | 6 | 每个被覆盖的提交都记录进 `CHANGELOG.md` |
 
@@ -201,7 +201,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 173 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 173 个用例 |
+| `scripts/tests/` | 上面那 177 个用例 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
 
