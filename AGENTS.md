@@ -11,7 +11,7 @@ CLI). Three layers, in dependency order:
 1. `scripts/cbut-sync.py` — the **only writer**. Parses `~/.codebuddy/projects/**/*.jsonl` and
    `~/.codebuddy/traces/**/*.jsonl` read-only, classifies tools/skills/agents/plugins/MCP calls, and
    writes incrementally and idempotently into `~/.local/share/codebuddy-usage-tracker/usage.db`.
-2. `scripts/cbut_db.py` — the shared data layer (schema, queries, rolling windows). Imported by the
+2. `scripts/cbut_db.py` — the shared data layer (schema, queries, calendar-day windows). Imported by the
    TUI, the stats CLI and the tests.
 3. `scripts/cbut-tui.py` (Textual) and `scripts/cbut-stats.py` (headless CLI). Read-only apart from
    explicit maintenance subcommands.
@@ -90,6 +90,10 @@ tool runs from a checkout, so the version only needs to move when a documented c
   alone, sorted by call count. A renamed, updated or removed entity keeps its history; a name
   that appears under several owners is merged into one row. Under a time window only the counts
   shrink — the list stays full. Add a new panel by name, never by a per-run surrogate id.
+- **Windows are whole local calendar days, not "now minus N hours".** `window_bounds` starts at
+  local 00:00 (`"1d"` = today, `"2d"` = from yesterday's 00:00, …) and ends at the current time;
+  each tab keeps its own window. Do not switch to rolling hours or a shared range — the
+  natural-day boundary and per-tab independence are both deliberate.
 - **Keep `context tokens` and per-model token totals apart.** They are different measurements
   (turn-metrics `tokenDelta` vs per-response model tokens from transcripts) and summing them is
   wrong.
