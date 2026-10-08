@@ -870,7 +870,12 @@ if HAVE_TEXTUAL:
 
         def _auto_refresh_tick(self) -> None:
             # Only the visible tab is re-queried; hidden tabs refresh when the
-            # user opens them.
+            # user opens them. The is_running guard matters because a timer can
+            # fire once more while the app is shutting down (e.g. run_test's
+            # teardown), after the widgets are gone — query_one then raises
+            # NoMatches from inside the timer and fails the test run.
+            if not self.is_running:
+                return
             self._refresh_active_tab()
 
         def _load_sync_module(self):
