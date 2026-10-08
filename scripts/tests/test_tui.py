@@ -1056,9 +1056,14 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
     # 40d. KPI reflects the Dashboard's own window (recent vs 200h-old rows)
     async def test_dashboard_kpi_reflects_window(self):
         now = int(time.time() * 1000)
+        # Anchor the "recent" rows inside Today's calendar window: `now - 1h`
+        # is right except in the first hour after local midnight, when it lands
+        # on yesterday and drops out of a Today window. Clamp to today's 00:00
+        # so the fixture holds at any run hour.
+        recent = max(now - 3600_000, db.window_bounds("1d", now)[0])
         make_db(self.db_path, [])
         insert_tool_calls(self.db_path, [
-            (f"r{i}", "s1", "/p", "T", "builtin", now - 3600_000 + i, 1,
+            (f"r{i}", "s1", "/p", "T", "builtin", recent + i, 1,
              "completed") for i in range(1234)
         ] + [
             (f"o{i}", "s1", "/p", "T", "builtin", now - 200 * 3600_000 + i, 1,
@@ -1078,8 +1083,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
     # 40e. Tokens block reflects the Dashboard's own window too
     async def test_dashboard_tokens_reflect_window(self):
         now = int(time.time() * 1000)
+        # Same midnight-robust anchor as 40d.
+        recent = max(now - 3600_000, db.window_bounds("1d", now)[0])
         make_db(self.db_path, [
-            ("r", "s1", "m", 100, 20, 0, 0, now - 3600_000, 1),
+            ("r", "s1", "m", 100, 20, 0, 0, recent, 1),
             ("o", "s1", "m", 10, 2, 0, 0, now - 200 * 3600_000, 1),
         ], cache={"r": (80, 15, 5)})
         app = TrackerApp(str(self.db_path))
