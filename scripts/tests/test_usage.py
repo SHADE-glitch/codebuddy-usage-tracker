@@ -547,6 +547,52 @@ class WindowedQueryTest(unittest.TestCase):
         self.assertEqual(where, " WHERE ts >= ? AND ts < ?")
         self.assertEqual(params, [self._recent(), self.NOW])
 
+    # -- q_usage_kpi (Dashboard) ------------------------------------------
+
+    def test_q_usage_kpi_window(self):
+        self._tool("t1", "T", self.NOW - HOUR)
+        self._tool("t2", "T", self.NOW - 100 * HOUR)
+        self._skill("s1", "sk", self.NOW - HOUR)
+        self._agent("a1", "ag", self.NOW - HOUR)
+        self._agent("a2", "ag", self.NOW - 100 * HOUR)
+        self._mcp("m1", "srv", "t", self.NOW - HOUR)
+        self._plugin_use("p1", "t", self.NOW - HOUR)
+        self._plugin_use("p2", "t", self.NOW - 100 * HOUR)
+        self.conn.commit()
+        k = db.q_usage_kpi(self.conn, self._recent(), self.NOW)
+        self.assertEqual(k, {"tool_calls": 1, "skills": 1, "agents": 1,
+                             "mcp": 1, "plugins": 1})
+        allk = db.q_usage_kpi(self.conn, None, None)   # all-time
+        self.assertEqual(allk["tool_calls"], 2)
+        self.assertEqual(allk["agents"], 2)
+        self.assertEqual(allk["plugins"], 2)           # distinct plugins
+
+    def test_q_usage_kpi_empty_window(self):
+        self.assertEqual(
+            db.q_usage_kpi(self.conn, None, None),
+            {"tool_calls": 0, "skills": 0, "agents": 0, "mcp": 0, "plugins": 0})
+
+    def test_q_usage_kpi_matches_name_query_sums(self):
+        # The KPI COUNT(*) must equal the sum of the per-name `calls` column in
+        # the same window, so the Dashboard always agrees with the tabs.
+        for i in range(3):
+            self._tool(f"t{i}", f"tool{i}", self.NOW - HOUR)
+        self._tool("old", "oldtool", self.NOW - 100 * HOUR)
+        self._skill("s1", "sk", self.NOW - HOUR)
+        self._agent("a1", "ag", self.NOW - HOUR)
+        self._mcp("m1", "srv", "t", self.NOW - HOUR)
+        self.conn.commit()
+        start, end = self._recent(), self.NOW
+        k = db.q_usage_kpi(self.conn, start, end)
+        self.assertEqual(k["tool_calls"], sum(
+            r["calls"] for r in db.q_tools(self.conn, start_ts=start, end_ts=end)))
+        self.assertEqual(k["skills"], sum(
+            r["calls"] for r in db.q_skills(self.conn, start_ts=start, end_ts=end)))
+        self.assertEqual(k["agents"], sum(
+            r["calls"] for r in db.q_agents(self.conn, start_ts=start, end_ts=end)))
+        self.assertEqual(k["mcp"], sum(
+            r["calls"] for r in db.q_mcp(self.conn, start_ts=start, end_ts=end)))
+
 
 class HitRateTest(unittest.TestCase):
     def test_rate(self):

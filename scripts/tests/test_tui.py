@@ -148,15 +148,17 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app.query_one("#range", tui.Select).value = "all"
         await pilot.pause()
 
-    # 1. seven tabs present (Tokens + the new Usage page)
-    async def test_seven_tabs_present(self):
+    # 1. eight tabs present (Dashboard + the entity tabs + Tokens + Usage)
+    async def test_eight_tabs_present(self):
         make_db(self.db_path, [])
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
             tc = app.query_one(tui.TabbedContent)
-            self.assertEqual(tc.tab_count, 7)
+            self.assertEqual(tc.tab_count, 8)
             self.assertEqual(tc.tab_count, len(TrackerApp.TAB_IDS))
+            self.assertEqual(TrackerApp.TAB_IDS[0], "tab-dashboard")
+            self.assertEqual(tc.active, "tab-dashboard")   # Dashboard is initial
 
     # 2. Tokens tab lists each model
     async def test_tokens_tab_lists_models(self):
@@ -456,13 +458,15 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn(col, out)
         self.assertIn("30", out)   # total = 10 + 20
 
-    # 15. Usage tab exists (7 tabs total)
+    # 15. Usage and Tokens remain separate tabs (the Dashboard only summarizes)
     async def test_usage_tab_present(self):
         make_db(self.db_path, [])
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
-            self.assertEqual(app.query_one(tui.TabbedContent).tab_count, 7)
+            ids = [p.id for p in app.query(tui.TabPane)]
+            self.assertIn("tab-usage", ids)
+            self.assertIn("tab-tokens", ids)
 
     # 16. Usage window is recomputed from now and reacts to range changes
     async def test_usage_window_and_range(self):
@@ -886,6 +890,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
+            # The Dashboard is the initial tab; switch to Tools so the shared
+            # Select drives the Tools window.
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
             t = app.query_one("#t-tools", tui.DataTable)
             # Default entity range is 7d. Name is the key, so both tools are
             # listed; Old's calls (200h ago) fall outside 7d and count 0.
@@ -906,10 +914,15 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             tc = app.query_one(tui.TabbedContent)
             sel = app.query_one("#range", tui.Select)
+            self.assertEqual(sel.value, "1d")        # Dashboard default
+            self.assertEqual(app.tab_range["tab-dashboard"], "1d")
+            tc.active = "tab-tools"
+            await pilot.pause()
             self.assertEqual(sel.value, "7d")        # Tools default
             sel.value = "all"                        # widen only Tools
             await pilot.pause()
             self.assertEqual(app.tab_range["tab-tools"], "all")
+            self.assertEqual(app.tab_range["tab-dashboard"], "1d")  # untouched
             tc.active = "tab-skills"                 # Skills keeps its own default
             await pilot.pause()
             self.assertEqual(sel.value, "7d")
@@ -973,6 +986,96 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             t = app.query_one("#t-skills", tui.DataTable)
             labels = [str(c.label) for c in t.columns.values()]
             self.assertNotIn("plugin", labels)
+
+    # 40. Dashboard: two panels, no table, all expected widgets
+    async def test_dashboard_layout(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self.assertTrue(app.query_one("#dash-panels"))
+            self.assertTrue(app.query_one("#panel-dash-kpi"))
+            self.assertTrue(app.query_one("#panel-dash-tokens"))
+            for wid in ("#dash-kpi-tools", "#dash-kpi-skills",
+                        "#dash-kpi-agents", "#dash-kpi-mcp", "#dash-kpi-plugins",
+                        "#dash-tok-requests", "#dash-tok-input",
+                        "#dash-tok-output", "#dash-tok-api", "#dash-tok-usage",
+                        "#dash-tok-hit-rate", "#dash-note"):
+                self.assertTrue(app.query_one(wid))
+            # exactly two blocks: no leaderboard / activity table
+            self.assertEqual(len(app.query("#tab-dashboard DataTable")), 0)
+
+    # 40b. Dashboard has its own range, defaulting to Today
+    async def test_dashboard_defaults_to_today(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self.assertEqual(app.tab_range["tab-dashboard"], "1d")
+            self.assertEqual(app.query_one("#range", tui.Select).value, "1d")
+
+    # 40c. empty DB -> KPI zeros, token dashes, explicit empty-state note
+    async def test_dashboard_empty_state(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self.assertIn("0", str(app.query_one("#dash-kpi-tools").content))
+            self.assertIn("-", str(app.query_one("#dash-tok-input").content))
+            self.assertIn("No data", str(app.query_one("#dash-note").content))
+
+    # 40d. KPI reflects the Dashboard's own window (recent vs 200h-old rows)
+    async def test_dashboard_kpi_reflects_window(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [])
+        insert_tool_calls(self.db_path, [
+            (f"r{i}", "s1", "/p", "T", "builtin", now - 3600_000 + i, 1,
+             "completed") for i in range(1234)
+        ] + [
+            (f"o{i}", "s1", "/p", "T", "builtin", now - 200 * 3600_000 + i, 1,
+             "completed") for i in range(1000)
+        ])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Today: only the 1,234 recent calls
+            self.assertIn("1,234",
+                          str(app.query_one("#dash-kpi-tools").content))
+            app.query_one("#range", tui.Select).value = "all"
+            await pilot.pause()
+            self.assertIn("2,234",
+                          str(app.query_one("#dash-kpi-tools").content))
+
+    # 40e. Tokens block reflects the Dashboard's own window too
+    async def test_dashboard_tokens_reflect_window(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [
+            ("r", "s1", "m", 100, 20, 0, 0, now - 3600_000, 1),
+            ("o", "s1", "m", 10, 2, 0, 0, now - 200 * 3600_000, 1),
+        ], cache={"r": (80, 15, 5)})
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Today: Usage Total = 100 + 20 + 80
+            self.assertIn("200", str(app.query_one("#dash-tok-usage").content))
+            app.query_one("#range", tui.Select).value = "all"
+            await pilot.pause()
+            # All time: 200 + (10 + 2)
+            self.assertIn("212", str(app.query_one("#dash-tok-usage").content))
+
+    # 40f. narrow terminals stack the Dashboard panels (shared compact class)
+    async def test_dashboard_compact_fallback(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            panels = app.query_one("#dash-panels")
+            await pilot.resize_terminal(70, 24)
+            await pilot.pause()
+            self.assertTrue(panels.has_class("compact"))
+            await pilot.resize_terminal(140, 40)
+            await pilot.pause()
+            self.assertFalse(panels.has_class("compact"))
 
 
 if __name__ == "__main__":

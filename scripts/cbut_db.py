@@ -781,6 +781,30 @@ def q_usage_summary(conn, start_ts, end_ts) -> dict:
     return dict(row)
 
 
+def q_usage_kpi(conn, start_ts=None, end_ts=None) -> dict:
+    """Windowed call counts for the Dashboard (the status-bar numbers, windowed).
+
+    ``COUNT(*)`` per usage table equals the sum of the ``calls`` column of
+    q_tools/q_skills/q_agents/q_mcp in the same window (every call carries a
+    name), so the Dashboard always agrees with the per-entity tabs. ``plugins``
+    is ``COUNT(DISTINCT plugin)`` — the windowed form of
+    ``overview()['plugins_used']``. ``start_ts=None`` means all-time up to
+    ``end_ts``; both ``None`` is all-time.
+    """
+    where, params = _time_filter(start_ts, end_ts, col="ts")
+
+    def one(sql):
+        return conn.execute(sql, params).fetchone()[0]
+
+    return {
+        "tool_calls": one(f"SELECT COUNT(*) FROM tool_calls{where}"),
+        "skills": one(f"SELECT COUNT(*) FROM skill_usage{where}"),
+        "agents": one(f"SELECT COUNT(*) FROM agent_usage{where}"),
+        "mcp": one(f"SELECT COUNT(*) FROM mcp_usage{where}"),
+        "plugins": one(f"SELECT COUNT(DISTINCT plugin) FROM plugin_usage{where}"),
+    }
+
+
 def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0):
     """Per-response rows in the window, newest first (never re-parses logs).
 

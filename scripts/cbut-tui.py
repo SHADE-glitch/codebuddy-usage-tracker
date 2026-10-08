@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """cbut-tui — interactive viewer for the CodeBuddy usage tracker.
 
-Tabs: Tools · Skills · Agents · Plugins · MCP · Tokens · Usage.
+Tabs: Dashboard · Tools · Skills · Agents · Plugins · MCP · Tokens · Usage.
 
 Requires ``textual`` (see requirements.txt). The headless reports in
 cbut-stats.py need no third-party packages; this file is the only place that
@@ -97,16 +97,17 @@ if HAVE_TEXTUAL:
         """
 
         def __init__(self, title: str, *, with_range: bool = False,
-                     id: str | None = None):
+                     range_value: str = "7d", id: str | None = None):
             super().__init__(id=id)
             self._title = title
             self._with_range = with_range
+            self._range_value = range_value
 
         def compose(self) -> ComposeResult:
             yield Static(self._title, id="topbar-title")
             if self._with_range:
-                yield Select(RANGE_OPTIONS, value="7d", allow_blank=False,
-                             id="range")
+                yield Select(RANGE_OPTIONS, value=self._range_value,
+                             allow_blank=False, id="range")
 
     class HistoryScreen(Screen):
         """Recent calls for one entity, pushed on row select."""
@@ -192,11 +193,12 @@ if HAVE_TEXTUAL:
         #hist-title, #resp-title { padding: 1 2; }
         DataTable { height: 1fr; }
         #status { padding: 0 2; color: $text-muted; }
-        /* Usage page: the summary panels are height-capped and scroll
-           internally, so the Request Logs table below always keeps its rows.
-           #usage-panels is a Horizontal (four columns); .compact stacks it. */
-        #usage-box { height: 1fr; padding: 0 1; }
-        #usage-panels { height: auto; max-height: 40%; overflow-y: auto; }
+        /* Summary pages (Dashboard + Usage): the panels are height-capped and
+           scroll internally, so any table below them always keeps its rows.
+           .summary-panels is a Horizontal (a row of columns); .compact stacks
+           it. Both pages share .usage-panel / .panel-title. */
+        #usage-box, #dash-box { height: 1fr; padding: 0 1; }
+        .summary-panels { height: auto; max-height: 40%; overflow-y: auto; }
         .usage-panel {
             border: round $primary;
             padding: 0 1;
@@ -204,19 +206,23 @@ if HAVE_TEXTUAL:
             width: 1fr;
             height: auto;
         }
-        #panel-runtime { margin: 0; }
+        #panel-runtime, #panel-dash-tokens { margin: 0; }
         .panel-title { text-style: bold; color: $accent; }
         #usage-status, #usage-window { padding: 0; }
-        #usage-note { padding: 0 1; color: $text-muted; }
+        #usage-note, #dash-note { padding: 0 1; color: $text-muted; }
         #t-usage { height: 1fr; min-height: 6; }
-        #usage-panels.compact { layout: vertical; }
-        #usage-panels.compact .usage-panel { width: 100%; margin: 0 0 1 0; }
+        .summary-panels.compact { layout: vertical; }
+        .summary-panels.compact .usage-panel { width: 100%; margin: 0 0 1 0; }
         """
         # Pane ids in display order. Used for wrap-around tab cycling.
         TAB_IDS = [
-            "tab-tools", "tab-skills", "tab-agents",
+            "tab-dashboard", "tab-tools", "tab-skills", "tab-agents",
             "tab-plugins", "tab-mcp", "tab-tokens", "tab-usage",
         ]
+        # The tab shown on launch. The TopBar Select must start on this tab's
+        # own range (see compose), or its mount-time Changed would overwrite
+        # that tab's default before the user touches anything.
+        INITIAL_TAB = "tab-dashboard"
         BINDINGS = [
             Binding("q", "quit", "Quit"),
             Binding("r", "refresh", "Refresh"),
@@ -239,8 +245,10 @@ if HAVE_TEXTUAL:
             self.sync_mod = None
             # Per-tab range state: each tab keeps its own window, so changing
             # one tab's range never moves another's. Entity tabs default to 7
-            # days, the Usage page to Today; Plugins has no window (all-time).
+            # days; the Dashboard and the Usage page default to Today; Plugins
+            # has no window (all-time).
             self.tab_range = {
+                "tab-dashboard": "1d",
                 "tab-tools": "7d", "tab-skills": "7d", "tab-agents": "7d",
                 "tab-mcp": "7d", "tab-tokens": "7d", "tab-usage": "1d",
             }
@@ -249,8 +257,37 @@ if HAVE_TEXTUAL:
             self._usage_ready = False
 
         def compose(self) -> ComposeResult:
-            yield TopBar(self.TITLE, with_range=True, id="topbar")
-            with TabbedContent(initial="tab-tools"):
+            yield TopBar(self.TITLE, with_range=True,
+                         range_value=self.tab_range[self.INITIAL_TAB],
+                         id="topbar")
+            with TabbedContent(initial=self.INITIAL_TAB):
+                with TabPane("Dashboard", id="tab-dashboard"):
+                    yield Vertical(
+                        Horizontal(
+                            Vertical(
+                                Static("Usage", classes="panel-title"),
+                                Static(id="dash-kpi-tools"),
+                                Static(id="dash-kpi-skills"),
+                                Static(id="dash-kpi-agents"),
+                                Static(id="dash-kpi-mcp"),
+                                Static(id="dash-kpi-plugins"),
+                                classes="usage-panel", id="panel-dash-kpi",
+                            ),
+                            Vertical(
+                                Static("Tokens", classes="panel-title"),
+                                Static(id="dash-tok-requests"),
+                                Static(id="dash-tok-input"),
+                                Static(id="dash-tok-output"),
+                                Static(id="dash-tok-api"),
+                                Static(id="dash-tok-usage"),
+                                Static(id="dash-tok-hit-rate"),
+                                classes="usage-panel", id="panel-dash-tokens",
+                            ),
+                            classes="summary-panels", id="dash-panels",
+                        ),
+                        Static(id="dash-note"),
+                        id="dash-box",
+                    )
                 with TabPane("Tools", id="tab-tools"):
                     yield DataTable(id="t-tools", zebra_stripes=True)
                 with TabPane("Skills", id="tab-skills"):
@@ -294,7 +331,7 @@ if HAVE_TEXTUAL:
                                 Static(id="usage-status"),
                                 classes="usage-panel", id="panel-runtime",
                             ),
-                            id="usage-panels",
+                            id="usage-panels", classes="summary-panels",
                         ),
                         Static(id="usage-note"),
                         DataTable(id="t-usage", zebra_stripes=True),
@@ -461,6 +498,7 @@ if HAVE_TEXTUAL:
 
         # pane id -> the fill method for that tab (usage handled separately).
         _PANE_FILL = {
+            "tab-dashboard": "_fill_dashboard",
             "tab-tools": "_fill_tools", "tab-skills": "_fill_skills",
             "tab-agents": "_fill_agents", "tab-plugins": "_fill_plugins",
             "tab-mcp": "_fill_mcp", "tab-tokens": "_fill_tokens",
@@ -478,6 +516,7 @@ if HAVE_TEXTUAL:
             try:
                 # Each tab is filled with its own window, so one tab's range
                 # never moves another's.
+                self._fill_dashboard(conn, *self._bounds_for("tab-dashboard"))
                 self._fill_tools(conn, *self._bounds_for("tab-tools"))
                 self._fill_skills(conn, *self._bounds_for("tab-skills"))
                 self._fill_agents(conn, *self._bounds_for("tab-agents"))
@@ -552,18 +591,19 @@ if HAVE_TEXTUAL:
             # does not wrap inside a quarter-width panel at 120+ columns.
             return f"[dim]{label:<12}[/dim]{value:>12}"
 
-        # Below this width the four panels stack instead of sitting side by
-        # side: each column needs ~28 cells for a 24-char panel line plus
+        # Below this width the panels stack instead of sitting side by side:
+        # each column needs ~28 cells for a 24-char panel line plus
         # border/padding, so 4 x 28 = 112.
         COMPACT_WIDTH = 112
 
         def _apply_responsive_layout(self, width=None) -> None:
-            # Four panels side by side on wide terminals; stacked when narrow.
+            # Panels side by side on wide terminals; stacked when narrow. Every
+            # summary page (Dashboard + Usage) uses .summary-panels.
             if width is None:
                 width = self.size.width
             try:
-                self.query_one("#usage-panels").set_class(
-                    width < self.COMPACT_WIDTH, "compact")
+                for el in self.query(".summary-panels"):
+                    el.set_class(width < self.COMPACT_WIDTH, "compact")
             except Exception:
                 pass
 
@@ -690,6 +730,56 @@ if HAVE_TEXTUAL:
             else:
                 note = "complete"
             put("#sum-missing", "Incomplete", note)
+
+        # --- Dashboard page ------------------------------------------------
+
+        def _fill_dashboard(self, conn, start=None, end=None) -> None:
+            """Render the two Dashboard panels for this tab's own window.
+
+            KPI = windowed call counts (q_usage_kpi); Tokens = the same
+            summary the Usage page uses (q_usage_summary). Both reflect the
+            Dashboard's window only — the other tabs are untouched.
+            """
+            try:
+                kpi = db.q_usage_kpi(conn, start, end)
+                s = db.q_usage_summary(conn, start, end)
+            except sqlite3.Error as e:
+                # e.g. an un-migrated DB where the newer columns are missing.
+                self.query_one("#dash-note", Static).update(
+                    f"dashboard query failed ({e}); run: cbut sync")
+                return
+            self._render_dashboard_kpi(kpi)
+            self._render_dashboard_tokens(s)
+            if not any(kpi.values()) and not (s["requests"] or 0):
+                self.query_one("#dash-note", Static).update(
+                    "No data in this window — widen the range above.")
+            else:
+                self.query_one("#dash-note", Static).update(
+                    "Range: the top bar · this tab keeps its own window")
+            self._apply_responsive_layout()
+
+        def _render_dashboard_kpi(self, k: dict) -> None:
+            def put(wid: str, label: str, val: str) -> None:
+                self.query_one(wid, Static).update(self._panel_line(label, val))
+
+            # COUNT(*) is authoritative -> a real 0, never a dash.
+            put("#dash-kpi-tools", "Tool calls", f"{k['tool_calls']:,}")
+            put("#dash-kpi-skills", "Skills", f"{k['skills']:,}")
+            put("#dash-kpi-agents", "Agents", f"{k['agents']:,}")
+            put("#dash-kpi-mcp", "MCP", f"{k['mcp']:,}")
+            put("#dash-kpi-plugins", "Plugins", f"{k['plugins']:,}")
+
+        def _render_dashboard_tokens(self, s: dict) -> None:
+            def put(wid: str, label: str, val: str) -> None:
+                self.query_one(wid, Static).update(self._panel_line(label, val))
+
+            put("#dash-tok-requests", "Requests", f"{s['requests'] or 0:,}")
+            put("#dash-tok-input", "Input", fmt_n(s["prompt_tokens"]))
+            put("#dash-tok-output", "Output", fmt_n(s["completion_tokens"]))
+            put("#dash-tok-api", "API Total", fmt_n(s["total_tokens"]))
+            put("#dash-tok-usage", "Usage Total", fmt_n(s["usage_total_tokens"]))
+            put("#dash-tok-hit-rate", "Hit rate",
+                self._hit_rate(s["cache_hit"], s["cache_miss"], s["cache_write"]))
 
         @staticmethod
         def _hit_rate(hit, miss, write) -> str:
