@@ -10,11 +10,11 @@ Check with `python3 -m unittest scripts.tests.test_record_coverage`. Entries are
 never reused. An entry states what was true **as of its commit**, not current state, and aggregate
 counts are printed by the check, never copied into this file.
 
-> **Why the record is so short.** This repository is one day old (all commits are dated 2026-10-07)
-> and every production commit so far carries a `feat` subject, which is out of scope by class: a
-> feature is the product, not a droppable deviation, and features are documented in the READMEs. The
-> one covered commit below is a `docs:` commit that also corrected stale CLI help — the subject
-> prefix does not decide coverage, the touched paths do.
+> **Why the record is short.** Most production commits carry a `feat` subject, which is out of scope
+> by class: a feature is the product, not a droppable deviation, and features are documented in the
+> READMEs. Only the non-feature commits that touch a production path appear below — D-001 is a
+> `docs:` commit that also corrected stale CLI help, D-002 a `fix:` — coverage follows the touched
+> paths and the `feat` exclusion, not the author's intent.
 
 `kind` ∈ `fix` | `perf` | `taste` | `guard` | `revert` | `chore` — see AGENTS.md § Recording
 conventions for the cut.
@@ -30,3 +30,16 @@ Evidence L0 2026-10-08 re-run: `python3 -m unittest discover -s scripts/tests` (
 Cost     `bin/cbut` stays bash-on-purpose (it must print a useful error when the venv is broken), so
          this text is not generated from the TUI and will go stale again unless checked by hand
 Commit   cfcccf4
+
+### D-002 · 2026-10-08 · fix
+Symptom  An `Agent` call carrying only `description`/`prompt` (no `subagent_type`) was recorded
+         under the literal name `?`, splitting real general-purpose usage into an unknown row
+         instead of counting it as the tool's documented default
+Change   Record `general-purpose` when the caller omits `subagent_type`, and add a regression test;
+         `cbut sync --full` reclassifies the rows already indexed under `?`
+Evidence L2 2026-10-08: after `cbut sync --full` against the real logs, `q_agents` reports no `?`
+         row and the general-purpose count matches the previously-split total; L0 `test_sync.py`
+         green
+Cost     None — the default is the Agent tool's own contract, not a guess; a CodeBuddy build that
+         changes that default would need this line revisited
+Commit   19c0b60

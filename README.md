@@ -36,14 +36,14 @@
 ## ✨ Features
 
 - 🧰 **Seven views, one command** — tools, skills, agents, plugins, MCP, tokens, usage.
-- 📜 **Full history, instantly** — backfills every session already on disk; older data is
-  one click away by widening the top-bar range (default **Last 24 hours**).
+- 📜 **Full history, instantly** — backfills every session already on disk.
+- 🔑 **Keyed by name — nothing ever disappears** — every tab lists what you have **ever** used *and* what is installed, keyed by name alone: a renamed, updated or removed entity keeps its history, and the same name from two owners is one merged row.
 - 🪶 **Passive & read-only** — no hook, no plugin, no CodeBuddy source changes.
 - 🗃️ **One local SQLite file** — no network, no upload, no telemetry.
 - ⚡ **Fast incremental sync** — ~5 s to index ~300 sessions / ~420 MB; only new bytes after that.
 - 🖥️ **TUI + headless** — a seven-tab Textual UI for humans, JSON reports for scripts.
 - 🔢 **Real model tokens** — per-model input / output / total plus cache hit / miss / write, straight from `providerData.rawUsage`; total prefers the provider's own reported value.
-- 📊 **Rolling windows everywhere** — a single top-bar range (`24h`/`48h`/`72h`/`7d`/`30d`/All time, default **Last 24 hours**) filters **all seven tabs**, measured back from *now*, not calendar days.
+- 📊 **Rolling windows** — a top-bar range (`24h`/`48h`/`72h`/`7d`/`30d`/All time) scales the entity tabs (default **7 days**) and the Usage page (default **24 hours**); Plugins is always all-time. A window only shrinks the **counts** — the list stays full.
 - 🔐 **Metadata only** — names, timings, statuses, projects. Never message bodies or argument values.
 
 ## 🤔 Why this exists
@@ -81,29 +81,33 @@ index. It never touches CodeBuddy's files, installs no hook, and adds no runtime
 
 ## 📊 The seven tabs
 
-A shared top bar above the tabs carries the range selector — one control that filters
-**every** tab. It defaults to **Last 24 hours**; older data stays hidden until you widen
-the range (e.g. **All time**).
+A shared top bar above the tabs carries the range selector. The entity tabs (Tools,
+Skills, Agents, MCP, Tokens) share one window — default **7 days** — while the Usage
+page keeps its own, default **24 hours**. The **Plugins** tab has no window at all: its
+list is all-time, so the selector is hidden there. A window only changes the **counts**;
+it never drops a row, because every tab is keyed by name.
 
 | | Tab | What it shows |
 |---|-----|---------------|
 | 🧰 | **Tools** | tool calls by name, completion, average duration, last used |
-| 🎯 | **Skills** | skill invocations, owning plugin, last use |
-| 🤖 | **Agents** | subagent types used, active vs internal |
-| 🧩 | **Plugins** | installed plugins with their skills/agents/commands; lists **all** installed plugins (from the static inventory), while **uses** is windowed to the selected range and counts every attributed skill/agent/command invocation, not just command entries |
+| 🎯 | **Skills** | skill invocations by name (merged across owners), last use |
+| 🤖 | **Agents** | subagent types by name, active vs internal |
+| 🧩 | **Plugins** | every plugin — installed **and** ever used — with its skills/agents/commands; all-time, no version column |
 | 🔌 | **MCP** | MCP servers and tools, invocation counts |
-| 🔢 | **Tokens** | per-model requests, with-usage count, input, output, **API total**, **usage total**, cache hit/miss/write, coverage — windowed by the top-bar range |
-| 📊 | **Usage** | rolling-window request log (cc-switch-style columns) with summary panels |
+| 🔢 | **Tokens** | per-model requests, with-usage count, input, output, **API total**, **usage total**, cache hit/miss/write, coverage |
+| 📊 | **Usage** | request log (cc-switch-style columns) with summary panels |
 
 Press <kbd>Enter</kbd> on any row for a per-entity history — recent calls for a tool,
 skill, agent or MCP tool, and the per-response token detail for a model on the Tokens
 tab. Every tab shows an explicit empty-state message when it has no data yet, instead
 of a blank region.
 
-**Plugins** counts every invocation attributed to a plugin — its skills, agents and
-slash commands — so a plugin whose skill was used no longer reads `uses = 0`.
-Attribution is evidence-based: a name is credited to a plugin only when the plugin
-inventory maps that name to it.
+**Every tab lists the union of "ever used" and "installed", keyed by name, sorted by call
+count.** A deleted skill, an uninstalled plugin or a renamed agent keeps its row and its
+count; a name that appears under two plugins is merged into one. **Plugins** counts every
+invocation attributed to a plugin — its skills, agents and slash commands — so a plugin
+whose skill was used no longer reads `uses = 0`. Attribution is evidence-based: a name is
+credited to a plugin only when the plugin inventory maps that name to it.
 
 > **API Total** = the provider's reported total when present, otherwise Input + Output.
 > **Usage Total** is a display-only metric (`Input + Output + cache hit`) that
@@ -117,21 +121,18 @@ inventory maps that name to it.
 The Usage tab mirrors the style of a session-usage panel, but every number comes from
 the transcripts on disk:
 
-- **The range control lives in the shared top bar**, not on this tab, and filters all
-  seven tabs — the Usage page just follows it. Options are `24h` / `48h` / `72h` / `7d` /
-  `30d` / `All time`, each computed back from the current clock, **not** natural calendar
-  days and **not** from when the tracker first ran. Its own **Window / Requests** panel
-  shows the exact bounds of the active range.
+- **The Usage page has its own range** (default **24 hours**), shown in the shared top
+  bar while the Usage tab is active; the entity tabs keep a separate window (default
+  **7 days**). Options are `24h` / `48h` / `72h` / `7d` / `30d` / `All time`, each
+  computed back from the current clock, **not** natural calendar days and **not** from
+  when the tracker first ran. Its **Window / Requests** panel shows the exact bounds of
+  the active range.
 - **One Request Logs list**, newest first. The columns follow cc-switch's request
-  records — time · provider · model · input · output · API total · usage total · cache
-  read (hit) · cache miss · cache write · usage (Real / Partial / Missing) · source. cc-switch's cost,
-  duration and HTTP-status columns have no transcript source, so they are omitted
-  rather than estimated. The priority columns sit leftmost; the cache detail is
+  records — time · model · input · output · API total · usage total · cache read (hit) ·
+  cache miss · cache write · usage (Real / Partial / Missing) · source. cc-switch's
+  provider, cost, duration and HTTP-status columns have no transcript source, so they are
+  omitted rather than estimated. The priority columns sit leftmost; the cache detail is
   reachable by horizontal scroll.
-- **Provider is always `Transcript / Unknown`.** CodeBuddy transcripts carry no
-  provider / account / site / endpoint field, so the provider column reports an honest
-  `Unknown` rather than guessing from the model name — the same for the international,
-  China-mainland and third-party coding-plan builds.
 - **Same accuracy rules as Tokens** — **API Total** = provider total when present, else
   `Input + Output`, and the summary reports its `Source` (`provider` / `derived` /
   `mixed`). A separate **Usage Total** (`Input + Output + cache hit`) is shown for
@@ -215,7 +216,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 155 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 162 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -224,9 +225,11 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 
 | Suite | Tests | Covers |
 |---|---:|---|
-| `test_sync.py` | 60 | transcript parsing, tool classification, incremental vs `--full` re-sync |
-| `test_tui.py` | 44 | tab wiring and report shapes, through Textual's own `run_test` harness |
-| `test_usage.py` | 51 | the rolling windows (24h / 48h / 72h / 7d / 30d / all) measured back from *now* |
+| `test_sync.py` | 61 | transcript parsing, tool classification, incremental vs `--full` re-sync |
+| `test_tui.py` | 45 | tab wiring and report shapes, through Textual's own `run_test` harness |
+| `test_usage.py` | 47 | the rolling windows (24h / 48h / 72h / 7d / 30d / all) measured back from *now* |
+| `test_readme_bilingual.py` | 3 | the two READMEs stay one document in two languages |
+| `test_record_coverage.py` | 6 | every covered commit is recorded in `CHANGELOG.md` |
 
 ## 📁 Repository layout
 
@@ -238,7 +241,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
 | `scripts/cbut-tui.py` | the seven-tab Textual UI |
-| `scripts/tests/` | the 155 tests above |
+| `scripts/tests/` | the 162 tests above |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
 
@@ -252,9 +255,9 @@ launcher, `CBUT_DB` and `CBUT_CODEBUDDY_DIR` for the data (see [Usage](#-usage))
   mechanism (`DeferExecuteTool`).
 - 🤖 **Internal agents** (`autoModeClassifier`, `summaryGenerator`, …) live in the OTel
   traces; trace ingestion is planned but not yet wired into v1.
-- 🏷️ **No provider attribution** — CodeBuddy transcripts record no provider / account /
-  site / endpoint, so the Usage page reports a single `Transcript / Unknown` provider
-  row rather than guessing from the model name.
+- 🏷️ **No provider field** — CodeBuddy transcripts record no provider / account / site /
+  endpoint, so the Usage page has no provider column at all rather than guessing one
+  from the model name.
 - 🔢 **`context tokens` vs model tokens.** The headless `cbut stats` prints a session-level
   `context tokens` figure (turn-metrics `tokenDelta`) next to the per-model token totals;
   the two are deliberately kept apart. The `context tokens` sum is idempotent — repeated

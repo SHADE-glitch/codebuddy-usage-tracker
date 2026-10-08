@@ -82,9 +82,14 @@ tool runs from a checkout, so the version only needs to move when a documented c
   reads a live store is an instrument error, not a finding.
 - **Sync must stay incremental *and* idempotent.** Repeated syncs and schema migrations must not
   inflate `context tokens` or duplicate rows; `cbut sync --full` is the documented rebuild path.
-- **No provider attribution, by decision.** CodeBuddy transcripts carry no provider / account /
-  site / endpoint. The Usage page therefore reports a single `Transcript / Unknown` row. Do not
-  "helpfully" infer a provider from the model name — guessing is worse than an honest unknown.
+- **No provider field, by decision.** CodeBuddy transcripts carry no provider / account / site /
+  endpoint, so the Usage page has no provider column at all. Do not "helpfully" add or infer one
+  from the model name — guessing is worse than an honest omission.
+- **Name is the primary key of every panel.** Each tab lists the union of what is installed
+  (the static `inventory`) and what has *ever been used* (the usage tables), keyed by name
+  alone, sorted by call count. A renamed, updated or removed entity keeps its history; a name
+  that appears under several owners is merged into one row. Under a time window only the counts
+  shrink — the list stays full. Add a new panel by name, never by a per-run surrogate id.
 - **Keep `context tokens` and per-model token totals apart.** They are different measurements
   (turn-metrics `tokenDelta` vs per-response model tokens from transcripts) and summing them is
   wrong.
