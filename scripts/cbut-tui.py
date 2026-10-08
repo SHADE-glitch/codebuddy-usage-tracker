@@ -63,24 +63,22 @@ def local_time(ms):
 
 
 # Usage-page option list (values mirror cbut_db so the two stay in sync).
+# Windows are whole local calendar days ending now ("Today", "2 days", …).
 RANGE_OPTIONS = [(db.USAGE_RANGE_LABELS[k], k)
-                 for k in ("24h", "48h", "72h", "7d", "30d", "all")]
-# The Usage page is a single Request Logs list. Column order follows the
-# requested cc-switch-style request record: time · model · input · output ·
-# API total · usage total · cache hit/miss/write · usage · source.
-# cc-switch's provider / cost / duration / HTTP-status columns have no
+                 for k in ("1d", "2d", "3d", "7d", "30d", "all")]
+# The Usage page is a single Request Logs list. Column order: time · model ·
+# usage total · input · output · API total · cache hit/miss/write · cache hit
+# rate. cc-switch's provider / cost / duration / HTTP-status columns have no
 # transcript source, so they are deliberately absent rather than estimated.
-# Time/Model/Input/Output/Total/Usage are the priority columns (leftmost); the
-# cache detail is reachable by horizontal scroll and by the row detail screen.
-USAGE_COLUMNS = ("Time", "Model", "Input", "Output",
-                 "API Total", "Usage Total", "Cache hit", "Cache miss",
-                 "Cache write", "Usage", "Source")
+USAGE_COLUMNS = ("Time", "Model", "Usage Total", "Input", "Output",
+                 "API Total", "Cache hit", "Cache miss",
+                 "Cache write", "Cache hit rate")
 
-# Tokens-tab column order: API Total and Usage Total sit side by side, then the
-# cache parts, then coverage.
-TOKEN_COLUMNS = ("Model", "Requests", "With usage", "Input", "Output",
-                 "API Total", "Usage Total", "Cache hit", "Cache miss",
-                 "Cache write", "Coverage")
+# Tokens-tab column order: Usage Total right after the model, then the request
+# count and the token parts. The cache detail is kept; the near-always-100%
+# "With usage" and "Coverage" columns were dropped.
+TOKEN_COLUMNS = ("Model", "Usage Total", "Requests", "Input", "Output",
+                 "API Total", "Cache hit", "Cache miss", "Cache write")
 
 
 if HAVE_TEXTUAL:
@@ -240,11 +238,11 @@ if HAVE_TEXTUAL:
             self._sync_pending = False
             self.sync_mod = None
             # Per-tab range state: each tab keeps its own window, so changing
-            # one tab's range never moves another's. Entity tabs default to 7d,
-            # the Usage page to 24h; Plugins has no window at all (all-time).
+            # one tab's range never moves another's. Entity tabs default to 7
+            # days, the Usage page to Today; Plugins has no window (all-time).
             self.tab_range = {
                 "tab-tools": "7d", "tab-skills": "7d", "tab-agents": "7d",
-                "tab-mcp": "7d", "tab-tokens": "7d", "tab-usage": "24h",
+                "tab-mcp": "7d", "tab-tokens": "7d", "tab-usage": "1d",
             }
             self._last_refresh = None      # epoch ms
             self._last_sync = None         # epoch ms
@@ -272,18 +270,15 @@ if HAVE_TEXTUAL:
                                 Static("Window / Requests", classes="panel-title"),
                                 Static(id="usage-window"),
                                 Static(id="sum-requests"),
-                                Static(id="sum-with-usage"),
-                                Static(id="sum-coverage"),
                                 Static(id="sum-missing"),
                                 classes="usage-panel", id="panel-window",
                             ),
                             Vertical(
                                 Static("Model tokens", classes="panel-title"),
+                                Static(id="sum-usage-total"),
                                 Static(id="sum-input"),
                                 Static(id="sum-output"),
                                 Static(id="sum-total"),
-                                Static(id="sum-total-source"),
-                                Static(id="sum-usage-total"),
                                 classes="usage-panel", id="panel-tokens",
                             ),
                             Vertical(
@@ -312,7 +307,7 @@ if HAVE_TEXTUAL:
             for tid, cols in (
                 ("t-tools", ("tool", "calls", "ok", "fail", "avg", "last used")),
                 ("t-skills", ("skill", "calls", "ok", "last used")),
-                ("t-agents", ("agent", "kind", "calls", "last used")),
+                ("t-agents", ("agent", "calls", "last used")),
                 ("t-plugins", ("plugin", "uses", "skills", "agents", "cmds")),
                 ("t-mcp", ("server", "tool", "calls", "ok", "last used")),
             ):
@@ -423,8 +418,7 @@ if HAVE_TEXTUAL:
         def _fill_agents(self, conn, start=None, end=None) -> None:
             self._fill_or_empty(
                 self.query_one("#t-agents", DataTable),
-                [[r["agent_type"], r["kind"], f"{r['calls']:,}",
-                  ts(r["last_used"])]
+                [[r["agent_type"], f"{r['calls']:,}", ts(r["last_used"])]
                  for r in db.q_agents(conn, start_ts=start, end_ts=end)],
                 "No agents used yet", key_kind="agent")
 
@@ -454,13 +448,13 @@ if HAVE_TEXTUAL:
             # in sessions.tokens (tokenDelta). Total = API total (provider total
             # when present). Usage Total is the display-only re-add of cache hit.
             mt = self.query_one("#t-tokens", DataTable)
-            rows = [[r["model"], f"{r['responses']:,}", f"{r['with_usage']:,}",
+            rows = [[r["model"], fmt_n(r["usage_total_tokens"]),
+                     f"{r['responses']:,}",
                      fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
-                     fmt_n(r["total_tokens"]), fmt_n(r["usage_total_tokens"]),
+                     fmt_n(r["total_tokens"]),
                      fmt_n(r["prompt_cache_hit_tokens"]),
                      fmt_n(r["prompt_cache_miss_tokens"]),
-                     fmt_n(r["prompt_cache_write_tokens"]),
-                     self._coverage(r["with_usage"], r["responses"])]
+                     fmt_n(r["prompt_cache_write_tokens"])]
                     for r in db.q_model_tokens(conn, start_ts=start, end_ts=end)]
             self._fill_or_empty(mt, rows, "No model responses yet",
                                 key_kind="model")
@@ -552,13 +546,6 @@ if HAVE_TEXTUAL:
             )
 
         @staticmethod
-        def _coverage(with_usage, requests) -> str:
-            """Share of requests that carry usage; ``-`` when there are none."""
-            if not requests:
-                return "-"
-            return f"{(with_usage or 0) / requests * 100:.1f}%"
-
-        @staticmethod
         def _panel_line(label: str, value: str) -> str:
             # Fixed-width label + right-aligned value keeps the panels aligned
             # without relying on text-align. 12 + 12 = 24 columns, so the line
@@ -626,13 +613,19 @@ if HAVE_TEXTUAL:
                 sel.value = value
 
         def _render_usage_window(self) -> None:
+            # Dates only: the window is a set of whole local calendar days, so
+            # a clock time here would be noise.
             start, end = self._bounds_for("tab-usage")
-            shown_start = (local_time(start) if start is not None
-                           else "(no lower bound)")
-            self.query_one("#usage-window", Static).update(
-                f"{db.USAGE_RANGE_LABELS[self.tab_range['tab-usage']]}\n"
-                f"{shown_start} — {local_time(end)}"
-            )
+            label = db.USAGE_RANGE_LABELS[self.tab_range["tab-usage"]]
+            end_date = datetime.fromtimestamp(end / 1000).strftime("%Y-%m-%d")
+            if start is None:
+                self.query_one("#usage-window", Static).update(
+                    f"{label}\n{end_date}")
+            else:
+                start_date = datetime.fromtimestamp(
+                    start / 1000).strftime("%Y-%m-%d")
+                self.query_one("#usage-window", Static).update(
+                    f"{label}\n{start_date} — {end_date}")
 
         def _refresh_usage(self, conn=None) -> None:
             # Recompute the window from the CURRENT time on every refresh — never
@@ -671,16 +664,12 @@ if HAVE_TEXTUAL:
 
             req = s["requests"] or 0
             put("#sum-requests", "Requests", f"{req:,}")
-            put("#sum-with-usage", "With usage", f"{s['with_usage'] or 0:,}")
-            put("#sum-coverage", "Coverage", self._coverage(s["with_usage"], req))
-            put("#sum-input", "Input", fmt_n(s["prompt_tokens"]))
-            put("#sum-output", "Output", fmt_n(s["completion_tokens"]))
-            put("#sum-total", "API Total", fmt_n(s["total_tokens"]))
-            put("#sum-total-source", "Source",
-                s.get("total_tokens_source") or "-")
             # Usage Total = Input + Output + cache hit.
             put("#sum-usage-total", "Usage Total",
                 fmt_n(s["usage_total_tokens"]))
+            put("#sum-input", "Input", fmt_n(s["prompt_tokens"]))
+            put("#sum-output", "Output", fmt_n(s["completion_tokens"]))
+            put("#sum-total", "API Total", fmt_n(s["total_tokens"]))
             put("#sum-cache-hit", "Cache hit", fmt_n(s["cache_hit"]))
             put("#sum-cache-miss", "Cache miss", fmt_n(s["cache_miss"]))
             put("#sum-cache-write", "Cache write", fmt_n(s["cache_write"]))
@@ -703,13 +692,9 @@ if HAVE_TEXTUAL:
             put("#sum-missing", "Incomplete", note)
 
         @staticmethod
-        def _usage_kind(r) -> str:
-            pt, ct = r["prompt_tokens"], r["completion_tokens"]
-            if r["usage_available"] and pt is not None and ct is not None:
-                return "Real"
-            if r["usage_available"]:
-                return "Partial"
-            return "Missing"
+        def _hit_rate(hit, miss, write) -> str:
+            frac = db.cache_hit_rate(hit, miss, write)
+            return "-" if frac is None else f"{frac * 100:.1f}%"
 
         def _fill_usage_logs(self, conn, start, end) -> None:
             rows = db.q_usage_request_logs(conn, start, end,
@@ -726,12 +711,15 @@ if HAVE_TEXTUAL:
                 )
             out = [[
                 local_time(r["ts"]), r["model"] or "-",
+                fmt_n(r["usage_total_tokens"]),
                 fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
-                fmt_n(r["total_tokens"]), fmt_n(r["usage_total_tokens"]),
+                fmt_n(r["total_tokens"]),
                 fmt_n(r["prompt_cache_hit_tokens"]),
                 fmt_n(r["prompt_cache_miss_tokens"]),
                 fmt_n(r["prompt_cache_write_tokens"]),
-                self._usage_kind(r), r["source"] or "-",
+                self._hit_rate(r["prompt_cache_hit_tokens"],
+                               r["prompt_cache_miss_tokens"],
+                               r["prompt_cache_write_tokens"]),
             ] for r in rows]
             self._fill(self.query_one("#t-usage", DataTable), out)
 
