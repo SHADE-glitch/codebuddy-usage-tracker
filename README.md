@@ -24,6 +24,7 @@
 - [📋 Requirements](#-requirements)
 - [🚀 Install](#-install)
 - [🧭 Usage](#-usage)
+- [⚙️ Configuration](#️-configuration)
 - [🔒 Privacy](#-privacy)
 - [🧪 Testing](#-testing)
 - [📁 Repository layout](#-repository-layout)
@@ -213,6 +214,31 @@ cbut format              # 🧾  the CodeBuddy fields and paths this tool depend
 | `CBUT_DB` | `~/.local/share/codebuddy-usage-tracker/usage.db` | database location |
 | `CBUT_CODEBUDDY_DIR` | `~/.codebuddy` | source log directory |
 
+## ⚙️ Configuration
+
+Every knob has the value the app already shipped with, and the file is optional: `cbut` behaves
+exactly as documented until you add one.
+
+`~/.config/cbut/config.toml` — or point `CBUT_CONFIG` somewhere else:
+
+```toml
+top_n = 5            # rows in the Dashboard's Top models / Top tools
+log_limit = 100      # request rows on the Usage page
+detail_limit = 200   # rows on a history / model-response screen
+refresh_secs = 5     # TUI redraw timer
+sync_secs = 30       # TUI auto-sync timer
+```
+
+- **Precedence is environment > file > default.** Each key also reads from `CBUT_TOP_N`,
+  `CBUT_LOG_LIMIT`, `CBUT_DETAIL_LIMIT`, `CBUT_REFRESH_SECS` and `CBUT_SYNC_SECS`.
+- **A broken file stops the TUI** with the path and the reason rather than quietly starting on
+  defaults — being ignored while you edit it is the worst outcome a settings layer can offer.
+  `cbut health` prints the same verdict, including which file it read.
+- **Unknown keys are refused**: a typo'd setting would otherwise do nothing, silently, forever.
+  Values are type- and range-checked (`top_n = 0` is a blank panel, not a preference).
+- Parsed by the standard library's `tomllib`, so this adds **no dependency** and no network path.
+  Nothing ever writes this file, and no setting is stored in the database.
+
 ## 🔒 Privacy
 
 `cbut` reads only the **structured metadata** fields of CodeBuddy's own logs and stores
@@ -222,7 +248,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 276 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 294 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -235,6 +261,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `test_sync.py` | 82 | transcript parsing, tool classification, incremental vs `--full` re-sync, crash recovery, unparsed-record accounting |
 | `test_tui.py` | 70 | tab wiring and report shapes through Textual's own `run_test` harness, narrow-terminal layout, status-line truthfulness |
 | `test_usage.py` | 61 | the calendar-day windows (Today / 2 / 3 / 7 / 30 days / all), the token totals, the Dashboard queries, the schema gate, and which indexes earn their keep |
+| `test_config.py` | 18 | the settings layer: defaults unchanged, file, env precedence, a broken file that stops `main()` before the TUI starts, and the keys the app actually reads |
 | `test_dispatcher.py` | 12 | `bin/cbut`: subcommand routing, venv resolution, help without a resolvable install |
 | `test_format_registry.py` | 10 | the CodeBuddy format registry and the parser agree, both directions |
 | `test_privacy.py` | 9 | import allowlist, no free-text value in any column, CodeBuddy's own files untouched |
@@ -257,7 +284,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 276 tests above |
+| `scripts/tests/` | the 294 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, and the size & performance baseline with the commands that produced it |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

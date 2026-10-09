@@ -290,9 +290,20 @@ def cmd_export(conn, args):
 def cmd_health(conn, args):
     print("cbut health")
     print("=" * 60)
-    print(f"  db path        {db.DB_PATH}")
+    print(f"  db path        {args.db}")
     print(f"  codebuddy dir  {db.CODEBUDDY_DIR} "
           f"({'ok' if db.CODEBUDDY_DIR.is_dir() else 'MISSING'})")
+    # The settings surface, named so it can be found without reading the README.
+    # A broken file is reported as one, in place, rather than being quietly skipped.
+    try:
+        cfg = db.load_config()
+        state = "" if db.CONFIG_PATH.is_file() else " (absent — defaults)"
+        print(f"  settings       {db.CONFIG_PATH}{state} — "
+              f"top_n={cfg['top_n']} log_limit={cfg['log_limit']} "
+              f"detail_limit={cfg['detail_limit']} "
+              f"refresh={cfg['refresh_secs']}s sync={cfg['sync_secs']}s")
+    except db.ConfigError as exc:
+        print(f"  settings       NOT READ — {exc}")
     try:
         ver = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         print(f"  schema version {ver[0] if ver else '?'}")

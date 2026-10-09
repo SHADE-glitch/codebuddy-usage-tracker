@@ -54,13 +54,18 @@ FORBIDDEN_ROOTS = {
     "subprocess", "multiprocessing", "threading",
 }
 
-# Names the indexer is allowed to import. `textual` is listed for cbut-tui.py
-# only (see ALLOWED_BY_FILE); it is a TUI library whose own internals do open
-# sockets for a demo feature we never import — that is a dependency fact, not a
-# network path in this project, and the check is about *our* code.
+# Names the production scripts are allowed to import. `textual` is listed for
+# cbut-tui.py only (see ALLOWED_BY_FILE): measured over the installed venv, nothing in it
+# imports `socket`/`ssl` and its only network-capable source is `textual/demo/`, which
+# needs `httpx` — not installed. Either way that is a dependency fact, not a network path
+# in this project; this check is about *our* code.
+#
+# `tomllib` (the settings parser) was added only after its import closure was listed:
+# collections, datetime, functools, re, string, sys, types, typing — no network, process
+# or thread module anywhere in it.
 ALLOWED_ROOTS = {
     "argparse", "datetime", "importlib", "json", "os", "pathlib", "re",
-    "shutil", "sqlite3", "sys", "time", "cbut_db", "__future__",
+    "shutil", "sqlite3", "sys", "time", "tomllib", "cbut_db", "__future__",
 }
 ALLOWED_BY_FILE = {"cbut-tui.py": ALLOWED_ROOTS | {"textual"}}
 

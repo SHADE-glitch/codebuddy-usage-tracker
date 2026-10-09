@@ -16,6 +16,7 @@ import importlib.util
 import os
 import sqlite3
 import sys
+import tomllib
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -33,6 +34,101 @@ DB_PATH = Path(
         str(Path.home() / ".local" / "share" / "codebuddy-usage-tracker" / "usage.db"),
     )
 )
+
+
+# --- settings --------------------------------------------------------------
+#
+# One file, outside the repository, read with the standard library's own TOML parser
+# (``tomllib``, Python 3.11+ — which is the floor this project already promises), so a
+# settings layer cost no dependency. Precedence is environment > file > DEFAULTS.
+#
+# A file that cannot be read is an error, not a fallback. Someone editing
+# ``~/.config/cbut/config.toml`` and being silently ignored is the worst outcome this
+# layer can produce, so every failure names the path or variable and the key.
+
+CONFIG_PATH = Path(os.environ.get("CBUT_CONFIG") or (
+    Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    / "cbut" / "config.toml"
+))
+
+# Defaults are the values the interface already shipped with. Changing one here is a
+# behaviour change, and ``test_config.py`` pins each against the constant it replaces.
+DEFAULTS = {
+    "top_n": 5,           # rows in the Dashboard's Top models / Top tools
+    "log_limit": 100,     # Usage page request rows
+    "detail_limit": 200,  # rows on a history / model-response screen
+    "refresh_secs": 5,    # TUI redraw timer
+    "sync_secs": 30,      # TUI auto-sync timer
+}
+
+ENV_NAMES = {
+    "top_n": "CBUT_TOP_N",
+    "log_limit": "CBUT_LOG_LIMIT",
+    "detail_limit": "CBUT_DETAIL_LIMIT",
+    "refresh_secs": "CBUT_REFRESH_SECS",
+    "sync_secs": "CBUT_SYNC_SECS",
+}
+
+# (low, high, accepted types). Ranges are wide enough to be useful and tight enough that
+# a typo fails loudly: 0 rows of anything is not a preference, it is a blank panel.
+_BOUNDS = {
+    "top_n": (1, 100, int),
+    "log_limit": (1, 1000, int),
+    "detail_limit": (1, 1000, int),
+    "refresh_secs": (0.5, 3600, (int, float)),
+    "sync_secs": (1, 86400, (int, float)),
+}
+
+
+class ConfigError(ValueError):
+    """The settings file, or an environment value, is not usable."""
+
+
+def _setting_value(key, value, source):
+    low, high, kind = _BOUNDS[key]
+    # bool is an int subclass: ``top_n = true`` must not quietly become top_n = 1.
+    if isinstance(value, bool) or not isinstance(value, kind):
+        raise ConfigError(
+            f"{source}: {key} = {value!r} must be "
+            f"{'a whole number' if kind is int else 'a number'}")
+    if not low <= value <= high:
+        raise ConfigError(f"{source}: {key} = {value!r} is outside {low}..{high}")
+    return value
+
+
+def load_config(path=None):
+    """Resolve settings from environment, then file, then ``DEFAULTS``.
+
+    Never raises for a *missing* file — that is the normal case — but raises
+    ``ConfigError`` for a malformed one, an unknown key, or an unusable value in
+    either source.
+    """
+    cfg = dict(DEFAULTS)
+    source = Path(path if path is not None else CONFIG_PATH)
+    if source.is_file():
+        try:
+            parsed = tomllib.loads(source.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"{source}: not valid TOML ({exc})") from None
+        for key, value in parsed.items():
+            if key not in DEFAULTS:
+                raise ConfigError(
+                    f"{source}: unknown setting {key!r} — known keys are "
+                    f"{', '.join(sorted(DEFAULTS))}")
+            cfg[key] = _setting_value(key, value, str(source))
+    for key, env in ENV_NAMES.items():
+        raw = os.environ.get(env)
+        if raw is None:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            try:
+                value = float(raw)
+            except ValueError:
+                raise ConfigError(f"{env}={raw!r} is not a number") from None
+        cfg[key] = _setting_value(key, value, f"{env} environment variable")
+    return cfg
 
 
 def load_sync():

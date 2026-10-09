@@ -158,7 +158,8 @@ if HAVE_TEXTUAL:
             t.add_columns("when", "project", "session", "status", "duration")
             conn = db.open_db(self.app.db_path, readonly=True)
             try:
-                for r in db.q_history(conn, self.kind, self.entity, 200):
+                for r in db.q_history(conn, self.kind, self.entity,
+                                      self.app.DETAIL_LIMIT):
                     t.add_row(ts(r["ts"]), r["project"] or "-",
                               (r["session_id"] or "")[:8], r["status"] or "-",
                               ms(r["duration_ms"]))
@@ -193,7 +194,8 @@ if HAVE_TEXTUAL:
             )
             conn = db.open_db(self.app.db_path, readonly=True)
             try:
-                for r in db.q_model_responses(conn, model=self.model, limit=200):
+                for r in db.q_model_responses(conn, model=self.model,
+                                              limit=self.app.DETAIL_LIMIT):
                     mid = r["message_id"] or ""
                     masked = (mid[:8] + "…" + mid[-8:]) if len(mid) > 16 else mid
                     t.add_row(
@@ -274,10 +276,19 @@ if HAVE_TEXTUAL:
 
         USAGE_LOG_LIMIT = 100
         DASH_TOP = 5            # rows in the Dashboard's Top models / Top tools
+        DETAIL_LIMIT = 200      # rows on a history / model-response screen
 
-        def __init__(self, db_path, clock=None):
+        def __init__(self, db_path, clock=None, config=None):
             super().__init__()
             self.db_path = str(db_path)
+            # Settings come from ~/.config/cbut/config.toml (or CBUT_CONFIG), with the
+            # environment able to override one key. Tests pass a dict to avoid reading a
+            # real file; a broken file raises ConfigError, which main() turns into a
+            # message rather than a traceback.
+            self.config = dict(db.DEFAULTS) if config is None else dict(config)
+            self.DASH_TOP = self.config["top_n"]
+            self.USAGE_LOG_LIMIT = self.config["log_limit"]
+            self.DETAIL_LIMIT = self.config["detail_limit"]
             # Injectable wall clock (seconds since the epoch). Defaults to
             # time.time, so a real run is unchanged; tests pass a fixed value to
             # pin "now". The calendar-day windows are derived from this clock,
@@ -465,8 +476,8 @@ if HAVE_TEXTUAL:
             self._usage_ready = True
             # Auto sync (incremental, ~30s) + UI refresh (~5s). Both are timers,
             # not subprocesses; the sync runs in a worker thread (see _do_sync).
-            self.set_interval(30, self._auto_sync_tick)
-            self.set_interval(5, self._auto_refresh_tick)
+            self.set_interval(self.config["sync_secs"], self._auto_sync_tick)
+            self.set_interval(self.config["refresh_secs"], self._auto_refresh_tick)
             self.refresh_data()
 
         # --- tab cycling (uses the real TabbedContent.active API) -----------
@@ -1224,7 +1235,16 @@ def main(argv=None) -> int:
     if not Path(args.db).exists():
         print(f"no database at {args.db} — run: cbut sync", file=sys.stderr)
         return 1
-    TrackerApp(args.db).run()
+    try:
+        app = TrackerApp(args.db, config=db.load_config())
+    except db.ConfigError as exc:
+        # A broken settings file is the user's to fix, and starting with defaults
+        # silently would leave them editing a file that is not being read.
+        print(f"your settings are not usable: {exc}\n"
+              f"  fix or remove that file, or point CBUT_CONFIG somewhere else",
+              file=sys.stderr)
+        return 2
+    app.run()
     return 0
 
 

@@ -21,19 +21,21 @@ machine" are different claims and each needs its own run. `__pycache__` on this 
 `cpython-313` and `cpython-314` artefacts, which is how the gap showed up — 3.11 and 3.12 have since
 been exercised in throwaway venvs (table below) rather than guessed at.
 
-What has actually been executed, as of 2026-10-09:
+What has actually been executed, as of 2026-10-09 — re-run after the settings layer landed, because
+that layer imports `tomllib`, which is standard library only from exactly the floor this table's
+bottom row sits on:
 
 | Interpreter | Suite on this machine | Notes |
 |---|---|---|
-| `.venv` 3.13.14 | **Ran 272, OK** (114.0 s) | what the TUI runs on |
-| system `python3` 3.14.4 | **Ran 272, OK** (127.5 s) | different SQLite build (3.46.1), same green |
-| 3.12.14 (CI's version) | **Ran 272, OK** (121.1 s) | throwaway `uv venv --python 3.12` + `pip install -r requirements.txt`, i.e. built the way CI builds it — this was run *before* pushing, so CI is not the first place 3.12 sees this code |
-| 3.11.15 (the promised floor) | **Ran 272, OK** (129.9 s) | throwaway `uv venv --python 3.11` in `/tmp`, `textual==8.2.8`, sqlite 3.53.1 — not a project venv, delete it and nothing is lost |
+| `.venv` 3.13.14 | **Ran 294, OK** (97.3 s) | what the TUI runs on |
+| 3.14.4 (system build, sqlite 3.46.1) | **Ran 294, OK** (95.1 s) | throwaway venv on the system interpreter — a different SQLite build, same green |
+| 3.12.14 (CI's version) | **Ran 294, OK** (106.8 s) | throwaway `uv venv --python 3.12` + `textual>=8.2,<9`, i.e. the way CI builds it — run *before* pushing, so CI is not the first place 3.12 sees this code |
+| 3.11.15 (the promised floor) | **Ran 294, OK** (115.7 s) | throwaway `uv venv --python 3.11` in `/tmp`, `textual==8.2.8`, sqlite 3.53.1 — this is the row that would fail first if `tomllib` were not available at the floor. Not a project venv, delete it and nothing is lost |
 
 All four interpreters this project can plausibly meet are therefore measured, and the CI version is
 not an exception. What is still *not* certified: the exact runner image, `pip` resolution and Python
 patch level GitHub Actions uses (`3.12.x` on `ubuntu-latest`), and any interpreter nobody installed
-here at all. Both throwaway venvs were deleted afterwards; the project `.venv` was never touched.
+here at all. All three throwaway venvs were deleted afterwards; the project `.venv` was never touched.
 Reproducing either run:
 
 ```bash

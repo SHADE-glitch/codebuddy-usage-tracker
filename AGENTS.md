@@ -151,6 +151,13 @@ tool runs from a checkout, so the version only needs to move when a documented c
 - **Code and user-facing output are English** (identifiers, comments, CLI/TUI text).
 - **Docs are bilingual**: `README.md` (English, landing page) and `README.zh-CN.md` (Chinese).
   Edit both together and keep section order aligned; a section added on one side alone is drift.
+- **Settings are read once, in one place.** `db.load_config()` resolves environment > file >
+  `DEFAULTS`. Adding a knob means: one entry in `DEFAULTS`, one in `ENV_NAMES`, one in `_BOUNDS`, and
+  one assignment in the app — `test_config.py` pins the default against the constant it replaces, so a
+  settings layer cannot quietly retune shipped behaviour. A malformed file raises `ConfigError` and the
+  entry point turns it into a message naming the path; **never fall back silently** — a user editing a
+  file that is not being read is the worst failure this surface can have. Nothing writes the file, and
+  no setting lives in the database.
 - **A behaviour change ships with a case that fails without it.** Not a style preference — the rule
   that made this round's worst bug visible: the parser change that emptied the Commands panel passed
   every test, because every command fixture took the *other* branch. If no test goes red when you undo

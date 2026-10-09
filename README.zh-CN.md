@@ -24,6 +24,7 @@
 - [📋 环境要求](#-环境要求)
 - [🚀 安装](#-安装)
 - [🧭 用法](#-用法)
+- [⚙️ 配置](#️-配置)
 - [🔒 隐私](#-隐私)
 - [🧪 测试](#-测试)
 - [📁 仓库结构](#-仓库结构)
@@ -173,6 +174,29 @@ cbut format              # 🧾  本工具依赖的 CodeBuddy 字段与路径
 | `CBUT_DB` | `~/.local/share/codebuddy-usage-tracker/usage.db` | 数据库位置 |
 | `CBUT_CODEBUDDY_DIR` | `~/.codebuddy` | 源日志目录 |
 
+## ⚙️ 配置
+
+每个可调项的默认值就是它原本的行为，而且这个文件是可选的：你不建它，`cbut` 就按文档里写的那样跑。
+
+`~/.config/cbut/config.toml` —— 或用 `CBUT_CONFIG` 指到别处：
+
+```toml
+top_n = 5            # Dashboard 里 Top models / Top tools 的行数
+log_limit = 100      # Usage 页的请求行数
+detail_limit = 200   # 历史 / 模型响应详情页的行数
+refresh_secs = 5     # TUI 重绘定时器
+sync_secs = 30       # TUI 自动同步定时器
+```
+
+- **优先级：环境变量 > 文件 > 默认值。** 每个键也读 `CBUT_TOP_N`、`CBUT_LOG_LIMIT`、
+  `CBUT_DETAIL_LIMIT`、`CBUT_REFRESH_SECS`、`CBUT_SYNC_SECS`。
+- **配置文件坏了就直接拦住 TUI**，并说出是哪个文件、哪一行——而不是默默用默认值启动。
+  一边编辑一个不被读取的文件，是设置层最坏的失败方式。`cbut health` 会给同样的判定，并写明它读到了哪个文件。
+- **未知键直接拒绝**：拼错的设置会永远什么都不做，而且不吭声。值也做类型与范围校验
+  （`top_n = 0` 是空白面板，不是偏好）。
+- 用标准库的 `tomllib` 解析，所以**不新增依赖**、也没有任何联网面。程序永远不写这个文件，
+  设置也不存进数据库。
+
 ## 🔒 隐私
 
 `cbut` 只读取 CodeBuddy 自身日志中的**结构化元数据**字段，只存储计数、耗时、状态和标识符。**不**读取也不存储提示词/回复正文、工具参数值或文件内容。🔒 数据不出本机。
@@ -180,7 +204,7 @@ cbut format              # 🧾  本工具依赖的 CodeBuddy 字段与路径
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 276 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 294 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -192,6 +216,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 276 tests ... OK
 | `test_sync.py` | 82 | 转录解析、工具归类、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
 | `test_tui.py` | 70 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、窄终端布局、状态栏诚实性 |
 | `test_usage.py` | 61 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）、token 汇总、Dashboard 查询、结构版本门禁、索引值不值得留 |
+| `test_config.py` | 18 | 设置层：默认值没变、文件、env 优先级、坏文件会让 `main()` 在启动 TUI 前就退出，以及 app 真的读了哪些键 |
 | `test_dispatcher.py` | 12 | `bin/cbut`：子命令转发、venv 解析、装不上时 help 仍然能跑 |
 | `test_format_registry.py` | 10 | CodeBuddy 格式登记表与解析器双向一致 |
 | `test_privacy.py` | 9 | import 白名单、任何表任何文本列都不落自由文本、不写 CodeBuddy 自己的文件 |
@@ -213,7 +238,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 276 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 276 个用例 |
+| `scripts/tests/` | 上面那 294 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、以及体积与性能的固定度量法和基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
