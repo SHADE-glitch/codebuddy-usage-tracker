@@ -77,7 +77,10 @@ migration did not run. The justification is itself guarded now
 (`test_no_query_filters_by_session_id` reads the real source), because this is exactly the kind of
 claim that goes stale: build a session-keyed screen and that test fails, telling you the index is due
 back. The same check is one command
-— it prints the ratio, and today it prints `0 of 81`:
+— it prints the ratio, and re-run on 2026-10-10 it prints `0 of 84`. The denominator moves whenever a
+query is added (it was 81 when v6 was cut); the claim that carries the decision is the **zero**, and
+`test_no_query_filters_by_session_id` holds a floor on the denominator too, so an extractor that
+stopped finding queries cannot pass as a clean result:
 
 ```bash
 ./.venv/bin/python -c "
