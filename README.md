@@ -153,7 +153,7 @@ the transcripts on disk:
 |---|---|
 | 🐧 OS | Linux — developed and verified on Ubuntu; other distributions **unverified** |
 | 🐾 CodeBuddy | 2.16x — schema verified against 2.161.4 |
-| 🐍 Python | 3.11+ — the full suite run green on **3.11, 3.13 and 3.14** (CI covers 3.12). Headless commands need only the stdlib |
+| 🐍 Python | 3.11+ — the full suite run green on **3.11, 3.12, 3.13 and 3.14** (CI runs 3.12). Headless commands need only the stdlib |
 | 🖥️ `textual` | only for the interactive TUI (installed by `install.sh`) |
 
 ## 🚀 Install

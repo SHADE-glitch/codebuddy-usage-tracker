@@ -11,14 +11,15 @@ was read off this machine or out of a file on 2026-10-09; nothing here is rememb
 | `.github/workflows/ci.yml` | **3.12** | the only interpreter CI runs |
 | `AGENTS.md` (CI section) | 3.12 | must keep matching the workflow above |
 | `install.sh` | `uv venv --python 3.13` (falls back to `uv venv` / `python3 -m venv`) | what a fresh local install gets when `uv` is present |
-| `README.md` | "3.11+ — the full suite run green on 3.11, 3.13 and 3.14" | the claim a visitor reads |
+| `README.md` | "3.11+ — the full suite run green on 3.11, 3.12, 3.13 and 3.14" | the claim a visitor reads |
 | this machine, `.venv` | 3.13.14 | what the TUI actually runs on |
 | this machine, `python3` | 3.14.4 | what the headless commands run on |
 
-**Green CI does not certify the interpreter you run.** CI is 3.12 and neither local interpreter is
-3.12, so the tested-elsewhere case is unverified in both directions: a 3.12-only failure would pass
-locally, and a 3.13/3.14-only failure would pass CI. `__pycache__` on this machine holds both
-`cpython-313` and `cpython-314` artefacts, which is how the gap showed up.
+**Green CI does not certify the interpreter you run.** CI is 3.12; the two interpreters actually
+installed here are 3.13 and 3.14, so a claim about "CI passed" and a claim about "it works on my
+machine" are different claims and each needs its own run. `__pycache__` on this machine holds
+`cpython-313` and `cpython-314` artefacts, which is how the gap showed up — 3.11 and 3.12 have since
+been exercised in throwaway venvs (table below) rather than guessed at.
 
 What has actually been executed, as of 2026-10-09:
 
@@ -26,20 +27,27 @@ What has actually been executed, as of 2026-10-09:
 |---|---|---|
 | `.venv` 3.13.14 | **Ran 272, OK** (114.0 s) | what the TUI runs on |
 | system `python3` 3.14.4 | **Ran 272, OK** (127.5 s) | different SQLite build (3.46.1), same green |
-| 3.12 (CI) | green at `e299bf5` — **never at the current work** | this whole round is still uncommitted, so CI has not seen any of it |
+| 3.12.14 (CI's version) | **Ran 272, OK** (121.1 s) | throwaway `uv venv --python 3.12` + `pip install -r requirements.txt`, i.e. built the way CI builds it — this was run *before* pushing, so CI is not the first place 3.12 sees this code |
 | 3.11.15 (the promised floor) | **Ran 272, OK** (129.9 s) | throwaway `uv venv --python 3.11` in `/tmp`, `textual==8.2.8`, sqlite 3.53.1 — not a project venv, delete it and nothing is lost |
 
-So the only unexercised interpreter is **3.12 — the one CI uses**, and CI has not seen this round of
-work yet (everything here is uncommitted). Two ways to close that last gap: widen the matrix
-(`python-version: ["3.11", "3.12", "3.14"]`, ~2 minutes per job; the suite needs `textual` installed,
-because the TUI suites use its `run_test` harness) or keep 3.12 as "CI only" and push before trusting
-it. Adding a matrix changes CI, so `AGENTS.md` says to make it in the same commit as this table.
-Reproducing the 3.11 run without touching the project venv:
+All four interpreters this project can plausibly meet are therefore measured, and the CI version is
+not an exception. What is still *not* certified: the exact runner image, `pip` resolution and Python
+patch level GitHub Actions uses (`3.12.x` on `ubuntu-latest`), and any interpreter nobody installed
+here at all. Both throwaway venvs were deleted afterwards; the project `.venv` was never touched.
+Reproducing either run:
 
 ```bash
+uv venv --python 3.12 /tmp/cbut312 && VIRTUAL_ENV=/tmp/cbut312 uv pip install -r requirements.txt
+/tmp/cbut312/bin/python -m unittest discover -s scripts/tests     # ~2 min
+
 uv venv --python 3.11 /tmp/cbut311 && VIRTUAL_ENV=/tmp/cbut311 uv pip install "textual>=8.2,<9"
 /tmp/cbut311/bin/python -m unittest discover -s scripts/tests
 ```
+
+Widening the CI matrix (`python-version: ["3.11", "3.12", "3.14"]`, ~2 minutes per job; the suite needs
+`textual` installed because the TUI suites use its `run_test` harness) is still the only way to make
+this continuous rather than a one-off. Adding a matrix changes CI, so `AGENTS.md` says to make it in
+the same commit as this table.
 
 ## SQLite
 
