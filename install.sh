@@ -50,6 +50,13 @@ echo "==> installing TUI dependencies"
 if command -v uv >/dev/null 2>&1; then
   uv pip install --python "$VENV/bin/python" -r "$REPO_DIR/requirements.txt"
 else
+  # A venv that uv created earlier has no pip in it (uv installs without one).
+  # If uv has since gone, this branch would die on "No module named pip" —
+  # bootstrap it first so the fallback is a real path, not a dead end.
+  if ! "$VENV/bin/python" -m pip --version >/dev/null 2>&1; then
+    echo "==> no pip in $VENV; bootstrapping with ensurepip"
+    "$VENV/bin/python" -m ensurepip --upgrade
+  fi
   "$VENV/bin/python" -m pip install -r "$REPO_DIR/requirements.txt"
 fi
 

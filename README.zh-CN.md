@@ -106,7 +106,8 @@ Usage tab 仿照会话用量面板的样式，但每个数字都来自磁盘上�
 - **单一的 Request Logs 列表**，最近的请求在前。列顺序对齐 cc-switch 的请求记录 —— 时间 · 模型 · usage 总计 · 输入 · 输出 · API 总计 · 缓存读取(hit) · 缓存未命中(miss) · 缓存创建(write) · 缓存命中率。cc-switch 的供应商、费用、耗时、HTTP 状态码列在转录里没有数据源，因此**略去而非估算**。优先列在最左；缓存明细可通过横向滚动查看。
 - **与 Tokens 相同的准确性规则** —— **API 总计** = 有 provider 原始值时用原始值，否则 `输入 + 输出`。另有一个 **Usage 总计**（`输入 + 输出 + 缓存 hit`）仅供参照，并明确标注它会重复计入缓存 hit（约 2 倍 API 总计）。缓存 hit/miss/write 绝不并入 API 总计，缺失值保持 `-`。
 - **缓存命中率** = `缓存 hit / (缓存 hit + 缓存 miss + 缓存 write)` —— 即「可缓存输入」，与 cc-switch 一致；某行没有缓存数据时显示 `-`。
-- **汇总面板高度受限并内部滚动**，因此下方的 Request Logs 表在小终端上也始终可见（已验证到 80×24）。
+- **汇总面板高度受限并内部滚动**，因此下方的 Request Logs 表在小终端上也始终可见。80×24 实测：
+  面板转为两列、高度仍受限，表格保留 11 行；而十列放不进 80 格，右侧缓存列要靠横向滚动看到。
 
 ## 📋 环境要求
 
@@ -114,7 +115,7 @@ Usage tab 仿照会话用量面板的样式，但每个数字都来自磁盘上�
 |---|---|
 | 🐧 系统 | Linux —— 在 Ubuntu 上开发验证；其他发行版**未验证** |
 | 🐾 CodeBuddy | 2.16x —— schema 按 2.161.4 实测 |
-| 🐍 Python | 3.11+（实测 3.14）。无头命令只需标准库 |
+| 🐍 Python | 3.11+ —— 全套在 **3.11 / 3.13 / 3.14** 上均跑绿（CI 覆盖 3.12）。无头命令只需标准库 |
 | 🖥️ `textual` | 仅交互式 TUI 需要（由 `install.sh` 安装） |
 
 ## 🚀 安装
@@ -163,6 +164,9 @@ cbut recent              # 🕒  最近的工具调用
 cbut inventory           # 📦  已安装清单，已用 vs 未用
 cbut export              # 💾  导出所有表为 JSON
 cbut health              # 🩺  数据库与数据源检查
+cbut backup              # 💾  风险步骤前留快照（`sync --full` 会自己做）
+cbut restore             # ⏪  列出快照；`cbut restore NAME` 回滚到某一份
+cbut format              # 🧾  本工具依赖的 CodeBuddy 字段与路径
 ```
 
 | 变量 | 默认值 | 用途 |
@@ -177,19 +181,28 @@ cbut health              # 🩺  数据库与数据源检查
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 177 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 272 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
-一次性数据库 —— **不会打开你真实的 `usage.db`，也不会读 `~/.codebuddy` 日志**，全程不联网。
+一次性数据库 —— **不会打开你真实的 `usage.db`，也不会读 `~/.codebuddy` 日志**；本仓库代码没有任何联网路径
+（`test_privacy.py` 用 import 白名单守着这条）。
 
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
-| `test_sync.py` | 61 | 转录解析、工具归类、增量同步与 `--full` 重建 |
-| `test_tui.py` | 54 | tab 接线与报告结构，走 Textual 自带的 `run_test` |
-| `test_usage.py` | 53 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）、token 汇总与 Dashboard 查询 |
-| `test_readme_bilingual.py` | 3 | 两份 README 始终是「一份文档、两种语言」 |
+| `test_sync.py` | 82 | 转录解析、工具归类、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
+| `test_tui.py` | 70 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、窄终端布局、状态栏诚实性 |
+| `test_usage.py` | 58 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）、token 汇总、Dashboard 查询、结构版本门禁 |
+| `test_dispatcher.py` | 12 | `bin/cbut`：子命令转发、venv 解析、装不上时 help 仍然能跑 |
+| `test_format_registry.py` | 10 | CodeBuddy 格式登记表与解析器双向一致 |
+| `test_privacy.py` | 9 | import 白名单、任何表任何文本列都不落自由文本、不写 CodeBuddy 自己的文件 |
+| `test_snapshots.py` | 9 | 破坏性步骤前自动留快照、列举、回滚、保留份数 |
+| `test_maintenance_docs.py` | 9 | 生成的格式依赖文档不可能与代码脱节 |
+| `test_readme_counts.py` | 4 | 上面这张表就是运行器会打印的那张表 |
 | `test_record_coverage.py` | 6 | 每个被覆盖的提交都记录进 `CHANGELOG.md` |
+| `test_readme_bilingual.py` | 3 | 两份 README 始终是「一份文档、两种语言」 |
+
+`test_readme_counts.py` 负责让这张表不说谎：新增套件却不加行、或行里的数字过期，套件就会红。
 
 ## 📁 仓库结构
 
@@ -199,9 +212,10 @@ python3 -m unittest discover -s scripts/tests     # Ran 177 tests ... OK
 | `install.sh` | 建 venv（有 `uv` 就用）并把 `~/.local/bin/cbut` 做成符号链接。可重复执行；目标不是符号链接时，不加 `--force` 拒绝覆盖 |
 | `scripts/cbut_db.py` | SQLite 结构，以及各入口共用的查询辅助 |
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
-| `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
+| `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 177 个用例 |
+| `scripts/tests/` | 上面那 272 个用例 |
+| `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、以及体积与性能的固定度量法和基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
 

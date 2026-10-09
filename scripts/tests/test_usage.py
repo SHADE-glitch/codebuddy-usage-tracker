@@ -3,6 +3,9 @@
 Run:  python3 -m unittest discover -s scripts/tests
 """
 
+import contextlib
+import importlib.util
+import io
 import sqlite3
 import sys
 import tempfile
@@ -13,6 +16,11 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 import cbut_db as db  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("cbut_stats",
+                                              SCRIPTS / "cbut-stats.py")
+stats = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(stats)
 
 HOUR = 3600 * 1000
 
@@ -681,7 +689,7 @@ class MigrateTest(unittest.TestCase):
             c.commit()
             c.close()
 
-            self.assertTrue(db.migrate(p))
+            self.assertEqual(db.migrate(p), "migrated")
             conn = db.open_db(p, readonly=True)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(model_responses)")}
             self.assertIn("prompt_cache_hit_tokens", cols)
@@ -699,10 +707,160 @@ class MigrateTest(unittest.TestCase):
             conn = db.open_db(p)
             db.ensure_schema(conn)
             conn.close()
-            self.assertTrue(db.migrate(p))
-            self.assertTrue(db.migrate(p))
+            # A status string, not a boolean: "current" and "failed: …" are both
+            # truthy, so assertTrue(migrate(p)) would pass on a broken database.
+            self.assertEqual(db.migrate(p), "current")
+            self.assertEqual(db.migrate(p), "current")
         finally:
             tmp.cleanup()
+
+    def test_a_database_from_a_future_build_is_left_alone(self):
+        # The point of the version gate: an older cbut must not clear state a
+        # newer one wrote just because its own CREATE TABLE is a no-op.
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            p = Path(tmp.name) / "future.db"
+            conn = db.open_db(p)
+            db.ensure_schema(conn)
+            conn.execute("INSERT INTO sync_state(file_path, size, mtime, offset)"
+                         " VALUES('a',1,1.0,1)")
+            conn.execute("UPDATE meta SET value=? WHERE key='schema_version'",
+                         (str(db.SCHEMA_VERSION + 1),))
+            conn.commit()
+            conn.close()
+
+            self.assertEqual(db.migrate(p), "newer")
+            conn = db.open_db(p, readonly=True)
+            try:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0], 1,
+                    "a refused upgrade must still clear nothing")
+                self.assertEqual(
+                    int(conn.execute("SELECT value FROM meta "
+                                     "WHERE key='schema_version'").fetchone()[0]),
+                    db.SCHEMA_VERSION + 1, "the version must not be overwritten")
+            finally:
+                conn.close()
+        finally:
+            tmp.cleanup()
+
+    def test_v4_database_loses_the_prose_columns(self):
+        # v5 dropped sessions.title and agent_usage.description because both held
+        # prose. The metadata in those same rows has to survive the drop.
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            p = Path(tmp.name) / "v4.db"
+            c = sqlite3.connect(p)
+            c.executescript(
+                "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);"
+                "CREATE TABLE sessions(session_id TEXT PRIMARY KEY, project TEXT,"
+                " title TEXT, started_at INTEGER, ended_at INTEGER, model TEXT,"
+                " tokens INTEGER DEFAULT 0, duration_ms INTEGER DEFAULT 0);"
+                "CREATE TABLE agent_usage(call_id TEXT PRIMARY KEY, agent_type TEXT,"
+                " description TEXT, kind TEXT, source TEXT, session_id TEXT,"
+                " project TEXT, ts INTEGER, status TEXT, duration_ms INTEGER);"
+            )
+            c.execute("INSERT INTO sessions VALUES('S','/p','a generated title',"
+                      "1,2,'m',100,50)")
+            c.execute("INSERT INTO agent_usage VALUES('c1','Explore',"
+                      "'what the model wrote','active','tool','S','/p',1,'done',5)")
+            c.execute("INSERT INTO meta(key, value) VALUES('schema_version','4')")
+            c.commit()
+            c.close()
+
+            self.assertEqual(db.migrate(p), "migrated")
+            conn = db.open_db(p, readonly=True)
+            try:
+                s_cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+                a_cols = {r[1] for r in
+                          conn.execute("PRAGMA table_info(agent_usage)")}
+                self.assertNotIn("title", s_cols)
+                self.assertNotIn("description", a_cols)
+                row = conn.execute("SELECT project, tokens FROM sessions"
+                                   " WHERE session_id='S'").fetchone()
+                self.assertEqual((row["project"], row["tokens"]), ("/p", 100))
+                self.assertEqual(
+                    conn.execute("SELECT agent_type FROM agent_usage"
+                                 " WHERE call_id='c1'").fetchone()[0], "Explore")
+            finally:
+                conn.close()
+        finally:
+            tmp.cleanup()
+
+    def test_migrated_schema_matches_a_fresh_database(self):
+        """The drift guard for the hand-maintained migration list.
+
+        A column added to CREATE TABLE but not registered in _NEW_MODEL_COLUMNS
+        would leave every upgraded database permanently short of it, with nothing
+        failing until a query asked for it. Comparing the two shapes turns that
+        into a failure at commit time instead.
+        """
+        fresh_tmp = tempfile.TemporaryDirectory()
+        old_tmp = tempfile.TemporaryDirectory()
+        try:
+            fresh_path = Path(fresh_tmp.name) / "fresh.db"
+            conn = db.open_db(fresh_path)
+            db.ensure_schema(conn)
+            fresh_shape = _table_shape(conn)
+            conn.close()
+            self.assertGreater(len(fresh_shape), 8, "the fixture schema is empty")
+
+            old_path = Path(old_tmp.name) / "old.db"
+            c = sqlite3.connect(old_path)
+            c.executescript(
+                "CREATE TABLE model_responses("
+                " message_id TEXT PRIMARY KEY, session_id TEXT,"
+                " conversation_request_id TEXT, model TEXT,"
+                " prompt_tokens INTEGER, completion_tokens INTEGER,"
+                " cache_read_input_tokens INTEGER,"
+                " cache_creation_input_tokens INTEGER, ts INTEGER,"
+                " project TEXT, source TEXT, usage_available INTEGER,"
+                " missing TEXT);"
+            )
+            c.execute("INSERT INTO model_responses(message_id, model,"
+                      " prompt_tokens, completion_tokens, ts, usage_available)"
+                      " VALUES('o','m',1,1,1,1)")
+            c.commit()
+            c.close()
+
+            self.assertEqual(db.migrate(old_path), "migrated")
+            conn = db.open_db(old_path)
+            migrated = _table_shape(conn)
+            conn.close()
+            self.assertEqual(
+                migrated, fresh_shape,
+                "an upgraded database is not shaped like a fresh one: register "
+                "the difference as a migration")
+        finally:
+            fresh_tmp.cleanup()
+            old_tmp.cleanup()
+
+
+def _table_shape(conn) -> dict:
+    """{table: ((column, type, notnull, pk), …)} sorted by column — what exists.
+
+    Two things are deliberately *not* compared, because neither is part of the
+    contract and both produced false alarms when included:
+
+    * ``dflt_value`` — an older database can declare the same column without a
+      default the current CREATE TABLE added, and every INSERT here names those
+      columns explicitly, so the difference is cosmetic;
+    * **declaration order** — a migrated table gains its columns at the end via
+      ``ALTER TABLE``, while a fresh one has them interleaved. SQLite reads by
+      name, so only the set of columns is meaningful.
+
+    A *missing column* is what this guard is for: adding one to CREATE TABLE
+    without registering it in the migration list leaves every upgraded database
+    short of it, silently, until a query asks for it.
+    """
+    names = [r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+    return {
+        n: sorted((r["name"], r["type"], r["notnull"], r["pk"])
+                  for r in conn.execute(f"PRAGMA table_info({n})"))
+        for n in names
+    }
 
 
 class ViewGroupByTest(unittest.TestCase):
@@ -778,6 +936,52 @@ class IndexTest(unittest.TestCase):
             conn.close()
             self.assertIn("idx_model_resp_model_ts", model_idx)
             self.assertIn("idx_mcp_tool", mcp_idx)
+        finally:
+            tmp.cleanup()
+
+
+class OldDatabaseOnAReadOnlyCliTest(unittest.TestCase):
+    """`cbut stats` cannot repair the schema, so it must name the fix."""
+
+    def test_an_older_database_reports_a_command_instead_of_a_traceback(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            p = Path(tmp.name) / "old.db"
+            conn = db.open_db(p)
+            db.ensure_schema(conn)
+            # Simulate a database written before the table existed.
+            conn.execute("DROP TABLE unparsed")
+            conn.commit()
+            conn.close()
+
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = stats.main(["--db", str(p), "stats"])
+            text = err.getvalue()
+            self.assertEqual(rc, 2, f"expected a refusal, got rc={rc}")
+            self.assertIn("run: cbut sync", text)
+            self.assertNotIn("Traceback", text,
+                             "a CLI that cannot migrate must not dump a stack")
+        finally:
+            tmp.cleanup()
+
+    def test_a_current_database_is_unaffected_by_that_handler(self):
+        # The handler above must not swallow genuine queries: prove the same
+        # command still succeeds on a database that has the table.
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            p = Path(tmp.name) / "new.db"
+            conn = db.open_db(p)
+            db.ensure_schema(conn)
+            conn.execute("INSERT INTO unparsed(reason, count) VALUES('x', 2)")
+            conn.commit()
+            conn.close()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = stats.main(["--db", str(p), "health"])
+            self.assertEqual(rc, 0)
+            self.assertIn("unparsed", out.getvalue().lower())
+            self.assertIn("2 records", out.getvalue())
         finally:
             tmp.cleanup()
 

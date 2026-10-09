@@ -8,13 +8,19 @@ A **passive** usage tracker for CodeBuddy Code: it parses the logs CodeBuddy alr
 builds a local SQLite index, then shows it in an eight-tab Textual TUI (plus a headless `cbut stats`
 CLI). Three layers, in dependency order:
 
-1. `scripts/cbut-sync.py` — the **only writer**. Parses `~/.codebuddy/projects/**/*.jsonl` and
-   `~/.codebuddy/traces/**/*.jsonl` read-only, classifies tools/skills/agents/plugins/MCP calls, and
-   writes incrementally and idempotently into `~/.local/share/codebuddy-usage-tracker/usage.db`.
-2. `scripts/cbut_db.py` — the shared data layer (schema, queries, calendar-day windows). Imported by the
-   TUI, the stats CLI and the tests.
-3. `scripts/cbut-tui.py` (Textual) and `scripts/cbut-stats.py` (headless CLI). Read-only apart from
-   explicit maintenance subcommands.
+1. `scripts/cbut-sync.py` — the parser and indexer. Reads **only**
+   `~/.codebuddy/projects/**/*.jsonl`, read-only, and classifies tools/skills/agents/plugins/MCP
+   calls into `~/.local/share/codebuddy-usage-tracker/usage.db`. `~/.codebuddy/traces/` is **not
+   ingested** (see "Internal agents" below) — do not describe it as an input.
+2. `scripts/cbut_db.py` — the shared data layer (schema, queries, calendar-day windows, snapshots).
+   Imported by the TUI, the stats CLI and the tests.
+3. `scripts/cbut-tui.py` (Textual) and `scripts/cbut-stats.py` (headless CLI).
+
+**There are two writers, not one.** `cbut sync` is the only thing that indexes transcripts, but the
+TUI also writes: `on_mount` runs `db.migrate()` (a read-write connection, DDL included) and its
+30-second auto-sync worker calls the same indexer the CLI does. Anything that assumes "the TUI is
+read-only" is wrong — reason about locks and migrations accordingly. The headless CLI is read-only
+except for its explicit maintenance subcommands (`backup`, `restore`, `format --write`).
 
 `bin/cbut` is a bash dispatcher. **It is bash on purpose**: it must still run and print a useful
 error when the TUI venv is missing or broken, so it cannot depend on any Python.
@@ -47,6 +53,13 @@ The checkout must fetch full history (`fetch-depth: 0`): the record-coverage tes
 the L0 verification tier below, so a change that fails here fails everywhere. Run it locally before
 pushing — do not leave the first run to CI.
 
+**Green CI does not certify the interpreter you are using.** CI runs Python 3.12; this repository's
+local venv is created at 3.13 (`install.sh`) and the system `python3` may be newer — the version
+matrix and what each number means live in
+[`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md). If a change depends on
+interpreter behaviour, say which version you actually ran, and consider widening the CI matrix
+rather than assuming 3.12 speaks for all of them.
+
 - **Keep CI in step with the code.** Update `.github/workflows/ci.yml` in the *same change* that
   makes it stale — never as a later cleanup.
 - **New or renamed tests need no CI edit** as long as CI runs the discovery command
@@ -75,13 +88,34 @@ tool runs from a checkout, so the version only needs to move when a documented c
 - **CodeBuddy's own files are never written.** No hook is installed, no `~/.codebuddy/**` file is
   opened for writing, no runtime overhead is added to the host. `cbut` reads and stops there.
 - **Metadata only, never content.** Only structured metadata fields are read: counts, timings,
-  statuses, identifiers. Prompt/response text, tool argument values and file contents are never
-  read and never stored. Nothing leaves the machine — there is no network code path in this project.
+  statuses, identifiers. Prompt/response text and tool argument *values* are never stored. One
+  exception is load-bearing and easy to misread: to recover a slash-command name the parser does
+  look at a message's text blocks, and only the string inside the `<command-name>` marker is kept.
+  This rule is enforced by checks, not by good intentions — `scripts/tests/test_privacy.py`
+  (an import allowlist over the production scripts; sentinel values scanned against **every text
+  column of every table**; a tree hash proving `~/.codebuddy` is not written) and
+  `scripts/tests/test_format_registry.py` (the columns stay what the code reads). Two prose columns
+  — `agent_usage.description` and `sessions.title` — were live in v4 and are gone as of v5: the
+  promise had drifted behind the code. Do not re-add a column that holds free text.
+- **Nothing leaves the machine.** No production script imports a network module, and the check
+  scans *this repository's* scripts — say it that way. Measured on the installed set (9 distributions):
+  no package imports `socket`/`ssl` at all; every `urllib` use is `urllib.parse` (string work); the two
+  network-capable spots are pygments regeneration helpers under `if __name__ == '__main__'` and
+  `textual/demo/`, which needs `httpx` — **not installed**. "We cannot make a request" is still not a
+  claim we own: it is about versions we have not installed. Re-measure (command in
+  `docs/maintenance/compatibility.md`) before restating any of it.
 - **Tests never touch real state.** Each suite builds its own throwaway database in a temp
   directory; the real `usage.db` and the real `~/.codebuddy` logs are never opened. A test that
-  reads a live store is an instrument error, not a finding.
+  reads a live store is an instrument error, not a finding. This has already happened once: a
+  dispatcher test stopped defaulting `CBUT_SCRIPTS` to its stub directory and ran a real
+  `cbut sync --full` against the live database. Any test that shells out to `bin/cbut` must pin
+  `CBUT_SCRIPTS`, `CBUT_DB` **and** `CBUT_CODEBUDDY_DIR` into its temp directory — all three,
+  because the launcher resolves them independently.
 - **Sync must stay incremental *and* idempotent.** Repeated syncs and schema migrations must not
   inflate `context tokens` or duplicate rows; `cbut sync --full` is the documented rebuild path.
+  The property is pinned by `test_a_real_process_kill_mid_transaction_leaves_no_partial_state`
+  (a child that `os._exit`s with the transaction open — not a simulated close): rows and offset
+  are lost together, so a retry counts a turn exactly once.
 - **No provider field, by decision.** CodeBuddy transcripts carry no provider / account / site /
   endpoint, so the Usage page has no provider column at all. Do not "helpfully" add or infer one
   from the model name — guessing is worse than an honest omission.
@@ -99,10 +133,18 @@ tool runs from a checkout, so the version only needs to move when a documented c
   wrong.
 - **MCP detection follows the real call shape**: `mcp__<server>__<tool>`, including calls wrapped
   by the deferred-tool mechanism (`DeferExecuteTool`). A sparse MCP tab is honest, not broken.
-- **Internal agents** (`autoModeClassifier`, `summaryGenerator`, …) live in OTel traces that are
-  **not yet wired into v1**; do not fabricate their usage from transcript data.
-- **Never commit runtime state**: `usage.db`, `.venv/`, `__pycache__/`, generated systemd units in
-  user paths. See `.gitignore`.
+- **Internal agents** (`autoModeClassifier`, `summaryGenerator`, …) live only in the OTel traces
+  under `~/.codebuddy/traces/`, which this tool does not read (see "What this is": traces are not
+  an input). Their counts are therefore **0 by construction**, not missing data — do not fabricate
+  them from transcripts, and do not describe trace ingestion as part of v1. Wiring traces in is a
+  design task: the tree holds both `.jsonl` and `.json` files and needs a session-linking decision
+  before it can be counted honestly.
+- **Never commit runtime state or working notes**: `usage.db`, `.venv/`, `__pycache__/`, generated
+  systemd units in user paths, and the session reports — `STATE.md`, `PROFILE.md`, `AUDIT.md`,
+  `PLAN.md`, `VERIFY.md`. Those five are working documents, not artifacts: the repository is
+  public, and they contain real paths, real counts and open defects. `.gitignore` covers them; if a
+  check needs to change and it starts matching a file that should stay local, fix the ignore list
+  in the same commit. Long-lived maintenance material goes in `docs/maintenance/` and *is* committed.
 
 ## Conventions
 
@@ -130,10 +172,108 @@ tool runs from a checkout, so the version only needs to move when a documented c
   never hand-copy an aggregate count here — the check and the test suite print them.
 - **Verification tiers** (named by what the claim needs, not by the tool): **L0** =
   `python3 -m unittest discover -s scripts/tests` (temp database, no host), **L1** = a throwaway
-  fixture store or a hand-run `cbut sync --full` against copied logs, **L2** = the real
-  `~/.codebuddy` logs on this machine.
+  store outside the repository (`--db /tmp/…`) fed by the real logs or by copied logs, **L2** = the
+  real `~/.codebuddy` logs and the real `usage.db` on this machine.
+  - **L1 is where parser changes are proved.** Claiming a parsing fix works without running it
+    against real transcript bytes is how a rewrite filtered on a block type that carries no
+    markers emptied the Commands panel while every test stayed green.
+  - **L2 needs the owner's go-ahead**, and a destructive L2 step needs a snapshot first.
+    `cbut sync --full` and any schema migration take one automatically (last five, under
+    `backups/`); `cbut restore` lists and rolls them back. Treat "I ran `--full` on the real
+    database" as an action requiring permission, not as verification.
+  - An L1/L2 result is reported per table, not for the tables you expected to change: compare
+    **every** table's row count before and after a rebuild, or a regression in a table you did
+    not touch stays invisible.
 - `Symptom` names the mechanism, never the session: no prompt text, no command lines, no tool
   argument values, no real paths from `~/.codebuddy`. The record is held to the same
   metadata-not-content rule as the code.
 - Run the coverage check before committing docs:
   `python3 -m unittest scripts.tests.test_record_coverage`. It is part of the suite.
+
+## Invariants and how to check them
+
+Three promises are load-bearing enough that prose is not proof. Each has a command that fails when
+the promise breaks — a rule without a check is a preference.
+
+**1. Nothing leaves the machine.** No production script imports a socket, HTTP client, mail,
+process-spawning or thread module.
+
+```bash
+python3 -m unittest scripts.tests.test_privacy      # AST import allowlist over the 4 production scripts
+```
+
+The check has an allowlist of roots per file and names the forbidden ones broadly (raw sockets,
+`subprocess`, `multiprocessing`, `threading`), so adding one is a test failure rather than a quiet
+convention change. **Scope it honestly:** it inspects this repository's code. Say "our code has no
+network path", never "this tool cannot make a request" — the second is a claim about third-party
+packages and about versions not yet installed. What is measured here today: no installed package
+imports `socket`/`ssl`, every `urllib` use is `urllib.parse`, and the only network-capable source in
+the venv is pygments regeneration helpers under `if __name__ == '__main__'` plus `textual/demo/`,
+whose `httpx` is not installed. Re-measure before restating; the command is in
+[`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md#textual).
+
+**2. CodeBuddy's own files are never written.** `~/.codebuddy` is opened for reading only, no hook
+is installed, no configuration is touched.
+
+```bash
+python3 -m unittest scripts.tests.test_privacy      # fingerprints a fixture CodeBuddy tree around a real index run
+```
+
+The test builds a fixture `~/.codebuddy`-shaped tree, fingerprints every path, runs the actual
+indexer over it, and re-hashes: one changed byte fails it. It also asserts nothing new appeared next
+to the database (no stray journal or side file). The proof is about the code path, not about the
+machine — which is the right target, since the same `index_file()` is what runs against the real
+logs. This is the invariant most likely to be broken by accident (a stray `open(..., "w")` on a log
+path), so it is proven by content hash rather than by review.
+
+**3. Metadata only, never content.** No free-text value from a transcript may reach a column.
+
+```bash
+python3 -m unittest scripts.tests.test_privacy      # sentinels in every argument slot, scanned across every text column
+python3 -m unittest scripts.tests.test_format_registry
+```
+
+The first test feeds sentinel strings into every place the parser has to look (agent description,
+skill args, message body, session titles, tool argument values) and asserts none of them appears in
+**any text column of any table** — a column-scoped check, because a leak moved once the moment it
+was guarded in a named column. It also carries a positive control (names that *must* be stored):
+without it the scan would pass on a database that indexed nothing. The second keeps a new free-text
+column from being added silently: a usage table gaining a prose column is a privacy change, so
+`test_no_prose_column_exists_in_a_usage_table` fails until the column is declared as metadata.
+
+Maintenance material — the format surface itself, the version matrix, the size and latency
+baseline — lives in [`docs/maintenance/`](docs/maintenance/), and `test_maintenance_docs.py` keeps
+the generated part of it tied to the code.
+
+## Format coupling
+
+CodeBuddy owns the data; this tool only reads it. **The main maintenance risk is upstream
+changing the format**, and the failure mode is silent: a renamed field reads as `NULL`, a renamed
+record type is simply unclaimed, the panels empty out, `cbut sync` prints "done", CI stays green.
+
+Two defenses, and both are mechanical:
+
+- **Unclaimed records are counted.** `scripts/cbut-sync.py` ends its dispatch chain with an `else`
+  that records *why* a record was not claimed (`type:<name>`, `unparseable_line`,
+  `unreadable_file:<OSError>`) into the `unparsed` table. `cbut health`, the sync summary and the
+  TUI status line all surface it. A number that cries wolf is not a signal, so types the code
+  understands but does not need (a `model-usage` echo whose tokens are already stored) get an
+  explicit claim branch instead of padding the count.
+- **The format surface is registered in one place.** The block at the top of
+  `scripts/cbut-sync.py` (`# --- CodeBuddy format registry`) declares every field name, path,
+  glob, separator, tool name and regex the parser depends on. `cbut format` prints it, and
+  `docs/maintenance/codebuddy-format.md` carries that output.
+
+Two enforcement styles, deliberately: layout values, separators and tool names are **source** (the
+code reads the constant, so a rename is one edit); record **field names** stay inline in the
+handlers — a parser is easier to trust when the field it grabs is visible — and are **mirrored** by
+the `*_FIELDS` sets. `scripts/tests/test_format_registry.py` locks the mirror both ways: a field
+read and not registered fails, a registered field no longer read fails, and no bare literal may be
+passed to a layout method. That is what makes a half-applied rename impossible to hide: change
+`providerData` in the registry and the test reports both halves of the mismatch, with line numbers.
+
+When upstream changes: follow the checklist in
+[`docs/maintenance/codebuddy-format.md`](docs/maintenance/codebuddy-format.md#when-a-panel-goes-empty),
+then change the registry and the handler **in the same commit**, and re-index at L1 before touching
+a real database. `AGENTS.md` does not list the fields — the registry does, and the test keeps it
+true.

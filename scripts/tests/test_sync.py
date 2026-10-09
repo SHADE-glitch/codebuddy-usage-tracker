@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -183,6 +184,52 @@ class IndexerTest(unittest.TestCase):
         n1 = self.count("inventory")
         sync.scan_inventory(self.conn)
         self.assertEqual(self.count("inventory"), n1)
+
+    def test_user_skills_come_from_the_manifest_not_the_category(self):
+        # The layout is skills/<category>/<skill>/SKILL.md. Listing the
+        # directories one level down registered "ai" and "backend" as skills and
+        # left every real skill out, so assert both halves: the manifests' parents
+        # are in, the categories and manifest-less directories are not.
+        root = self._cb_root()
+        for category, skill in (("ai", "add-tests"), ("backend", "api-contract")):
+            d = root / "skills" / category / skill
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text("# fixture\n", encoding="utf-8")
+        (root / "skills" / "README.md").write_text("# not a skill\n",
+                                                   encoding="utf-8")
+        no_manifest = root / "skills" / "_meta"
+        no_manifest.mkdir()
+        (no_manifest / "notes.md").write_text("# no manifest here\n",
+                                              encoding="utf-8")
+
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = root
+        try:
+            sync.scan_inventory(self.conn)
+        finally:
+            sync.db.CODEBUDDY_DIR = old
+        names = {r["name"] for r in self.conn.execute(
+            "SELECT name FROM inventory WHERE kind='skill' AND source='user'")}
+        self.assertEqual(names, {"add-tests", "api-contract"})
+
+    def test_user_agents_are_inventoried(self):
+        # ~/.codebuddy/agents/<name>.md was never scanned, so an installed agent
+        # could not appear in the Agents panel before its first call.
+        root = self._cb_root()
+        agents = root / "agents"
+        agents.mkdir()
+        (agents / "code-reviewer.md").write_text("# fixture\n", encoding="utf-8")
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = root
+        try:
+            sync.scan_inventory(self.conn)
+        finally:
+            sync.db.CODEBUDDY_DIR = old
+        row = self.conn.execute(
+            "SELECT * FROM inventory WHERE kind='agent' AND name='code-reviewer'"
+        ).fetchone()
+        self.assertIsNotNone(row, "an installed agent must appear even unused")
+        self.assertEqual(row["source"], "user")
 
     # -- model responses: real token usage from rawUsage --------------------
     # All token numbers below are FIXTURES, not real CodeBuddy data.
@@ -485,10 +532,14 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual(db.q_model_tokens(conn)[0]["total_tokens"], 11)
         conn.close()
 
-    def test_schema_version_is_four(self):
+    def test_current_schema_version_is_recorded(self):
+        # ensure_schema must leave the version it applied readable in `meta`: the
+        # migration gate reads it to tell a database from a future build apart
+        # from an old one. Asserted against the constant, so bumping the schema is
+        # one edit and not a stale test that pins a number nobody changed.
         ver = self.conn.execute(
             "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-        self.assertEqual(ver, "4")
+        self.assertEqual(ver, str(db.SCHEMA_VERSION))
 
     def test_no_message_id_is_not_recorded(self):
         # a usage-bearing record with no providerData.messageId must be skipped,
@@ -888,6 +939,43 @@ class IndexerTest(unittest.TestCase):
         sync.index_file(self.conn, self.tr, 0, {}, {}, {})
         self.conn.commit()
         self.assertEqual(self.count("commands"), 1)
+
+    def test_command_in_an_input_text_block_is_indexed(self):
+        """The block shape local transcripts actually use.
+
+        Every command fixture above carries a bare string ``content``, so none
+        of them entered the block path. When a rewrite filtered blocks on
+        ``type == "text"`` — a type that carries no command marker in any of the
+        499 local transcripts — the Commands panel dropped to zero rows with the
+        whole suite green. This test is the branch that check needed.
+        """
+        write_records(self.tr, [
+            {"type": "message", "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "content": [
+                 {"type": "input_text",
+                  "text": "run <command-name>/model</command-name> now"},
+                 {"type": "output_text",
+                  "text": "<command-name>/clear</command-name>"}]},
+        ])
+        sync.index_file(self.conn, self.tr, 0, {}, {}, {})
+        self.conn.commit()
+        got = {r["command"] for r in
+               self.conn.execute("SELECT command FROM commands")}
+        self.assertEqual(got, {"model", "clear"})
+
+    def test_marker_outside_a_block_text_field_is_not_invented(self):
+        """Only ``text`` is scanned: a marker parked in another field is not a
+        command we observed, and blocks without text are not errors."""
+        write_records(self.tr, [
+            {"type": "message", "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "content": [
+                 {"type": "input_text",
+                  "content": "<command-name>/ghost</command-name>"},
+                 "a bare string block", 12]},
+        ])
+        sync.index_file(self.conn, self.tr, 0, {}, {}, {})
+        self.conn.commit()
+        self.assertEqual(self.count("commands"), 0)
         self.assertEqual(self.count("plugin_usage"), 0)
 
     # -- F3: rewritten / replaced files are re-read from zero ---------------
@@ -987,6 +1075,372 @@ class IndexerTest(unittest.TestCase):
         ])
         self.index()
         self.assertEqual(self.count("mcp_usage"), 0)
+
+
+class UnparsedAccountingTest(unittest.TestCase):
+    """Records no handler claims must become a number, never vanish quietly.
+
+    A CodeBuddy format change zeroes every panel while `cbut sync` still prints
+    "done" — these tests pin the one signal that distinguishes "you stopped
+    using tools" from "the log changed under us".
+
+    Standalone rather than a subclass of ``IndexerTest``: inheriting it would
+    re-run all 61 of its tests under this class name.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "t.db"
+        self.conn = db.open_db(self.db_path)
+        db.ensure_schema(self.conn)
+        self.root = Path(self.tmp.name) / "cb"
+        (self.root / "projects" / "p").mkdir(parents=True)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def count(self, table):
+        return self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+    def _run_on(self, records, raw_lines=()):
+        """Index records through run() against a throwaway CodeBuddy root."""
+        f = self.root / "projects" / "p" / "s.jsonl"
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = self.root
+        try:
+            with open(f, "w", encoding="utf-8") as fh:
+                for rec in records:
+                    fh.write(json.dumps(rec) + "\n")
+                for line in raw_lines:
+                    fh.write(line + "\n")
+            return sync.run(quiet=True, db_path=self.db_path)
+        finally:
+            sync.db.CODEBUDDY_DIR = old
+
+    def _reasons(self):
+        return {r["reason"]: r["count"] for r in
+                self.conn.execute("SELECT reason, count FROM unparsed")}
+
+    def call(self, call_id, ts=10):
+        return {"type": "function_call", "name": "Bash", "callId": call_id,
+                "sessionId": "s1", "cwd": "/p", "timestamp": ts}
+
+    def test_unclaimed_type_is_counted_per_reason(self):
+        stats = self._run_on(
+            [{"type": "reasoning", "sessionId": "s1", "timestamp": t}
+             for t in (10, 20, 30)] + [self.call("b1")])
+        self.assertEqual(self._reasons(), {"type:reasoning": 3})
+        self.assertEqual(self.count("tool_calls"), 1,
+                         "the known record must still be indexed")
+        self.assertEqual(stats["unparsed_this_run"], 3)
+
+    def test_record_without_a_type_is_counted_as_missing(self):
+        self._run_on([{"sessionId": "s1", "timestamp": 10}])
+        self.assertEqual(self._reasons(), {"type:<missing>": 1})
+
+    def test_complete_line_that_is_not_json_is_counted(self):
+        self._run_on([self.call("b1")], raw_lines=["{not json at all"])
+        self.assertEqual(self._reasons(), {"unparseable_line": 1})
+
+    def test_partial_tail_line_is_not_counted(self):
+        # An in-progress session ends mid-line. That tail is retried next run,
+        # so counting it would make every live session look like a format break.
+        f = self.root / "projects" / "p" / "s.jsonl"
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = self.root
+        try:
+            with open(f, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(self.call("b1")) + "\n")
+                fh.write('{"type": "function_cal')     # cut off, no newline
+            sync.run(quiet=True, db_path=self.db_path)
+        finally:
+            sync.db.CODEBUDDY_DIR = old
+        self.assertEqual(self._reasons(), {})
+        self.assertEqual(self.count("tool_calls"), 1)
+
+    def test_second_run_over_an_untouched_transcript_does_not_recount(self):
+        self._run_on([{"type": "reasoning", "sessionId": "s1", "timestamp": 10}])
+        self.assertEqual(self._reasons(), {"type:reasoning": 1})
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = self.root
+        try:
+            sync.run(quiet=True, db_path=self.db_path)   # no new bytes
+        finally:
+            sync.db.CODEBUDDY_DIR = old
+        self.assertEqual(self._reasons(), {"type:reasoning": 1},
+                         "an untouched file is skipped, so the count must not "
+                         "inflate on every poll")
+
+    def test_rewritten_transcript_recounts_instead_of_double_counting(self):
+        # A rewritten prefix forces a whole-DB re-read (the offsets cannot be
+        # subtracted in isolation). The unparsed total must follow that logic,
+        # exactly as sessions.tokens had to.
+        records = [{"type": "reasoning", "sessionId": "s1", "timestamp": 10}]
+        self._run_on(records)
+        self._run_on(records)                     # same bytes, new mtime
+        self.assertEqual(self._reasons(), {"type:reasoning": 1},
+                         "a forced rebuild must reset the accumulated count")
+
+    def test_full_rebuild_recounts_instead_of_double_counting(self):
+        records = [{"type": "reasoning", "sessionId": "s1", "timestamp": 10}]
+        self._run_on(records)
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = self.root
+        try:
+            sync.run(full=True, quiet=True, db_path=self.db_path)
+        finally:
+            sync.db.CODEBUDDY_DIR = old
+        self.assertEqual(self._reasons(), {"type:reasoning": 1},
+                         "--full re-reads everything, so the count must be the "
+                         "recount, not the sum of two passes")
+
+    def test_overview_reports_unparsed_totals(self):
+        self._run_on([{"type": "reasoning", "sessionId": "s1", "timestamp": 10},
+                      {"type": "watermark", "sessionId": "s1", "timestamp": 11}])
+        o = db.overview(self.conn)
+        self.assertEqual(o["unparsed_records"], 2)
+        self.assertEqual(o["unparsed_kinds"], 2)
+
+    def test_a_type_handled_elsewhere_is_not_counted_as_unparsed(self):
+        # model-usage carries no transcript fields of its own: its tokens land in
+        # model_responses via _record_model_response. It appeared in the real
+        # unparsed table anyway, so pin that a known type is claimed even when no
+        # branch acts on it — otherwise the count reports a format change that
+        # never happened.
+        stats = self._run_on([
+            {"type": "model-usage", "sessionId": "s1", "cwd": "/p",
+             "timestamp": 10,
+             "providerData": {"messageId": "mu1", "model": "m",
+                              # FIXTURE numbers, not real CodeBuddy usage.
+                              "rawUsage": {"prompt_tokens": 5,
+                                           "completion_tokens": 6}}}])
+        self.assertEqual(self._reasons(), {},
+                         "a type this parser understands must not be counted")
+        self.assertEqual(self.count("model_responses"), 1,
+                         "…and its tokens are genuinely recorded")
+        self.assertEqual(stats["unparsed_this_run"], 0)
+
+
+class CrashSafetyTest(unittest.TestCase):
+    """The offsets we store must survive a crash and a rewrite honestly."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "t.db"
+        self.conn = db.open_db(self.db_path)
+        db.ensure_schema(self.conn)
+        self.root = Path(self.tmp.name) / "cb"
+        (self.root / "projects" / "p").mkdir(parents=True)
+        self.f = self.root / "projects" / "p" / "s.jsonl"
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _run(self):
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = self.root
+        try:
+            return sync.run(quiet=True, db_path=self.db_path)
+        finally:
+            sync.db.CODEBUDDY_DIR = old
+
+    def count(self, table):
+        return self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+    def test_a_killed_run_rolls_back_rows_and_offset_together(self):
+        # sessions.tokens *accumulates*, so a crash that kept the rows but lost
+        # the offset would double-count the context total on the retry. Rows and
+        # offset are written in the same transaction as the commit, so a crash
+        # loses both — this pins that boundary rather than trusting it.
+        rec = {"type": "turn-metrics", "timestamp": 1000, "tokenDelta": 100,
+               "durationMs": 1000, "cwd": "/p",
+               "_meta": {"baggage": "codebuddy.session_id=S"}}
+        self.f.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+        crash = db.open_db(self.db_path)
+        db.ensure_schema(crash)
+        sync.index_file(crash, self.f, 0, {}, {}, {})
+        crash.close()                       # an *imitated* crash; see the next test
+
+        self.assertEqual(self.count("sessions"), 0,
+                         "an uncommitted run must leave no session row")
+        self.assertEqual(self.count("sync_state"), 0,
+                         "…and no offset claiming the bytes were consumed")
+
+        self._run()
+        row = self.conn.execute("SELECT tokens, duration_ms FROM sessions"
+                                " WHERE session_id='S'").fetchone()
+        self.assertEqual((row["tokens"], row["duration_ms"]), (100, 1000),
+                         "the retry must count the turn exactly once")
+
+    # A `close()` only imitates a crash: Python still runs SQLite's rollback on
+    # the way out. This test kills the process for real, so recovery has to come
+    # from the WAL alone — the honest version of "incremental *and* idempotent".
+    CHILD_CRASH = (
+        "import json, os, sys, importlib.util\n"
+        "s = os.environ['CBUT_CRASH_SCRIPTS']\n"
+        "sys.path.insert(0, s)\n"
+        "import cbut_db as db\n"
+        "spec = importlib.util.spec_from_file_location('sync', "
+        "os.path.join(s, 'cbut-sync.py'))\n"
+        "sync = importlib.util.module_from_spec(spec); spec.loader.exec_module(sync)\n"
+        "conn = db.open_db(os.environ['CBUT_CRASH_DB'])\n"
+        "db.ensure_schema(conn)\n"
+        "with open(os.environ['CBUT_CRASH_FILE'], 'rb') as fh:\n"
+        "    lines = fh.read().splitlines()\n"
+        "sync._handle_record(conn, json.loads(lines[0]), {}, {}, {}, {})\n"
+        "sync._handle_record(conn, json.loads(lines[1]), {}, {}, {}, {})\n"
+        "os._exit(7)\n"                     # no commit, no close, no checkpoint
+    )
+
+    def test_a_real_process_kill_mid_transaction_leaves_no_partial_state(self):
+        rec = {"type": "turn-metrics", "timestamp": 1000, "tokenDelta": 100,
+               "durationMs": 1000, "cwd": "/p",
+               "_meta": {"baggage": "codebuddy.session_id=S"}}
+        call = {"type": "function_call", "name": "Bash", "callId": "k1",
+                "sessionId": "S", "cwd": "/p", "timestamp": 1001,
+                "arguments": "{}"}
+        write_records(self.f, [rec, call])
+
+        # The child must be the only connection, or it would be our own open
+        # read transaction that decides when the WAL is recovered.
+        self.conn.close()
+        try:
+            done = subprocess.run(
+                [sys.executable, "-c", self.CHILD_CRASH],
+                env=dict(os.environ, CBUT_CRASH_SCRIPTS=str(SCRIPTS),
+                         CBUT_CRASH_DB=str(self.db_path),
+                         CBUT_CRASH_FILE=str(self.f)),
+                capture_output=True, text=True)
+        finally:
+            self.conn = db.open_db(self.db_path)
+
+        self.assertEqual(done.returncode, 7,
+                         "the child was supposed to die mid-transaction, not "
+                         "raise: " + done.stderr[-400:])
+        for table in ("sessions", "sync_state", "tool_calls"):
+            self.assertEqual(self.count(table), 0,
+                             f"an uncommitted {table} write survived a real kill")
+
+        self._run()
+        self.assertEqual(self.count("sync_state"), 1,
+                         "the retry must re-read the file from the same offset")
+        row = self.conn.execute("SELECT tokens, duration_ms FROM sessions"
+                                " WHERE session_id='S'").fetchone()
+        self.assertEqual((row["tokens"], row["duration_ms"]), (100, 1000),
+                         "recovered WAL + retry must count the turn once, not twice")
+        self.assertEqual(self.count("tool_calls"), 1,
+                         "the killed run's tool call must not appear twice")
+
+    def test_sync_state_keeps_the_real_size_when_a_tail_is_deferred(self):
+        line = json.dumps({"type": "function_call", "name": "Bash",
+                           "callId": "b1", "sessionId": "s1", "cwd": "/p",
+                           "timestamp": 10})
+        self.f.write_text(line + "\n" + '{"type": "function_cal',
+                          encoding="utf-8")   # half a record, no newline
+        self._run()
+        row = self.conn.execute(
+            "SELECT size, offset FROM sync_state WHERE file_path=?",
+            (str(self.f),)).fetchone()
+        self.assertEqual(row["offset"], len(line) + 1,
+                         "the deferred tail must not be claimed as consumed")
+        self.assertEqual(row["size"], self.f.stat().st_size,
+                         "`size` must be the file's real size, not the offset")
+
+    def test_needs_reset_detects_a_shrink_that_stays_above_the_offset(self):
+        # Five 20-byte lines; three were consumed (offset 60). The file is then
+        # rewritten to 70 bytes — smaller than it was, still larger than the
+        # offset. Recording the real size catches it; recording the offset (60)
+        # as the size made 70 look like growth, so the stale offset survived and
+        # the file was re-read from the middle of a rewritten prefix.
+        self.f.write_text("".join(f"{i:<19}\n" for i in range(5)),
+                          encoding="utf-8")
+        st = self.f.stat()
+        self.assertEqual(st.st_size, 100)
+        real_size_row = {"size": 100, "mtime": st.st_mtime - 5, "offset": 60}
+        offset_as_size = {"size": 60, "mtime": st.st_mtime - 5, "offset": 60}
+        self.assertTrue(sync._needs_reset(self.f, st, real_size_row),
+                        "a rewrite that shrank the file must force a rebuild")
+        self.assertFalse(sync._needs_reset(self.f, st, offset_as_size),
+                         "what the old size column would have concluded")
+
+    def test_unreadable_file_is_counted_and_the_run_survives(self):
+        good = self.root / "projects" / "p" / "a.jsonl"
+        good.write_text(json.dumps({"type": "function_call", "name": "Bash",
+                                    "callId": "b1", "sessionId": "s1",
+                                    "cwd": "/p", "timestamp": 10}) + "\n",
+                        encoding="utf-8")
+        bad = self.root / "projects" / "p" / "z.jsonl"
+        bad.write_text(json.dumps({"type": "function_call", "name": "Read",
+                                   "callId": "r1", "sessionId": "s2",
+                                   "cwd": "/p", "timestamp": 20}) + "\n",
+                       encoding="utf-8")
+        os.chmod(bad, 0)
+        try:
+            stats = self._run()
+        finally:
+            os.chmod(bad, 0o600)
+        self.assertEqual(self.count("tool_calls"), 1,
+                         "a transcript that could be read must still be indexed")
+        self.assertEqual(stats["unparsed_this_run"], 1,
+                         "the unreadable file has to show up as a number")
+        reason = self.conn.execute(
+            "SELECT reason FROM unparsed").fetchone()["reason"]
+        self.assertTrue(reason.startswith("unreadable_file:"), reason)
+        self.assertEqual(self.count("sync_state"), 1,
+                         "only the readable file may claim an offset")
+
+    def test_a_retry_picks_the_unreadable_file_back_up(self):
+        # No offset is stored for a skipped file, so the next run retries it —
+        # otherwise one transient lock would silently drop a whole session.
+        bad = self.root / "projects" / "p" / "z.jsonl"
+        bad.write_text(json.dumps({"type": "function_call", "name": "Read",
+                                   "callId": "r1", "sessionId": "s2",
+                                   "cwd": "/p", "timestamp": 20}) + "\n",
+                       encoding="utf-8")
+        os.chmod(bad, 0)
+        try:
+            self._run()
+        finally:
+            os.chmod(bad, 0o600)
+        self.assertEqual(self.count("tool_calls"), 0)
+        self._run()
+        self.assertEqual(self.count("tool_calls"), 1,
+                         "the file must be indexed once it is readable again")
+
+
+    def test_record_without_a_project_creates_no_session_row(self):
+        # A metadata-only record carries a sessionId and a timestamp but no cwd.
+        # Each one used to create a sessions row with a NULL project, no tool
+        # calls and no model responses behind it — invisible in every panel, but
+        # counted as a session (308 of them in the real index).
+        self.f.write_text(json.dumps({"type": "session-meta", "sessionId": "ghost",
+                                      "timestamp": 1000}) + "\n",
+                          encoding="utf-8")
+        self._run()
+        self.assertEqual(self.count("sessions"), 0)
+        self.assertEqual(self.count("sync_state"), 1,
+                         "the file is still consumed; only the row is declined")
+
+    def test_a_session_with_a_project_keeps_its_row_and_is_not_wiped(self):
+        rec1 = {"type": "function_call", "name": "Bash", "callId": "b1",
+                "sessionId": "s1", "cwd": "/p", "timestamp": 1000}
+        rec2 = {"type": "session-meta", "sessionId": "s1", "timestamp": 2000}
+        self.f.write_text(json.dumps(rec1) + "\n" + json.dumps(rec2) + "\n",
+                          encoding="utf-8")
+        self._run()
+        row = self.conn.execute(
+            "SELECT project, started_at, ended_at FROM sessions"
+            " WHERE session_id='s1'").fetchone()
+        self.assertIsNotNone(row, "a real session must have its row")
+        self.assertEqual(row["project"], "/p")
+        # Honest cost: the span now ends at the last record that said where it
+        # ran, so a cwd-less trailing record no longer stretches ended_at.
+        # Duration is accumulated from turn-metrics (which carries cwd), so only
+        # the start/end window is affected.
+        self.assertEqual((row["started_at"], row["ended_at"]), (1000, 1000))
 
 
 if __name__ == "__main__":

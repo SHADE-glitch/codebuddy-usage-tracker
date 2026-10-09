@@ -15,6 +15,14 @@ venv/
 .env
 .env.*
 
+# One-off reports and session state. This repository is public, and these files
+# carry real paths under ~/.codebuddy plus measured data volumes — never commit.
+/STATE.md
+/PROFILE.md
+/AUDIT.md
+/PLAN.md
+/VERIFY.md
+
 # Editors / OS
 .idea/
 .vscode/

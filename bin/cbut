@@ -6,6 +6,8 @@
 #   cbut sync --full     rebuild the database from scratch
 #   cbut stats|tools|skills|agents|plugins|mcp|show|recent|inventory|export|health
 #                        headless reports (no TUI, stdlib only)
+#   cbut backup          snapshot the database before a risky step
+#   cbut restore         list snapshots, or restore one: cbut restore NAME
 #
 # Written in bash on purpose: it must still run and print a useful error when
 # the TUI venv is missing or broken, so it cannot depend on any Python.
@@ -17,33 +19,55 @@
 set -euo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)"
-REPO_DIR="$(cd "$(dirname "${SELF:-$0}")/.." 2>/dev/null && pwd)" || REPO_DIR=""
+SELF="${SELF:-${BASH_SOURCE[0]}}"
+REPO_DIR="$(cd "$(dirname "$SELF")/.." 2>/dev/null && pwd)" || REPO_DIR=""
+
+cmd="${1:-tui}"
 
 SCRIPTS="${CBUT_SCRIPTS:-}"
 if [ -z "$SCRIPTS" ] || [ ! -d "$SCRIPTS" ]; then
   if [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR/scripts" ]; then
     SCRIPTS="$REPO_DIR/scripts"
-  else
-    SCRIPTS="$HOME/.local/share/codebuddy-usage-tracker/scripts"
+  elif [ "$cmd" != "help" ] && [ "$cmd" != "-h" ] && [ "$cmd" != "--help" ]; then
+    # install.sh only ever symlinks bin/cbut into ~/.local/bin; it never copies
+    # the scripts into a user path, so there was no second place to look. Saying
+    # "not found" beats exec'ing a path that cannot exist.
+    echo "cbut: no scripts directory found next to $SELF — set CBUT_SCRIPTS" >&2
+    exit 1
   fi
 fi
 
-# Prefer the repo venv (has textual); fall back to system python3.
+# CBUT_VENV may name a venv directory *or* a python binary. Both are honoured:
+# naming the interpreter used to be discarded silently and system python3 ran
+# instead, which is invisible until the TUI fails on a missing dependency.
 PY="${CBUT_VENV:-}"
 if [ -n "$PY" ] && [ -x "$PY/bin/python" ]; then
   PY="$PY/bin/python"
-elif [ -x "$REPO_DIR/.venv/bin/python" ]; then
+elif [ -n "$PY" ] && [ -x "$PY" ]; then
+  :
+elif [ -n "$PY" ]; then
+  echo "cbut: CBUT_VENV='$PY' is neither a venv dir nor an executable" >&2
+  exit 1
+elif [ -n "$REPO_DIR" ] && [ -x "$REPO_DIR/.venv/bin/python" ]; then
   PY="$REPO_DIR/.venv/bin/python"
 else
+  # The headless reports need only the standard library. The TUI prints its own
+  # instructions when it cannot import textual.
   PY="python3"
 fi
 
-cmd="${1:-tui}"
 case "$cmd" in
   tui|"")    shift || true; exec "$PY" "$SCRIPTS/cbut-tui.py" "$@" ;;
   sync)      shift || true; exec "$PY" "$SCRIPTS/cbut-sync.py" "$@" ;;
   -h|--help|help)
-    sed -n '2,16p' "$SELF" 2>/dev/null | sed 's/^# \{0,1\}//' || echo "cbut — CodeBuddy usage tracker"
+    # Print the leading comment block rather than a hard-coded line range: the
+    # range is exactly what let this help text drift out of step once (D-001).
+    tail -n +2 "$SELF" | while IFS= read -r line; do
+      case "$line" in
+        \#*) line="${line#\#}"; printf '%s\n' "${line# }" ;;
+        *) break ;;
+      esac
+    done
     ;;
   *)
     exec "$PY" "$SCRIPTS/cbut-stats.py" "$@"

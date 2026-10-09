@@ -307,6 +307,114 @@ def cmd_health(conn, args):
           f"{o['model_responses']} model responses "
           f"({o['model_responses_with_usage']} with usage)")
     print(f"  last activity  {ts(o['last_ts'])}")
+    # The format-change signal. Printing the "0" case too, so the line itself
+    # proves the check ran rather than merely being absent when nothing broke.
+    if o["unparsed_records"]:
+        print(f"  UNPARSED       {o['unparsed_records']} records "
+              f"across {o['unparsed_kinds']} reason(s) no handler claims:")
+        for row in db.q_unparsed(conn)[:8]:
+            print(f"                 {row['count']:>8}  {row['reason']}")
+        print("                 (a jump here right after a CodeBuddy upgrade "
+              "means its log format changed)")
+    else:
+        print("  unparsed       0 — every record type was claimed")
+
+
+# --- snapshots -------------------------------------------------------------
+#
+# These two do not follow the ``cmd_x(conn, args)`` shape the reports use: they
+# work on the database *file*, and ``restore`` has to run when the database is
+# missing or unreadable — which is exactly when the read-only connection the
+# reports open would refuse to start.
+
+
+def cmd_backup(args) -> int:
+    path = Path(args.db)
+    if not path.exists():
+        print(f"no database at {path} — run: cbut sync", file=sys.stderr)
+        return 1
+    conn = db.open_db(path)
+    try:
+        dest = db.snapshot(conn, reason="manual")
+    finally:
+        conn.close()
+    print(f"snapshot  {dest}  ({dest.stat().st_size:,} bytes)")
+    print(f"          keeping the newest {db.BACKUP_KEEP} under {dest.parent}")
+    return 0
+
+
+def cmd_restore(args) -> int:
+    path = Path(args.db)
+    found = db.list_backups(path)
+    if not args.name:
+        if not found:
+            print(f"no backups under {path.parent}", file=sys.stderr)
+            return 1
+        print(f"backups for {path}")
+        for item in found:
+            kind = "managed" if item.parent.name == "backups" else "hand-made"
+            print(f"  {item.name}  {item.stat().st_size:>12,} B  {kind}")
+        print("\n  restore one:  cbut restore NAME     (close the TUI first)")
+        return 0
+    candidate = Path(args.name)
+    target = candidate if candidate.is_file() else next(
+        (p for p in found if p.name == args.name), None)
+    if target is None:
+        print(f"no backup named {args.name!r} — list them with: cbut restore",
+              file=sys.stderr)
+        return 1
+    try:
+        db.restore(target, db_path=path)
+    except sqlite3.Error as exc:
+        # Almost always the TUI holding the file open.
+        print(f"could not restore over {path}: {exc}\n"
+              f"  close the TUI (and stop cbut-sync.timer) and retry",
+              file=sys.stderr)
+        return 1
+    print(f"restored  {path}\n  from      {target}")
+    print(f"  the database that was there is kept in {db.backup_dir(path)}")
+    return 0
+
+
+FORMAT_BEGIN = "<!-- BEGIN generated: cbut format -->"
+FORMAT_END = "<!-- END generated -->"
+
+
+def _replace_generated_block(doc: Path, body: str) -> bool:
+    """Rewrite the marked block in ``doc``; False when the markers are gone.
+
+    Refusing beats appending: a generated section dropped into hand-written prose
+    is how a document ends up stating two things at once.
+    """
+    text = doc.read_text(encoding="utf-8") if doc.is_file() else ""
+    if FORMAT_BEGIN not in text or FORMAT_END not in text:
+        return False
+    head, _, rest = text.partition(FORMAT_BEGIN + "\n")
+    _, tail = rest.split(FORMAT_END, 1)
+    doc.write_text(f"{head}{FORMAT_BEGIN}\n{body}{FORMAT_END}{tail}",
+                   encoding="utf-8")
+    return True
+
+
+def cmd_format(args) -> int:
+    """Print or refresh the CodeBuddy format-dependency surface.
+
+    Generated from the parser's registry instead of written by hand, because a
+    hand-copied list is how `schema_version` became a value nothing read: a
+    description that stopped matching the code and stayed checked in anyway.
+    """
+    body = db.load_sync().format_doc()
+    if not args.write:
+        print(body, end="")
+        return 0
+    doc = (Path(__file__).resolve().parents[1]
+           / "docs" / "maintenance" / "codebuddy-format.md")
+    if not _replace_generated_block(doc, body):
+        print(f"{doc} has no generated block markers — refusing to rewrite it",
+              file=sys.stderr)
+        return 1
+    print(f"updated   {doc}")
+    return 0
 
 
 # --- driver ----------------------------------------------------------------
@@ -334,16 +442,41 @@ def main(argv=None) -> int:
     sp.add_argument("kind", choices=["tool", "skill", "agent", "mcp"])
     sp.add_argument("name")
     sp.add_argument("--limit", type=int, default=50)
+    sub.add_parser("backup", help="snapshot the database before a risky step")
+    rp = sub.add_parser("restore", help="restore a snapshot (omit NAME to list)")
+    rp.add_argument("name", nargs="?", default=None)
+    fp = sub.add_parser("format",
+                        help="print the CodeBuddy format-dependency surface")
+    fp.add_argument("--write", action="store_true",
+                    help="refresh the generated block in docs/maintenance/")
 
     args = ap.parse_args(argv)
     if not args.cmd:
         args.cmd = "stats"
+
+    # Not through the report connection: restore has to work when the database
+    # is missing or corrupt, which is when opening it read-only would fail.
+    if args.cmd == "backup":
+        return cmd_backup(args)
+    if args.cmd == "restore":
+        return cmd_restore(args)
+    if args.cmd == "format":
+        # Reads no database at all — the surface is in the code.
+        return cmd_format(args)
+
     if not Path(args.db).exists():
         print(f"no database at {args.db} — run: cbut sync", file=sys.stderr)
         return 1
     conn = db.open_db(args.db, readonly=True)
     try:
         COMMANDS[args.cmd](conn, args)
+    except sqlite3.OperationalError as exc:
+        # A database written by an older build of this tool has no table or
+        # column the current queries expect, and this CLI opens it read-only — it
+        # cannot repair that itself. A traceback hides an actionable one-liner.
+        print(f"cbut: this database is older than this build ({exc})\n"
+              f"      run: cbut sync", file=sys.stderr)
+        return 2
     finally:
         conn.close()
     return 0

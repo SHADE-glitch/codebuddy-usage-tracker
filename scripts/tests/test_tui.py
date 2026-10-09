@@ -10,6 +10,7 @@ import inspect
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -530,8 +531,13 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
-            self.assertIn("No requests", str(app.query_one("#usage-note").content))
-            self.assertEqual(app.query_one("#t-usage", tui.DataTable).row_count, 0)
+            # The message lives in the table, like the other seven tables
+            # (`_fill_or_empty`); a note above an untouched table reads as a page
+            # that failed to load. The note only carries column hints.
+            t = app.query_one("#t-usage", tui.DataTable)
+            self.assertEqual(t.row_count, 1)
+            self.assertIn("No requests in this window", all_rows(t)[0][0])
+            self.assertEqual(str(app.query_one("#usage-note").content), "")
 
     # 18. the Usage page has no view/sort controls (single Request Logs list)
     async def test_usage_has_no_view_or_sort_controls(self):
@@ -743,6 +749,44 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(app.is_running)
         app._auto_refresh_tick()
         self.assertEqual(ran["n"], 1)
+
+    # 28d. the auto-sync timer has the same teardown window as the refresh one,
+    # and D-003 only guarded the refresh side. Without the guard _request_sync
+    # reaches run_worker on an app that has already stopped: "RuntimeError: no
+    # running event loop", plus a coroutine that is never awaited.
+    async def test_auto_sync_tick_is_noop_when_not_running(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        requested = []
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Stubbed, not wrapped: the real _request_sync starts a worker that
+            # would scan this machine's ~/.codebuddy from inside a test.
+            app._request_sync = lambda *a, **k: requested.append(1)
+            app._auto_sync_tick()
+            self.assertEqual(len(requested), 1,
+                             "the tick must still sync while the app is running")
+
+        self.assertFalse(app.is_running)
+        app._auto_sync_tick()                       # must not raise
+        self.assertEqual(len(requested), 1,
+                         "no sync may be queued after the app has stopped")
+
+    # 28e. and toggling auto-sync off must stop the ticks, not just the label
+    async def test_auto_sync_tick_honours_the_switch(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        requested = []
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._request_sync = lambda *a, **k: requested.append(1)
+            app.action_toggle_auto_sync()
+            app._auto_sync_tick()
+            self.assertEqual(requested, [],
+                             "auto-sync is off; the tick must not sync")
+            app.action_toggle_auto_sync()
+            app._auto_sync_tick()
+            self.assertEqual(len(requested), 1)
 
     # 29. narrow terminals switch the panels to a compact (stacked) layout
     async def test_usage_summary_compact_fallback(self):
@@ -1178,6 +1222,319 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             start, end = app._bounds_for("tab-dashboard")
             self.assertEqual(end, pinned)
             self.assertEqual(start, db.window_bounds("1d", pinned)[0])
+
+    # 42. a sync that indexed nothing must not leave "Syncing…" on the bar
+    async def test_zero_file_sync_restores_the_data_line(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [("m1", "s1", "m", 1, 1, 0, 0, now, 1)])
+        app = TrackerApp(str(self.db_path))
+        app.sync_mod = SimpleNamespace(run=lambda **kw: {"files_indexed": 0})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            before = str(app.query_one("#status").content)
+            await pilot.press("r")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            after = str(app.query_one("#status").content)
+            self.assertNotIn("Syncing", after,
+                             "the sync finished; the bar still advertises it")
+            self.assertIn("tool calls", after)
+            self.assertEqual(after, before)
+
+    # 43. `s` marks the switch *and* keeps the counts it used to wipe out
+    async def test_auto_sync_toggle_keeps_the_data_line(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [("m1", "s1", "m", 1, 1, 0, 0, now, 1)])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+            status = str(app.query_one("#status").content)
+            self.assertIn("auto-sync OFF", status)
+            self.assertIn("tool calls", status,
+                         "the toggle replaced the whole line, and nothing put "
+                         "the numbers back until an unrelated refresh")
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertNotIn("auto-sync OFF",
+                             str(app.query_one("#status").content))
+
+    # 44/45. a re-query that fails says so; the tick that recovers says it stopped
+    async def test_a_failed_requery_is_reported_and_recovers(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [("m1", "s1", "m", 1, 1, 0, 0, now, 1)])
+        broken = Path(self.tmp.name) / "broken.db"
+        broken.write_bytes(b"this is not a database at all")
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            good = app.db_path
+
+            app.db_path = str(broken)
+            app._refresh_active_tab()
+            status = str(app.query_one("#status").content)
+            self.assertTrue(app._status_note,
+                            "a re-query that failed left no trace on the bar")
+            self.assertIn("!", status)
+            self.assertIn("Error", status)
+            # The counts stay visible *with* the warning: they are the last known
+            # numbers, and silently dropping either half would be a different lie.
+            self.assertIn("tool calls", status)
+
+            app.db_path = good
+            app._refresh_active_tab()
+            status = str(app.query_one("#status").content)
+            self.assertEqual(app._status_note, "")
+            self.assertNotIn("Error", status)
+            self.assertIn("tool calls", status)
+
+    # 46/47. narrow terminals get two panels per row, very narrow ones stack
+    async def test_usage_panels_go_two_up_before_they_stack(self):
+        make_db(self.db_path, [])
+        # per_row is how many panels share one row of the region: 4 wide, 2 on a
+        # narrow terminal, 1 when a second column would wrap a panel line.
+        for width, per_row in ((140, 4), (80, 2), (50, 1)):
+            with self.subTest(width=width):
+                app = TrackerApp(str(self.db_path))
+                async with app.run_test(size=(width, 24)) as pilot:
+                    await pilot.pause()
+                    app.query_one(tui.TabbedContent).active = "tab-usage"
+                    await pilot.pause()
+                    region = app.query_one("#usage-panels")
+                    panel = app.query_one("#panel-tokens")
+                    self.assertEqual(region.has_class("stacked"),
+                                     width < TrackerApp.STACKED_WIDTH)
+                    self.assertEqual(region.size.width // panel.size.width,
+                                     per_row,
+                                     f"at {width}: panel={panel.size.width} "
+                                     f"region={region.size.width}")
+
+    # 48. the two-up layout must not cost the table its rows
+    async def test_narrow_usage_keeps_the_table_visible(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [("msg-1", "s1", "m", 1, 1, 0, 0, now, 1)])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-usage"
+            await pilot.pause()
+            table = app.query_one("#t-usage", tui.DataTable)
+            self.assertGreater(table.size.height, 6,
+                               "the panels took the table's rows")
+
+    # 49. each tab's own window drives the Usage table's empty state
+    async def test_usage_empty_state_follows_the_window(self):
+        pinned = 1_700_000_000_000            # "now" for this app
+        # All-time still ends at the clock's now, so the row has to sit *before*
+        # it: a fixture at the wall clock would be ten years in the future here.
+        old = pinned - 10 * 86_400_000
+        make_db(self.db_path, [("msg-1", "s1", "m", 1, 1, 0, 0, old, 1)])
+        app = TrackerApp(str(self.db_path), clock=lambda: pinned / 1000)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # The shared range Select drives the *active* tab, so the Usage tab
+            # has to be open before the window means anything to it.
+            app.query_one(tui.TabbedContent).active = "tab-usage"
+            await pilot.pause()
+            t = app.query_one("#t-usage", tui.DataTable)
+            app.query_one("#range", tui.Select).value = "1d"
+            await pilot.pause()
+            self.assertIn("No requests in this window", all_rows(t)[0][0])
+            app.query_one("#range", tui.Select).value = "all"
+            await pilot.pause()
+            self.assertEqual(all_rows(t)[0][1], "m")     # the real row returns
+            self.assertNotIn("No requests",
+                             str(app.query_one("#usage-note").content))
+
+    # 50. a quiet window draws a baseline instead of a blank, and says so
+    async def test_dashboard_activity_is_never_a_blank_region(self):
+        pinned = 1_700_000_000_000
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [("msg-1", "s1", "m", 1, 1, 0, 0, now, 1)])
+        conn = db.open_db(self.db_path)
+        # q_usage_daily counts tool calls, so the control needs one: without it
+        # both clocks would read "no activity" and prove nothing.
+        conn.execute("INSERT INTO tool_calls(call_id, session_id, project,"
+                     " tool_name, category, ts)"
+                     " VALUES('c1','s1','/p','Bash','builtin',?)", (now,))
+        conn.commit()
+        conn.close()
+
+        quiet = TrackerApp(str(self.db_path), clock=lambda: pinned / 1000)
+        async with quiet.run_test() as pilot:
+            await pilot.pause()
+            activity = str(quiet.query_one("#dash-activity").content)
+            self.assertTrue(activity.strip(),
+                            "no calls rendered an empty region on the Dashboard")
+            self.assertEqual(set(activity.strip()), {"·"},
+                             "a quiet window must draw the baseline, not bars "
+                             "it did not measure")
+            self.assertIn("no activity",
+                          str(quiet.query_one("#dash-activity-axis").content))
+
+        busy = TrackerApp(str(self.db_path))
+        async with busy.run_test() as pilot:
+            await pilot.pause()
+            axis = str(busy.query_one("#dash-activity-axis").content)
+            self.assertNotIn("no activity", axis)
+            self.assertIn("peak", axis)
+            self.assertEqual(set(str(busy.query_one("#dash-activity").content)),
+                             {"█"})
+
+    # 51. every count in the status line agrees with its own number
+    async def test_status_counts_agree_with_their_number(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [("msg-1", "s1", "m", 1, 1, 0, 0, now, 1)])
+        conn = db.open_db(self.db_path)
+        db.ensure_schema(conn)
+        conn.execute("INSERT INTO tool_calls(call_id, session_id, project,"
+                     " tool_name, category, ts, duration_ms, status)"
+                     " VALUES('c1','s1','/p','Bash','builtin',?,1500,'completed')",
+                     (now,))
+        conn.execute("INSERT INTO skill_usage(call_id, skill, has_args, plugin,"
+                     " session_id, project, ts, status, duration_ms)"
+                     " VALUES('c2','sk',0,NULL,'s1','/p',?,'completed',100)",
+                     (now,))
+        conn.execute("INSERT INTO agent_usage(call_id, agent_type, kind, source,"
+                     " session_id, project, ts, status, duration_ms)"
+                     " VALUES('c3','Explore','active','tool','s1','/p',?,"
+                     "'completed',100)", (now,))
+        conn.execute("INSERT INTO mcp_usage(call_id, server, tool, session_id,"
+                     " project, ts, status, duration_ms)"
+                     " VALUES('c4','srv','t','s1','/p',?,'completed',100)", (now,))
+        conn.execute("INSERT INTO plugin_usage(plugin, marketplace, kind, target,"
+                     " session_id, project, ts)"
+                     " VALUES('pl','mk','skill','sk','s1','/p',?)", (now,))
+        conn.commit()
+        conn.close()
+
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            status = str(app.query_one("#status").content)
+            # Exactly one of everything. Scanning the rendered line instead of
+            # naming each phrase is what stops a newly added count from escaping
+            # the rule D-005 was supposed to install.
+            bad = [m.group(0) for m in re.finditer(r"(?<![\d,])1 \w+s\b", status)]
+            self.assertEqual(bad, [], f"plural disagreement in: {status}")
+            self.assertIn("1 tool call ·", status)
+            self.assertIn("1 model response ·", status)
+
+    # 52. a duration is a duration on both pages, not a token count
+    async def test_durations_use_one_formatter(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [])
+        insert_tool_calls(self.db_path, [
+            ("c1", "s1", "/p", "Bash", "builtin", now, 1500, "completed")])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            dash = str(app.query_one("#dash-rt-avg").content)
+            self.assertIn("1.5s", dash)
+            self.assertNotIn("1,500", dash,
+                             "the Dashboard formatted a duration with the token "
+                             "formatter, so the two pages disagreed by shape")
+            rows = [c for c in all_rows(app.query_one("#t-tools", tui.DataTable))]
+            self.assertIn("1.5s", rows[0])
+
+    # 53. the completeness panel cannot read "Incomplete: complete"
+    async def test_completeness_label_matches_its_value(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [("msg-1", "s1", "m", 1, 1, 0, 0, now, 1)])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await self._usage_all_time(app, pilot)
+            line = str(app.query_one("#sum-missing").content)
+            self.assertIn("Completeness", line)
+            self.assertTrue(line.rstrip().endswith("complete"), line)
+            self.assertNotIn("Incomplete", line)
+
+    # 54. a one-day window is one date, not a range of the same date twice
+    async def test_today_window_shows_one_date(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            app.query_one(tui.TabbedContent).active = "tab-usage"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "1d"
+            await pilot.pause()
+            win = str(app.query_one("#usage-window").content)
+            self.assertNotIn("—", win, f"single-day range printed twice: {win!r}")
+            app.query_one("#range", tui.Select).value = "3d"
+            await pilot.pause()
+            self.assertIn("—", str(app.query_one("#usage-window").content))
+
+    # 55. a long name may not push the leaderboard's columns out of line
+    async def test_leaderboard_columns_stay_aligned(self):
+        now = int(time.time() * 1000)
+        long_name = "claude-with-a-really-unnecessarily-long-name-for-testing"
+        self.assertEqual(len(long_name), 56)
+        make_db(self.db_path, [
+            ("msg-1", "s1", long_name, 1_000, 10, 0, 0, now, 1),
+            ("msg-2", "s1", "short", 900, 10, 0, 0, now, 1),
+        ])
+        insert_tool_calls(self.db_path, [
+            ("c1", "s1", "/p", long_name, "builtin", now, 10, "completed"),
+            ("c2", "s1", "/p", "Bash", "builtin", now, 10, "completed")])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            models = str(app.query_one("#dash-models").content).splitlines()
+            self.assertEqual(len(set(map(len, models))), 1,
+                             f"ragged leaderboard: {models}")
+            # The ellipsis must land exactly on the field edge, not past it, and
+            # the short name must be padded to that same edge.
+            cut = [l for l in models if "…" in l]
+            self.assertEqual(len(cut), 1, models)
+            self.assertEqual(cut[0][28], "…")
+            self.assertEqual([l for l in models if l not in cut][0][28], " ")
+            tools = str(app.query_one("#dash-tools").content).splitlines()
+            self.assertEqual(len(set(map(len, tools))), 1, f"ragged: {tools}")
+            cut = [l for l in tools if "…" in l]
+            self.assertEqual(len(cut), 1, tools)      # only the long name is cut
+            self.assertEqual(cut[0][24], "…")
+
+    # 56. the Agents tab renders its rows (it had no page assertion at all)
+    async def test_agents_tab_renders_its_rows(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [])
+        conn = db.open_db(self.db_path)
+        db.ensure_schema(conn)
+        conn.execute("INSERT INTO agent_usage(call_id, agent_type, kind, source,"
+                     " session_id, project, ts, status, duration_ms)"
+                     " VALUES('a1','general-purpose','active','tool','s1','/p',?,"
+                     "'completed',500)", (now,))
+        conn.commit()
+        conn.close()
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            app.query_one(tui.TabbedContent).active = "tab-agents"
+            await pilot.pause()
+            rows = all_rows(app.query_one("#t-agents", tui.DataTable))
+            self.assertEqual(rows[0][0], "general-purpose")
+            self.assertEqual(rows[0][1], "1")        # singular count, grouped
+
+    # 57. every tab lays out at 60x24 (only 70/140 were covered before)
+    async def test_every_tab_lays_out_on_a_narrow_terminal(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [("msg-1", "s1", "m", 1, 1, 0, 0, now, 1)])
+        insert_tool_calls(self.db_path, [
+            ("c1", "s1", "/p", "Bash", "builtin", now, 10, "completed")])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(60, 24)) as pilot:
+            for tab in app.TAB_IDS:
+                with self.subTest(tab=tab):
+                    app.query_one(tui.TabbedContent).active = tab
+                    await pilot.pause(0.05)
+                    # The Dashboard has no table, so the pane itself is the
+                    # assertion that holds for all eight tabs.
+                    pane = app.query_one(f"#{tab}", tui.TabPane)
+                    self.assertGreater(pane.size.width, 0,
+                                       "the tab never laid out")
+                    self.assertGreater(pane.size.height, 0)
+                    for table in app.query(f"#{tab} DataTable"):
+                        self.assertGreater(table.size.height, 0)
 
 
 if __name__ == "__main__":

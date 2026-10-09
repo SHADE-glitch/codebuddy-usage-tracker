@@ -26,6 +26,76 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cbut_db as db  # noqa: E402
 
+# --- CodeBuddy format registry ---------------------------------------------
+#
+# Everything cbut assumes about CodeBuddy's data: on-disk layout, record shape,
+# field names, and the tool names that drive classification. This is the block
+# to re-verify when CodeBuddy ships a new version; AGENTS.md §Format coupling
+# points here.
+#
+# Two kinds of entry, on purpose:
+#   * Values reached through a call (paths, globs, separators, tool names) are
+#     named constants used at their sites, so a rename is one edit and a
+#     half-applied rename cannot hide.
+#   * Record *field names* stay inline in the handlers — a parser is easier to
+#     trust when the field it grabs is visible — and are mirrored in the
+#     ``*_FIELDS`` sets below.
+# ``scripts/tests/test_format_registry.py`` locks both directions: no field may
+# be read without being registered, no registered field may go unread, and no
+# bare literal may be passed to a layout method. The registry therefore cannot
+# turn into a description of the parser that stopped matching it.
+#
+# Why: a renamed field or record type raises nothing. The panels go empty,
+# `cbut sync` prints "done", CI stays green. The unparsed counter in
+# ``_handle_record`` is the runtime signal; this registry is the surface it is
+# measured against.
+
+# On-disk layout, all relative to ~/.codebuddy (``db.CODEBUDDY_DIR``).
+DIR_PROJECTS = "projects"
+DIR_SKILLS = "skills"
+DIR_AGENTS = "agents"
+DIR_PLUGINS = "plugins"
+TRANSCRIPT_GLOB = "**/*.jsonl"
+# A skill is the *parent of a manifest*: skills/<category>/<skill>/SKILL.md.
+# Treating one directory level as the skill listed the categories ("backend",
+# "frontend") as skills and hid every real one.
+SKILL_MANIFEST_GLOB = "**/SKILL.md"
+AGENT_SPEC_GLOB = "*.md"                 # agents/<name>.md
+MCP_FILE = "mcp.json"
+PLUGIN_INDEX_FILE = "installed_plugins.json"
+PLUGIN_MARKETPLACE_SEP = "@"             # index keys are "<name>@<marketplace>"
+INVENTORY_HIDDEN_PREFIX = "."            # dotfiles are never an installable item
+# (subdirectory, kind) inside a plugin install. The names coincide with the
+# user-level directories above because they hold the same things.
+PLUGIN_SUBDIRS = ((DIR_SKILLS, "skill"), (DIR_AGENTS, "agent"),
+                  ("commands", "command"))
+
+# A transcript is newline-delimited JSON. The same separator decides where an
+# incremental offset is allowed to resume: one byte mid-line is a rewritten file.
+TRANSCRIPT_LINE_SEP = b"\n"
+
+# Tool names that carry meaning for classification (see ``_classify``).
+SKILL_TOOL = "Skill"
+AGENT_TOOL = "Agent"
+MCP_TOOL_PREFIX = "mcp__"                # mcp__<server>__<tool>
+MCP_TOOL_SEP = "__"
+
+CMD_RE = re.compile(r"<command-name>\s*/?([^<\s]+)\s*</command-name>")
+BAGGAGE_SID_RE = re.compile(r"codebuddy\.session_id=([^,\s]+)")
+
+# ``type`` values a handler claims in ``_handle_record``. The test derives the
+# same set from the dispatch chain, so a branch without a registration — or a
+# registration without a branch — fails.
+HANDLED_RECORD_TYPES = frozenset({
+    "function_call", "function_call_result", "message", "model-usage",
+    "turn-metrics", "session-meta", "ai-title",
+})
+# Types present in real transcripts that claim no handler, measured on this
+# machine 2026-10-09: ``reasoning`` 14757, ``file-history-snapshot`` 5786,
+# ``summary`` 346. They stay inside the unparsed count deliberately — an
+# allowlist quieting them would also hide the day one of them starts carrying
+# something we index. Anything new appears beside them in `cbut health`.
+
 # --- classification tables -------------------------------------------------
 
 # Tools shipped with CodeBuddy. Anything not Skill/Agent/mcp/meta is treated as
@@ -61,9 +131,6 @@ BUILTIN_AGENTS = {
     "autoModeClassifier": "internal", "securityReviewer": "internal",
 }
 
-CMD_RE = re.compile(r"<command-name>\s*/?([^<\s]+)\s*</command-name>")
-BAGGAGE_SID_RE = re.compile(r"codebuddy\.session_id=([^,\s]+)")
-
 # Transcript record types that represent one model response. All carry a
 # ``providerData.messageId`` that is globally unique *when the record also
 # carries ``rawUsage``* — that uniqueness is what we dedup on.
@@ -90,6 +157,45 @@ CACHE_USAGE_FIELDS = (
     "prompt_cache_miss_tokens",
     "prompt_cache_write_tokens",
 )
+
+# --- field mirrors: the record shape we read, by object --------------------
+# Read dynamically in ``_record_model_response`` (``raw.get(k)``), so they never
+# appear as a literal ``.get()`` key; each must still land in a column.
+RAW_USAGE_FIELDS = frozenset(USAGE_FIELDS) | frozenset(CACHE_USAGE_FIELDS) | {"total_tokens"}
+
+RECORD_FIELDS = frozenset({
+    "type", "sessionId", "cwd", "timestamp", "name", "arguments",
+    "callId", "id", "status", "content", "providerData",
+    "tokenDelta", "durationMs", "_meta",
+})
+PROVIDER_FIELDS = frozenset({
+    "messageId", "model", "conversationRequestId", "rawUsage",
+})
+BAGGAGE_FIELDS = frozenset({"baggage"})
+CONTENT_BLOCK_FIELDS = frozenset({"text"})
+# Block *types* observed in real transcripts (input_text 134, output_text 2,
+# measured 2026-10-09) are deliberately NOT among the fields we read: see
+# ``_text_blocks`` for what filtering on them cost.
+# Tool *argument names*. Reading a name is metadata; reading its value is the
+# privacy line, and only these two are ever stored: the skill name and the agent
+# type, both of which are catalog entries rather than prose.
+TOOL_ARG_FIELDS = frozenset({
+    "skill", "command", "args",               # Skill tool
+    "subagent_type", "agent_type",            # Agent tool
+    "toolName", "tool_name",                  # meta tools that wrap another tool
+})
+# JSON keys of the inventory files, not of a transcript.
+INVENTORY_JSON_FIELDS = frozenset({"mcpServers", "plugins", "installPath", "version"})
+
+CODEBUDDY_FIELDS = (RECORD_FIELDS | PROVIDER_FIELDS | BAGGAGE_FIELDS
+                    | CONTENT_BLOCK_FIELDS | TOOL_ARG_FIELDS
+                    | INVENTORY_JSON_FIELDS | RAW_USAGE_FIELDS)
+
+# cbut's own vocabulary in the ``unparsed`` table — NOT CodeBuddy fields.
+# ``cbut health`` and the TUI status line print these verbatim: "type:<name>"
+# for a record no branch claimed, UNPARSEABLE_LINE for a complete line that is
+# not JSON, and "unreadable_file:<OSError>" for a file that could not be opened.
+UNPARSEABLE_LINE = "unparseable_line"
 
 
 def _session_id(rec) -> str | None:
@@ -124,6 +230,8 @@ def scan_inventory(conn: sqlite3.Connection) -> tuple[dict, dict, dict]:
     skill_owner: dict[str, str] = {}
     agent_owner: dict[str, str] = {}
     command_owner: dict[str, str] = {}
+    owner_maps = {"skill": skill_owner, "agent": agent_owner,
+                  "command": command_owner}
 
     # builtin tools + agents. owner_plugin is part of the primary key, so use an
     # empty string (not NULL) for "no owner" — SQLite treats NULLs as distinct
@@ -132,45 +240,54 @@ def scan_inventory(conn: sqlite3.Connection) -> tuple[dict, dict, dict]:
     rows += [("agent", n, "", None, None, "builtin") for n in sorted(BUILTIN_AGENTS)]
 
     # MCP servers
-    mcp = _load_json(root / "mcp.json") or {}
+    mcp_path = root / MCP_FILE
+    mcp = _load_json(mcp_path) or {}
     for server in (mcp.get("mcpServers") or {}):
-        rows.append(("mcp", server, "", None, str(root / "mcp.json"), "user"))
+        rows.append(("mcp", server, "", None, str(mcp_path), "user"))
 
-    # user skills
-    user_skills = root / "skills"
+    # User skills. The layout on disk is skills/<category>/<skill>/SKILL.md, so a
+    # skill is the *parent of a manifest* — the directories directly under
+    # skills/ are categories, and listing them as skills put names like "backend"
+    # and "frontend" in the Skills panel while the real skills were missing.
+    # The scan also covers a skill that sits one level down with no category.
+    user_skills = root / DIR_SKILLS
     if user_skills.is_dir():
-        for d in sorted(user_skills.iterdir()):
-            if d.is_dir():
-                rows.append(("skill", d.name, "", None, str(d), "user"))
+        for manifest in sorted(user_skills.glob(SKILL_MANIFEST_GLOB)):
+            rows.append(("skill", manifest.parent.name, "", None,
+                         str(manifest.parent), "user"))
+
+    # User agents: ~/.codebuddy/agents/<name>.md. These were never scanned, so
+    # an installed-but-unused agent could not appear in the Agents panel at all.
+    user_agents = root / DIR_AGENTS
+    if user_agents.is_dir():
+        for spec in sorted(user_agents.glob(AGENT_SPEC_GLOB)):
+            rows.append(("agent", spec.stem, "", None, str(spec), "user"))
 
     # plugins (installed_plugins.json is the authoritative list)
-    installed = _load_json(root / "plugins" / "installed_plugins.json") or {}
+    installed = _load_json(root / DIR_PLUGINS / PLUGIN_INDEX_FILE) or {}
     for key, installs in (installed.get("plugins") or {}).items():
-        name, _, marketplace = key.partition("@")
+        # The key is "<name>@<marketplace>". The marketplace is real but the
+        # schema has nowhere to keep it, so plugin_usage names the only one that
+        # exists on this machine (verified: all installed plugins resolve to
+        # "codebuddy-plugins-official"). A second marketplace would attribute
+        # rows to the wrong one; the fix would be a column on inventory, which is
+        # not worth adding to store a single observed value.
+        name, _, _marketplace = key.partition(PLUGIN_MARKETPLACE_SEP)
         for inst in installs:
             ipath = Path(inst.get("installPath", ""))
             version = inst.get("version")
             rows.append(("plugin", name, name, version, str(ipath), "plugin"))
 
-            for sub, kind, table in (
-                ("skills", "skill", skill_owner),
-                ("agents", "agent", agent_owner),
-                ("commands", "command", command_owner),
-            ):
+            for sub, kind in PLUGIN_SUBDIRS:
                 sdir = ipath / sub
                 if not sdir.is_dir():
                     continue
                 for entry in sorted(sdir.iterdir()):
-                    if entry.name.startswith("."):
+                    if entry.name.startswith(INVENTORY_HIDDEN_PREFIX):
                         continue
                     item = entry.stem if entry.is_file() else entry.name
                     rows.append((kind, item, name, version, str(entry), "plugin"))
-                    if kind == "skill":
-                        table[item] = name
-                    elif kind == "agent":
-                        table[item] = name
-                    else:
-                        table[item] = name
+                    owner_maps[kind][item] = name
 
     conn.executemany(
         "INSERT OR REPLACE INTO inventory(kind, name, owner_plugin, version, path, source)"
@@ -192,12 +309,12 @@ def _mcp_from_name(name: str):
     fewer parts, an empty server/tool, or a trailing ``__`` is *not* an MCP
     name — return ``None`` rather than guessing a split.
     """
-    if not name.startswith("mcp__") or name.endswith("__"):
+    if not name.startswith(MCP_TOOL_PREFIX) or name.endswith(MCP_TOOL_SEP):
         return None
-    parts = name.split("__")
+    parts = name.split(MCP_TOOL_SEP)
     if len(parts) < 3:
         return None
-    server, tool = parts[1], "__".join(parts[2:])
+    server, tool = parts[1], MCP_TOOL_SEP.join(parts[2:])
     if not server or not tool:
         return None
     return server, tool
@@ -205,9 +322,9 @@ def _mcp_from_name(name: str):
 
 def _classify(name: str, args: dict):
     """Return (category, mcp_pair). mcp_pair is (server, tool) or None."""
-    if name == "Skill":
+    if name == SKILL_TOOL:
         return "skill", None
-    if name == "Agent":
+    if name == AGENT_TOOL:
         return "agent", None
     pair = _mcp_from_name(name)
     if pair:
@@ -253,8 +370,18 @@ def _plugin_owner(name: str, command_owner: dict, skill_owner: dict,
     return None, None
 
 
+def _bump(counts: dict, key: str, n: int = 1) -> None:
+    """Accumulate one of cbut's *own* diagnostic counters.
+
+    Takes the reason as a value so no CodeBuddy field name can be confused with
+    a reason key: the two vocabularies never meet in a literal ``.get()``.
+    """
+    counts[key] = counts.get(key, 0) + n
+
+
 def index_file(conn: sqlite3.Connection, path: Path, offset: int,
-               skill_owner: dict, agent_owner: dict, command_owner: dict) -> int:
+               skill_owner: dict, agent_owner: dict, command_owner: dict,
+               unparsed=None) -> int:
     """Index appended bytes of one transcript. Returns the new offset.
 
     Only *fully-consumed* bytes are reported back to the caller, so the tail
@@ -275,7 +402,7 @@ def index_file(conn: sqlite3.Connection, path: Path, offset: int,
 
     # Everything up to and including the last newline is complete lines; the
     # remainder is only consumed if it is a complete JSON record on its own.
-    last_nl = chunk.rfind(b"\n")
+    last_nl = chunk.rfind(TRANSCRIPT_LINE_SEP)
     if last_nl == -1:
         complete = b""
         tail = chunk
@@ -284,6 +411,7 @@ def index_file(conn: sqlite3.Connection, path: Path, offset: int,
         tail = chunk[last_nl + 1:]
 
     recs = []
+    bad_lines = 0
     for raw in complete.splitlines():
         raw = raw.strip()
         if not raw:
@@ -291,7 +419,12 @@ def index_file(conn: sqlite3.Connection, path: Path, offset: int,
         try:
             recs.append(json.loads(raw))
         except ValueError:
+            # A *complete* line that is not JSON. The tail of a half-written
+            # line is not counted here — it stays unconsumed and is retried.
+            bad_lines += 1
             continue
+    if bad_lines and unparsed is not None:
+        _bump(unparsed, UNPARSEABLE_LINE, bad_lines)
     consumed = offset + len(complete)
     if tail.strip():
         try:
@@ -301,7 +434,8 @@ def index_file(conn: sqlite3.Connection, path: Path, offset: int,
             pass                           # partial line -> retry next run
 
     for rec in recs:
-        _handle_record(conn, rec, skill_owner, agent_owner, command_owner)
+        _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
+                       unparsed)
     return consumed
 
 
@@ -380,7 +514,64 @@ def _record_model_response(conn, rec, sid, project, ts) -> None:
         )
 
 
-def _handle_record(conn, rec, skill_owner, agent_owner, command_owner) -> None:
+def _text_blocks(content) -> list[str]:
+    """Every text payload carried by a message's ``content``, block by block.
+
+    Deliberately does *not* filter on the block ``type``. Measured on this
+    machine 2026-10-09, command markers live in ``input_text`` (134 blocks) and
+    ``output_text`` (2) — an earlier version of this helper required
+    ``type == "text"``, matched nothing, and emptied the Commands panel while
+    every test stayed green. The type is not needed here: the marker is
+    self-delimiting, so this stays correct if upstream renames the block types
+    again. Only the name inside the marker reaches the database.
+    """
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    out = []
+    for block in content:
+        if isinstance(block, dict):
+            text = block.get("text")
+            if isinstance(text, str):
+                out.append(text)
+    return out
+
+
+def _record_commands(conn, content, sid, project, ts,
+                     command_owner, skill_owner, agent_owner) -> None:
+    """Index the slash commands a message announced, without storing the message.
+
+    A command appears inside a text block as ``<command-name>/name</command-name>``.
+    The old code serialised the whole content list with ``json.dumps`` and regexed
+    that string, which meant holding the prose; walking the blocks gives the same
+    result while the only value that reaches the database is the captured name.
+    """
+    for text in _text_blocks(content):
+        for m in CMD_RE.finditer(text):
+            cmd = m.group(1)
+            conn.execute(
+                "INSERT OR IGNORE INTO commands(command, session_id, project, ts)"
+                " VALUES(?,?,?,?)",
+                (cmd, sid, project, ts),
+            )
+            # A slash command can name a plugin command *or* a plugin-owned
+            # skill/agent (e.g. /playwright-cli). Attribute it to the plugin
+            # only when inventory maps the name; never guess.
+            owner, kind = _plugin_owner(
+                cmd, command_owner, skill_owner, agent_owner)
+            if owner:
+                conn.execute(
+                    "INSERT OR IGNORE INTO plugin_usage"
+                    "(plugin, marketplace, kind, target, session_id, project, ts)"
+                    " VALUES(?,?,?,?,?,?,?)",
+                    (owner, "codebuddy-plugins-official", kind, cmd,
+                     sid, project, ts),
+                )
+
+
+def _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
+                   unparsed=None) -> None:
     rtype = rec.get("type")
     sid = _session_id(rec)
     project = rec.get("cwd")
@@ -414,12 +605,15 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner) -> None:
         elif category == "agent":
             atype = (args.get("subagent_type") or args.get("agent_type")
                      or DEFAULT_AGENT_TYPE)
+            # ``description`` is prose the model wrote for itself, so it is not
+            # stored — schema v5 dropped the column that used to hold it. Only
+            # the agent *type* is metadata.
             conn.execute(
                 "INSERT OR IGNORE INTO agent_usage"
-                "(call_id, agent_type, description, kind, source, session_id, project, ts)"
-                " VALUES(?,?,?,?,?,?,?,?)",
-                (call_id, atype, args.get("description"),
-                 BUILTIN_AGENTS.get(atype, "active"), "tool", sid, project, ts),
+                "(call_id, agent_type, kind, source, session_id, project, ts)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (call_id, atype, BUILTIN_AGENTS.get(atype, "active"),
+                 "tool", sid, project, ts),
             )
         elif category == "mcp" and pair:
             conn.execute(
@@ -449,23 +643,14 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner) -> None:
             )
 
     elif rtype in ("session-meta", "ai-title"):
-        title = None
-        if rtype == "ai-title":
-            title = rec.get("aiTitle")
-        else:
-            meta = rec.get("meta") or {}
-            titles = meta.get("codebuddy.ai/sessionTitle") or []
-            if titles:
-                title = titles[0].get("aiTitle")
-        if sid and title:
-            conn.execute(
-                "INSERT INTO sessions(session_id, project, title, started_at, ended_at)"
-                " VALUES(?,?,?,?,?)"
-                " ON CONFLICT(session_id) DO UPDATE SET"
-                "   title = COALESCE(excluded.title, title),"
-                "   project = COALESCE(project, excluded.project)",
-                (sid, project, title, ts, ts),
-            )
+        # Known records whose payload is an AI-generated session title — prose
+        # derived from the conversation, so it is deliberately not stored
+        # (schema v5 dropped the column that held it). The session row these
+        # used to create is made by the shared start/end block below. Claimed
+        # here on purpose: dropping them into the `else` would pad the unparsed
+        # count with a type we understand perfectly well, and the number would
+        # stop meaning "the format changed".
+        pass
 
     elif rtype == "turn-metrics":
         # NOTE: tokenDelta is a *context* metric for the whole turn, not the
@@ -495,29 +680,32 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner) -> None:
                 "   model = COALESCE(excluded.model, model)",
                 (sid, project, model),
             )
-        blob = json.dumps(rec.get("content") or "")
-        for m in CMD_RE.finditer(blob):
-            cmd = m.group(1)
-            conn.execute(
-                "INSERT OR IGNORE INTO commands(command, session_id, project, ts)"
-                " VALUES(?,?,?,?)",
-                (cmd, sid, project, ts),
-            )
-            # A slash command can name a plugin command *or* a plugin-owned
-            # skill/agent (e.g. /playwright-cli). Attribute it to the plugin
-            # only when inventory maps the name; never guess.
-            owner, kind = _plugin_owner(
-                cmd, command_owner, skill_owner, agent_owner)
-            if owner:
-                conn.execute(
-                    "INSERT OR IGNORE INTO plugin_usage"
-                    "(plugin, marketplace, kind, target, session_id, project, ts)"
-                    " VALUES(?,?,?,?,?,?,?)",
-                    (owner, "codebuddy-plugins-official", kind, cmd, sid, project, ts),
-                )
+        _record_commands(conn, rec.get("content"), sid, project, ts,
+                         command_owner, skill_owner, agent_owner)
 
-    # Track session start/end times from any record carrying them.
-    if sid and ts:
+    elif rtype == "model-usage":
+        # A usage-only echo of a model response. Its tokens are already stored by
+        # _record_model_response above, so there is nothing left to do here — but
+        # the type must be *claimed*, or the unparsed count reports known rows as
+        # if the format had changed. A number that cries wolf is not a signal.
+        pass
+
+    else:
+        # No handler claimed this record. Counting it is the only defence against
+        # a CodeBuddy format change silently zeroing every panel: the run still
+        # prints "done" either way, so an unrecognised ``type`` has to become a
+        # number someone can see (``cbut health``, the sync summary).
+        if unparsed is not None:
+            key = f"type:{rtype}" if rtype else "type:<missing>"
+            _bump(unparsed, key)
+
+    # Track session start/end times from any record carrying them — but only for
+    # a record that says *where* it ran. Metadata-only records (a session-meta, a
+    # summary) carry a sessionId and a timestamp and no cwd, and creating a row
+    # for each produced 308 sessions with a NULL project and no tool calls and no
+    # model responses: invisible in every panel, but counted as sessions. A real
+    # session always has at least one cwd-bearing record.
+    if sid and ts and project:
         conn.execute(
             "INSERT INTO sessions(session_id, project, started_at, ended_at)"
             " VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET"
@@ -568,6 +756,61 @@ def backfill_plugin_usage(conn: sqlite3.Connection) -> int:
     return n
 
 
+# --- documentation ---------------------------------------------------------
+
+
+def format_doc() -> str:
+    """Render the format registry as markdown (``cbut format``).
+
+    Every value is read back out of the constants rather than retyped, so the
+    checked-in document cannot describe a surface the code no longer reads.
+    ``scripts/tests/test_maintenance_docs.py`` holds the file to this output.
+    """
+    def row(title, values):
+        items = ", ".join(f"`{v}`" for v in sorted(values))
+        return f"- **{title}**: {items}\n"
+
+    def pairs(title, mapping):
+        body = "".join(f"  - `{k}` → `{v}`\n" for k, v in mapping)
+        return f"- **{title}**:\n{body}"
+
+    out = [
+        row("Record types a handler claims", HANDLED_RECORD_TYPES),
+        row("Record types treated as a model response", MODEL_RESPONSE_TYPES),
+        row("Transcript record fields", RECORD_FIELDS),
+        row("`providerData` fields", PROVIDER_FIELDS),
+        row("`providerData.rawUsage` fields", RAW_USAGE_FIELDS),
+        row("`_meta` fields", BAGGAGE_FIELDS),
+        row("message content-block fields", CONTENT_BLOCK_FIELDS),
+        row("tool argument names", TOOL_ARG_FIELDS),
+        row("inventory JSON keys", INVENTORY_JSON_FIELDS),
+        "- **Tool names that drive classification**: "
+        f"`{SKILL_TOOL}`, `{AGENT_TOOL}`, prefix `{MCP_TOOL_PREFIX}` "
+        f"with separator `{MCP_TOOL_SEP}`\n",
+        row("Meta tools (wrap another tool)", META_TOOLS),
+        f"- **Tolerant name tables** (an unknown name still indexes): "
+        f"{len(BUILTIN_TOOLS)} builtin tools, {len(BUILTIN_AGENTS)} builtin agents, "
+        f"default agent type `{DEFAULT_AGENT_TYPE}`\n",
+        "- **Markers parsed out of text**: "
+        f"`{CMD_RE.pattern}` · `{BAGGAGE_SID_RE.pattern}`\n",
+        "- **On-disk layout, relative to `~/.codebuddy`**:\n"
+        f"  - `{DIR_PROJECTS}` / `{TRANSCRIPT_GLOB}` — transcripts, the only "
+        "ingested log tree\n"
+        f"  - `{DIR_SKILLS}` / `{SKILL_MANIFEST_GLOB}` — a skill is the parent "
+        "of a manifest\n"
+        f"  - `{DIR_AGENTS}` / `{AGENT_SPEC_GLOB}` — user agents\n"
+        f"  - `{MCP_FILE}` — MCP servers\n"
+        f"  - `{DIR_PLUGINS}` / `{PLUGIN_INDEX_FILE}`, keys split on "
+        f"`{PLUGIN_MARKETPLACE_SEP}`\n"
+        f"  - a name starting with `{INVENTORY_HIDDEN_PREFIX}` is never an "
+        "installed item\n"
+        + pairs("plugin subdirectories (dir → kind)", PLUGIN_SUBDIRS) +
+        f"- **Transcript framing**: one JSON record per line, separated by a "
+        f"newline byte (`{TRANSCRIPT_LINE_SEP!r}`)\n",
+    ]
+    return "".join(out)
+
+
 # --- driver ----------------------------------------------------------------
 
 
@@ -581,7 +824,7 @@ def _starts_on_line_boundary(path: Path, offset: int) -> bool:
     try:
         with open(path, "rb") as fh:
             fh.seek(offset - 1)
-            return fh.read(1) == b"\n"
+            return fh.read(1) == TRANSCRIPT_LINE_SEP
     except OSError:
         return False
 
@@ -615,14 +858,29 @@ def _needs_reset(path: Path, st, row) -> bool:
 
 def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
     conn = db.open_db(db_path)
+    try:
+        return _run(conn, full=full, quiet=quiet)
+    finally:
+        # The TUI calls this from a worker thread every 30 seconds, so an
+        # exception that skipped the close would leak a read-write connection on
+        # every failed poll rather than once per process.
+        conn.close()
+
+
+def _run(conn, full: bool = False, quiet: bool = False) -> dict:
     db.ensure_schema(conn)
     if full:
+        # A snapshot of an empty database is clutter, and every test builds one;
+        # only state that exists is worth a way back.
+        if (conn.execute("SELECT COUNT(*) FROM tool_calls").fetchone()[0]
+                or conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]):
+            db.snapshot(conn, reason="pre-full-rebuild")
         db.reset(conn)
 
     skill_owner, agent_owner, command_owner = scan_inventory(conn)
 
-    projects = db.CODEBUDDY_DIR / "projects"
-    files = sorted(projects.glob("**/*.jsonl")) if projects.is_dir() else []
+    projects = db.CODEBUDDY_DIR / DIR_PROJECTS
+    files = sorted(projects.glob(TRANSCRIPT_GLOB)) if projects.is_dir() else []
 
     # Pre-pass: if ANY file's stored offset is stale (shrunk, rewritten, or no
     # longer on a line boundary), rebuild the whole DB. One session spans its
@@ -642,10 +900,15 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
         if row is not None and _needs_reset(path, st, row):
             conn.execute("DELETE FROM sync_state")
             conn.execute("DELETE FROM sessions")
+            # Every file is re-read from zero below, so the unparsed counts would
+            # otherwise accumulate a second copy of itself — the same inflation
+            # that ``sessions`` had to be cleared for.
+            conn.execute("DELETE FROM unparsed")
             conn.commit()
             break
 
-    n_files = n_records = 0
+    n_files = n_records = n_unparsed = 0
+    unparsed = {}
     for path in files:
         try:
             st = path.stat()
@@ -665,13 +928,32 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
                 continue              # untouched and fully consumed
             # Any stale offset was already resolved by the pre-pass above (it
             # cleared sync_state, so no row survives to this point).
-        new_offset = index_file(conn, path, offset,
-                                skill_owner, agent_owner, command_owner)
-        # Store only the bytes actually consumed so a deferred tail is retried.
+        unparsed.clear()
+        try:
+            new_offset = index_file(conn, path, offset,
+                                    skill_owner, agent_owner, command_owner,
+                                    unparsed)
+        except OSError as exc:
+            # One unreadable transcript must not abort the whole index — but it is
+            # counted rather than skipped quietly, and no offset is stored, so the
+            # next run retries it.
+            db.note_unparsed(conn, f"unreadable_file:{type(exc).__name__}", 1)
+            n_unparsed += 1
+            continue
+        for reason, n in unparsed.items():
+            db.note_unparsed(conn, reason, n)
+            n_unparsed += n
+        # `offset` is what was consumed, so a deferred tail is retried. `size` is
+        # the file's real size — the value _needs_reset compares against to notice
+        # a transcript rewritten or truncated in place. Storing the offset here
+        # understated it, so a rewrite that still left the file larger than the
+        # offset was never detected. Rows written by older builds hold the offset;
+        # for a fully-consumed untouched file the two are equal, so those rows are
+        # already right, and each is corrected the next time its file is read.
         conn.execute(
             "INSERT OR REPLACE INTO sync_state(file_path, size, mtime, offset)"
             " VALUES(?,?,?,?)",
-            (key, new_offset, st.st_mtime, new_offset),
+            (key, st.st_size, st.st_mtime, new_offset),
         )
         n_files += 1
         conn.commit()
@@ -681,6 +963,13 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
         "files_indexed": n_files,
         "files_total": len(files),
         "plugin_rows": n_records,
+        # Per-run and cumulative: a format change moves both, while an old
+        # unaddressed count only shows in the total.
+        "unparsed_this_run": n_unparsed,
+        "unparsed": conn.execute(
+            "SELECT COALESCE(SUM(count),0) FROM unparsed").fetchone()[0],
+        "unparsed_kinds": conn.execute(
+            "SELECT COUNT(*) FROM unparsed").fetchone()[0],
         "tool_calls": conn.execute("SELECT COUNT(*) FROM tool_calls").fetchone()[0],
         "skills": conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0],
         "agents": conn.execute("SELECT COUNT(*) FROM agent_usage").fetchone()[0],
@@ -699,7 +988,13 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
             "SELECT COALESCE(SUM(completion_tokens),0) FROM model_responses"
         ).fetchone()[0],
     }
-    conn.close()
+    # Loud on purpose: an unclaimed record is the only signal that CodeBuddy's
+    # format moved, and a run that prints only "done" hides it.
+    if not quiet and stats["unparsed_this_run"]:
+        reasons = ", ".join(
+            f"{r['reason']} x{r['count']}" for r in db.q_unparsed(conn)[:3])
+        print(f"  UNPARSED {stats['unparsed_this_run']} records this run "
+              f"({stats['unparsed']} total, {reasons}) — cbut health lists them")
 
     if not quiet:
         print(f"indexed {stats['files_indexed']}/{stats['files_total']} files")

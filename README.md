@@ -143,7 +143,9 @@ the transcripts on disk:
 - **Cache hit rate** = `cache hit / (cache hit + cache miss + cache write)` — the
   cacheable input, matching cc-switch. It shows `-` when a row has no cache data.
 - **The summary panels are height-capped and scroll internally**, so the Request Logs
-  table below them stays visible even on a small terminal (verified down to 80×24).
+  table below them stays visible even on a small terminal. Measured at 80×24: the panels
+  go two-up and stay capped, the table keeps 11 rows — and because ten columns do not fit
+  in 80 cells, its right-hand cache columns are reached by horizontal scroll.
 
 ## 📋 Requirements
 
@@ -151,7 +153,7 @@ the transcripts on disk:
 |---|---|
 | 🐧 OS | Linux — developed and verified on Ubuntu; other distributions **unverified** |
 | 🐾 CodeBuddy | 2.16x — schema verified against 2.161.4 |
-| 🐍 Python | 3.11+ (tested on 3.14). Headless commands need only the stdlib |
+| 🐍 Python | 3.11+ — the full suite run green on **3.11, 3.13 and 3.14** (CI covers 3.12). Headless commands need only the stdlib |
 | 🖥️ `textual` | only for the interactive TUI (installed by `install.sh`) |
 
 ## 🚀 Install
@@ -202,6 +204,9 @@ cbut recent              # 🕒  latest tool calls
 cbut inventory           # 📦  what is installed, used vs unused
 cbut export              # 💾  dump every table as JSON
 cbut health              # 🩺  database + data-source check
+cbut backup              # 💾  snapshot before a risky step (sync --full does this)
+cbut restore             # ⏪  list snapshots; `cbut restore NAME` rolls one back
+cbut format              # 🧾  the CodeBuddy fields and paths this tool depends on
 ```
 
 | Variable | Default | Purpose |
@@ -218,20 +223,30 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 177 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 272 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
 builds its own throwaway database in a temp directory — **your real `usage.db` and your
-`~/.codebuddy` logs are never opened**, and nothing reaches the network.
+`~/.codebuddy` logs are never opened**, and no code path in this repository reaches the network
+(`test_privacy.py` holds the import allowlist that keeps it that way).
 
 | Suite | Tests | Covers |
 |---|---:|---|
-| `test_sync.py` | 61 | transcript parsing, tool classification, incremental vs `--full` re-sync |
-| `test_tui.py` | 54 | tab wiring and report shapes, through Textual's own `run_test` harness |
-| `test_usage.py` | 53 | the calendar-day windows (Today / 2 / 3 / 7 / 30 days / all), the token totals and the Dashboard queries |
-| `test_readme_bilingual.py` | 3 | the two READMEs stay one document in two languages |
+| `test_sync.py` | 82 | transcript parsing, tool classification, incremental vs `--full` re-sync, crash recovery, unparsed-record accounting |
+| `test_tui.py` | 70 | tab wiring and report shapes through Textual's own `run_test` harness, narrow-terminal layout, status-line truthfulness |
+| `test_usage.py` | 58 | the calendar-day windows (Today / 2 / 3 / 7 / 30 days / all), the token totals, the Dashboard queries, the schema gate |
+| `test_dispatcher.py` | 12 | `bin/cbut`: subcommand routing, venv resolution, help without a resolvable install |
+| `test_format_registry.py` | 10 | the CodeBuddy format registry and the parser agree, both directions |
+| `test_privacy.py` | 9 | import allowlist, no free-text value in any column, CodeBuddy's own files untouched |
+| `test_snapshots.py` | 9 | automatic snapshots before destructive steps, listing, restore, pruning |
+| `test_maintenance_docs.py` | 9 | the generated format doc cannot drift from the code |
+| `test_readme_counts.py` | 4 | the suite table above is the suite table the runner would print |
 | `test_record_coverage.py` | 6 | every covered commit is recorded in `CHANGELOG.md` |
+| `test_readme_bilingual.py` | 3 | the two READMEs stay one document in two languages |
+
+`test_readme_counts.py` is what keeps this table honest: a suite added without a row, or a row left
+at an old number, fails the suite.
 
 ## 📁 Repository layout
 
@@ -241,9 +256,10 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `install.sh` | creates the venv (`uv` when available) and symlinks `~/.local/bin/cbut`. Idempotent; refuses to replace a non-symlink unless `--force` |
 | `scripts/cbut_db.py` | SQLite schema and the query helpers every entry point shares |
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
-| `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` |
+| `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 177 tests above |
+| `scripts/tests/` | the 272 tests above |
+| `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, and the size & performance baseline with the commands that produced it |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
 

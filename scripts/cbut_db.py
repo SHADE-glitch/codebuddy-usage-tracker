@@ -12,12 +12,14 @@ Standard library only.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sqlite3
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # --- locations -------------------------------------------------------------
 
@@ -33,6 +35,23 @@ DB_PATH = Path(
 )
 
 
+def load_sync():
+    """Import ``cbut-sync.py`` — a hyphenated name cannot be imported normally.
+
+    The TUI's sync worker, ``cbut format`` and the tests all need the parser as
+    a module, so the loader lives here instead of being copied a third time.
+    """
+    name = "cbut_sync_embedded"
+    mod = sys.modules.get(name)
+    if mod is None:
+        path = Path(__file__).with_name("cbut-sync.py")
+        spec = importlib.util.spec_from_file_location(name, str(path))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
 # --- schema ----------------------------------------------------------------
 
 TABLES_SQL = """
@@ -41,10 +60,13 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT
 );
 
+-- A session is identified by its id and located by its cwd. There is
+-- deliberately no `title` column: the AI-generated session title is prose
+-- derived from the conversation, so storing it would break the metadata-only
+-- promise. Schema v5 dropped the column that used to hold it.
 CREATE TABLE IF NOT EXISTS sessions (
     session_id  TEXT PRIMARY KEY,
     project     TEXT,             -- decoded cwd the session ran in
-    title       TEXT,
     started_at  INTEGER,          -- epoch ms
     ended_at    INTEGER,
     model       TEXT,
@@ -124,10 +146,14 @@ CREATE TABLE IF NOT EXISTS skill_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_skill_name ON skill_usage(skill);
 
+-- `agent_type` is the Agent tool's own identifier (and the documented default
+-- when the caller omits it). There is no `description` column: that argument is
+-- free text written by the model, and schema v5 dropped the column that used to
+-- store it. Nothing ever read it — it only sat in the database and in
+-- `cbut export`.
 CREATE TABLE IF NOT EXISTS agent_usage (
     call_id     TEXT PRIMARY KEY,
     agent_type  TEXT,
-    description TEXT,
     kind        TEXT,             -- active | internal
     source      TEXT,             -- tool | span
     session_id  TEXT,
@@ -188,6 +214,15 @@ CREATE TABLE IF NOT EXISTS sync_state (
     size      INTEGER,
     mtime     REAL,
     offset    INTEGER
+);
+
+-- Records the indexer saw but could not use: an unknown ``type`` discriminator
+-- (the usual sign CodeBuddy's log format changed) or a complete line that is not
+-- JSON. Accumulated, because a run that silently claims nothing still prints
+-- "done" — the count is what turns a format change into something visible.
+CREATE TABLE IF NOT EXISTS unparsed (
+    reason TEXT PRIMARY KEY,       -- "type:<name>" | "type:<missing>" | "unparseable_line"
+    count  INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -330,9 +365,124 @@ def open_db(path: Path | str = DB_PATH, readonly: bool = False) -> sqlite3.Conne
     return conn
 
 
+# --- snapshots -------------------------------------------------------------
+#
+# A migration or a ``--full`` rebuild deletes indexed state, and the only way
+# back is re-reading CodeBuddy's transcripts — which the host may rotate away at
+# any time. So every destructive path takes a snapshot first.
+#
+# Managed snapshots live in their own ``backups/`` directory. Hand-made
+# ``usage.db.bak-*`` files beside the database are listed as restore sources but
+# never pruned: this code did not create them and does not get to delete them.
+
+BACKUP_KEEP = 5
+BACKUP_GLOB = "usage.db.bak-*"          # the shape a person makes by hand
+BACKUP_PATTERN = "usage-*.db"           # the shape this module makes
+
+
+def db_file(conn) -> Path | None:
+    """The file behind an open connection (``None`` for an in-memory one)."""
+    row = conn.execute("PRAGMA database_list").fetchone()
+    return Path(row[2]) if row and row[2] else None
+
+
+def backup_dir(db_path=None) -> Path:
+    return Path(db_path or DB_PATH).parent / "backups"
+
+
+def snapshot(conn, reason: str = "manual", db_path=None) -> Path:
+    """Copy the live database aside using SQLite's online backup API.
+
+    ``conn.backup`` rather than a file copy: with WAL on, the newest committed
+    frames can still be sitting in ``-wal``, so a copied main file is a stale
+    database — exactly the thing you need the snapshot to not be.
+    """
+    src = Path(db_path) if db_path else db_file(conn)
+    dest_dir = backup_dir(src)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now()
+    base = f"usage-{now:%Y%m%d-%H%M%S}"
+    dest = dest_dir / f"{base}-{reason}.db"
+    n = 1
+    while dest.exists():            # never overwrite an earlier snapshot
+        dest = dest_dir / f"{base}-{reason}-{n}.db"
+        n += 1
+    target = sqlite3.connect(dest)
+    try:
+        conn.backup(target)
+    finally:
+        target.close()
+    prune_backups(src)
+    return dest
+
+
+def prune_backups(db_path=None, keep: int = BACKUP_KEEP) -> list[Path]:
+    """Delete managed snapshots beyond the newest ``keep``.
+
+    Only files matching :data:`BACKUP_PATTERN` inside the managed directory are
+    eligible. Ordered by mtime, not by name: several snapshots can land in the
+    same second, and the ``-1``/``-2`` suffixes that disambiguate them do not
+    sort in creation order — trusting them would delete the newer file.
+    """
+    d = backup_dir(db_path)
+    if not d.is_dir():
+        return []
+    newest_first = sorted(d.glob(BACKUP_PATTERN),
+                          key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+    stale = newest_first[keep:]
+    for path in stale:
+        path.unlink()
+    return stale
+
+
+def list_backups(db_path=None) -> list[Path]:
+    """Everything worth restoring: managed snapshots plus hand-made copies."""
+    src = Path(db_path or DB_PATH)
+    out: list[Path] = []
+    d = backup_dir(src)
+    if d.is_dir():
+        out += list(d.glob(BACKUP_PATTERN))
+    if src.parent.is_dir():
+        out += list(src.parent.glob(BACKUP_GLOB))
+    return sorted(out, key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+
+
+def restore(backup_path, db_path=None, reason: str = "pre-restore") -> Path:
+    """Replace the database with a snapshot, after snapshotting what is live.
+
+    A wrong restore should be undoable, so the current database is copied first.
+    The TUI must not be running: it holds the file open and would keep writing
+    into the copy you are replacing.
+    """
+    src = Path(db_path or DB_PATH)
+    backup_path = Path(backup_path)
+    if not backup_path.is_file():
+        raise FileNotFoundError(f"no such backup: {backup_path}")
+    if src.exists():
+        conn = sqlite3.connect(src)
+        try:
+            conn.execute("PRAGMA busy_timeout = 5000")
+            snapshot(conn, reason=reason, db_path=src)
+        finally:
+            conn.close()
+    ensure_dir(src)
+    source = sqlite3.connect(backup_path)
+    target = sqlite3.connect(src)
+    try:
+        target.execute("PRAGMA busy_timeout = 5000")
+        source.backup(target)
+    finally:
+        target.close()
+        source.close()
+    return backup_path
+
+
 # Columns added after the original schema, kept here so the migration and the
-# CREATE TABLE stay in sync. v3: the three prompt_cache_* cache parts.
-# v4: provider_total_tokens (the provider's own rawUsage total).
+# CREATE TABLE stay in sync. A test (test_schema_matches_migrations) compares
+# what a fresh database gets against what an old one ends up with, so adding a
+# column to CREATE TABLE without listing it here fails loudly instead of leaving
+# upgraded databases permanently short of it.
+# v3: the three prompt_cache_* cache parts. v4: provider_total_tokens.
 _NEW_MODEL_COLUMNS = (
     "prompt_cache_hit_tokens",
     "prompt_cache_miss_tokens",
@@ -340,8 +490,30 @@ _NEW_MODEL_COLUMNS = (
     "provider_total_tokens",
 )
 
+# Columns the current schema no longer has. v5 removed both of these because
+# they held prose: an AI-generated session title, and the Agent tool's own
+# `description` argument.
+_DROPPED_COLUMNS = (
+    ("sessions", "title"),
+    ("agent_usage", "description"),
+)
 
-def _migrate_model_responses(conn: sqlite3.Connection) -> None:
+
+def stored_version(conn: sqlite3.Connection) -> int:
+    """The schema version this database was last written at.
+
+    ``0`` when there is no usable value — which is what a pre-v4 database looks
+    like, and the right answer: it is as old as it can get, so every migration
+    below runs against it.
+    """
+    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _migrate_model_responses(conn: sqlite3.Connection) -> bool:
     """Add v3/v4 columns to a pre-existing ``model_responses`` table.
 
     SQLite has no ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``, so check
@@ -350,49 +522,108 @@ def _migrate_model_responses(conn: sqlite3.Connection) -> None:
     ``cbut sync`` re-reads the transcripts and backfills the new columns via the
     existing messageId UPSERT — row counts stay stable. ``sessions`` is cleared
     too: its ``tokens``/``duration_ms`` are *accumulated* from ``turn-metrics``,
-    so a full re-read would otherwise add every turn's delta a second time.
-    Fresh databases already have the columns, so this is a no-op for them.
+    so a full re-read would otherwise add every turn's delta a second time —
+    and ``unparsed`` for the same reason. Fresh databases already have the
+    columns, so this is a no-op for them.
     """
     existing = {r[1] for r in conn.execute("PRAGMA table_info(model_responses)")}
     added = [c for c in _NEW_MODEL_COLUMNS if c not in existing]
     if not added:
-        return
+        return False
     for col in added:
         conn.execute(f"ALTER TABLE model_responses ADD COLUMN {col} INTEGER")
     conn.execute("DELETE FROM sync_state")
     conn.execute("DELETE FROM sessions")
+    conn.execute("DELETE FROM unparsed")
+    return True
 
 
-def ensure_schema(conn: sqlite3.Connection) -> None:
+def _drop_prose_columns(conn: sqlite3.Connection) -> bool:
+    """v5: remove the two columns that stored prose.
+
+    Only drops what is actually present, so a database created by the current
+    schema is untouched. Nothing is re-indexed: no query ever read these columns
+    (only ``cbut export`` passed them through), and every remaining row is still
+    correct.
+    """
+    present = [(table, col) for table, col in _DROPPED_COLUMNS
+               if col in {r[1] for r in conn.execute(
+                   f"PRAGMA table_info({table})")}]
+    if not present:
+        return False
+    for table, col in present:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
+    return True
+
+
+MIGRATIONS = (
+    ("model_responses cache and total columns", _migrate_model_responses),
+    ("prose columns removed", _drop_prose_columns),
+)
+
+
+def _has_indexed_state(conn: sqlite3.Connection) -> bool:
+    """Whether a snapshot would preserve anything at all.
+
+    ``sync_state``, ``tool_calls`` and ``model_responses`` are exactly what the
+    upgrade clears and rebuilds. A freshly created database has none of them —
+    and its ``meta`` table has no version row either, so it otherwise looks like a
+    database from version 0. Without this test every first launch (and every test
+    run) would write a snapshot of an empty database into ``backups/``.
+    """
+    for table in ("sync_state", "tool_calls", "model_responses"):
+        if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+            return True
+    return False
+
+
+def ensure_schema(conn: sqlite3.Connection) -> str:
+    """Create or upgrade the schema. Returns a status, never raises on drift.
+
+    ``"newer"`` means the database was written by a future build of this tool and
+    was deliberately left alone: ``CREATE TABLE IF NOT EXISTS`` is additive, but
+    the migrations above clear ``sync_state`` and ``sessions`` and would destroy
+    state this version of the code cannot interpret.
+    """
     conn.executescript(SCHEMA_SQL)
-    _migrate_model_responses(conn)
+    stored = stored_version(conn)
+    if stored > SCHEMA_VERSION:
+        conn.commit()
+        return "newer"
+    if stored < SCHEMA_VERSION and _has_indexed_state(conn):
+        # One snapshot for the whole upgrade, taken before anything is modified
+        # and after a commit. SQLite's backup API cannot read a source that is
+        # holding its own uncommitted writes, so a per-step snapshot would
+        # deadlock the moment a migration spans two steps.
+        conn.commit()
+        snapshot(conn, reason="pre-migration")
+    changed = [name for name, step in MIGRATIONS if step(conn)]
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (str(SCHEMA_VERSION),),
     )
     conn.commit()
+    return "migrated" if changed else "current"
 
 
-def migrate(db_path: Path | str = DB_PATH) -> bool:
+def migrate(db_path: Path | str = DB_PATH) -> str:
     """Best-effort upgrade of the tracker DB to the current schema.
 
-    Opens the DB read-write, runs :func:`ensure_schema` (which adds the v3/v4
-    columns and, when it actually adds columns, clears ``sync_state`` so the next
-    incremental sync backfills them), and closes. Returns ``True`` on success.
-
-    Swallows ``sqlite3.Error`` so a read-only environment can still launch the
-    TUI; callers that need the newer columns should tolerate ``False``.
+    Returns a status rather than a boolean: ``"current"``, ``"migrated"``,
+    ``"newer"`` (a database from a future build — not touched), or
+    ``"failed: <sqlite message>"``. Callers used to see ``False`` for all three
+    of the last cases, which let a locked or damaged file wear the same face as a
+    successful no-op.
     """
     try:
         conn = open_db(db_path)
         try:
-            ensure_schema(conn)
+            return ensure_schema(conn)
         finally:
             conn.close()
-        return True
-    except sqlite3.Error:
-        return False
+    except sqlite3.Error as exc:
+        return f"failed: {exc}"
 
 
 def reset(conn: sqlite3.Connection) -> None:
@@ -408,9 +639,30 @@ def reset(conn: sqlite3.Connection) -> None:
         "sessions",
         "inventory",
         "sync_state",
+        "unparsed",
     ):
         conn.execute(f"DELETE FROM {table}")
     conn.commit()
+
+
+def note_unparsed(conn: sqlite3.Connection, reason: str, n: int) -> None:
+    """Add ``n`` to the count of records the indexer could not use.
+
+    Called once per reason per file, not per record: a format change can make
+    tens of thousands of records unknown in one run, and one statement each
+    would cost more than the parsing it is reporting on.
+    """
+    conn.execute(
+        "INSERT INTO unparsed(reason, count) VALUES(?,?)"
+        " ON CONFLICT(reason) DO UPDATE SET count = count + excluded.count",
+        (reason, n),
+    )
+
+
+def q_unparsed(conn: sqlite3.Connection):
+    """Every reason records were skipped for, most frequent first."""
+    return conn.execute(
+        "SELECT reason, count FROM unparsed ORDER BY count DESC, reason").fetchall()
 
 
 # --- shared queries (used by both the CLI and the TUI) ---------------------
@@ -942,5 +1194,9 @@ def overview(conn) -> dict:
         "model_prompt_cache_write_tokens":
             one("SELECT COALESCE(SUM(prompt_cache_write_tokens),0) FROM model_responses"),
         "inventory": one("SELECT COUNT(*) FROM inventory"),
+        # Records no handler claimed. Non-zero after a CodeBuddy upgrade means
+        # the format moved under us, not that the user stopped using a tool.
+        "unparsed_records": one("SELECT COALESCE(SUM(count),0) FROM unparsed"),
+        "unparsed_kinds": one("SELECT COUNT(*) FROM unparsed"),
     }
 

@@ -55,6 +55,29 @@ def fmt_n(v):
     return f"{v:,}"
 
 
+def count_n(v, singular, plural=None):
+    """``1 tool call`` / ``12 tool calls``, grouped like every count cell.
+
+    D-005 fixed the plural in one place (Top tools) and left the rest: "1 skills"
+    in the status bar and "Synced 1 files" survived it. Counts that read as prose
+    are one class, so they agree here rather than being re-remembered per site.
+    """
+    word = singular if v == 1 else (plural or singular + "s")
+    return f"{v:,} {word}"
+
+
+def clip(text, width):
+    """Fit ``text`` into ``width`` cells, marking a cut with an ellipsis.
+
+    The Dashboard's leaderboard lines are column-formatted (``{:<26}``), so a
+    name longer than its field does not wrap — it pushes every column after it.
+    Observed at 41 characters. Clipping keeps the columns aligned; the full name
+    stays in the table on that entity's own tab.
+    """
+    s = str(text)
+    return s if len(s) <= width else s[: width - 1] + "…"
+
+
 def local_time(ms):
     """Local-time render of an epoch-ms value (query bounds stay in Unix ms)."""
     if not ms:
@@ -217,6 +240,14 @@ if HAVE_TEXTUAL:
         #dash-activity-axis { color: $text-muted; }
         #t-usage { height: 1fr; min-height: 6; }
         .summary-panels.compact, .dash-row.compact { layout: vertical; }
+        /* Stacked one-per-row wastes the width a narrow terminal still has: at
+           80x24 four stacked panels push the table's rows off the visible area.
+           Two columns keep a 24-char panel line plus its border and padding
+           (~28 cells) legible and leave the table room. */
+        .summary-panels.compact { layout: grid; grid-size: 2; }
+        /* Below two cells' minimum, stacking is the only layout that does not
+           wrap a panel line mid-value. */
+        .summary-panels.compact.stacked { layout: vertical; }
         .summary-panels.compact .usage-panel,
         .dash-row.compact .usage-panel { width: 100%; margin: 0 0 1 0; }
         .dash-row { height: auto; margin: 0 0 1 0; }
@@ -269,6 +300,19 @@ if HAVE_TEXTUAL:
             self._last_refresh = None      # epoch ms
             self._last_sync = None         # epoch ms
             self._usage_ready = False
+            # Set from migrate() on mount: "" when the schema is usable,
+            # otherwise the reason it is not ("newer", "failed: …").
+            self._schema_note = ""
+            # The status line is composed from these in one function
+            # (`_status_line`), because several events change it — a full
+            # refresh, a failed re-query, the `s` toggle — and a line overwritten
+            # by one of them used to stay wrong until an unrelated refresh.
+            self._overview = None            # db.overview() dict, or None
+            self._status_note = ""           # last failure the bar is reporting
+            # Bumped by every report, so a refresh can tell "nothing complained
+            # during this call" from "this call cleared the old warning" without
+            # comparing message text.
+            self._report_seq = 0
 
         def compose(self) -> ComposeResult:
             yield TopBar(self.TITLE, with_range=True,
@@ -412,10 +456,12 @@ if HAVE_TEXTUAL:
             tu = self.query_one("#t-usage", DataTable)
             tu.cursor_type = "row"
             tu.add_columns(*USAGE_COLUMNS)
-            # Best-effort schema upgrade: a pre-v3/v4 DB lacks the cache and
-            # provider-total columns, which every usage query needs. No-op once
-            # already migrated.
-            db.migrate(self.db_path)
+            # Best-effort schema upgrade: an old DB lacks the columns every usage
+            # query needs. migrate() returns a status now, so a locked or damaged
+            # file is named on the status line instead of showing an empty panel
+            # as though that were the user's actual usage.
+            note = db.migrate(self.db_path)
+            self._schema_note = "" if note in ("current", "migrated") else note
             self._usage_ready = True
             # Auto sync (incremental, ~30s) + UI refresh (~5s). Both are timers,
             # not subprocesses; the sync runs in a worker thread (see _do_sync).
@@ -565,9 +611,14 @@ if HAVE_TEXTUAL:
             Used on mount and after a sync that actually indexed new files. Pass
             an existing readonly ``conn`` to avoid opening a second one.
             """
+            seq = self._report_seq
             own = conn is None
             if own:
-                conn = db.open_db(self.db_path, readonly=True)
+                try:
+                    conn = db.open_db(self.db_path, readonly=True)
+                except sqlite3.Error as exc:
+                    self._report_query_error(exc)
+                    return
             try:
                 # Each tab is filled with its own window, so one tab's range
                 # never moves another's.
@@ -581,19 +632,64 @@ if HAVE_TEXTUAL:
                 o = db.overview(conn)          # status bar stays all-time
                 if self._usage_ready:
                     self._refresh_usage(conn)   # same connection, no second open
+            except sqlite3.Error as exc:
+                # This runs during on_mount: letting it raise kills the app
+                # before it draws a frame, and the other alternative — panels of
+                # zeros — is indistinguishable from a quiet day.
+                self._report_query_error(exc)
+                return
             finally:
                 if own:
                     conn.close()
+            self._overview = o
+            if self._report_seq == seq:
+                # Nothing complained during a refresh that re-queried every tab,
+                # so any warning the bar was carrying has been disproved.
+                self._status_note = ""
+            self._set_status(self._status_line())
+
+        def _status_line(self) -> str:
+            """The status line, composed from what the app currently knows.
+
+            One composer because `s`, a failed re-query and a sync with nothing to
+            index each used to overwrite the line with a message that then stayed
+            there — "Syncing…" outliving a finished sync was the visible one.
+            """
+            if self._overview is None:
+                return f"! {self._status_note}" if self._status_note else ""
+            o = self._overview
             status = (
-                f"db={self.db_path} · {o['tool_calls']} tool calls · "
-                f"{o['skills']} skills · {o['agents']} agents · "
-                f"{o['plugins_used']} plugins · {o['mcp']} mcp · "
-                f"{o['model_responses']} model responses · "
+                f"db={self.db_path} · {count_n(o['tool_calls'], 'tool call')} · "
+                f"{count_n(o['skills'], 'skill')} · "
+                f"{count_n(o['agents'], 'agent')} · "
+                f"{count_n(o['plugins_used'], 'plugin')} · "
+                f"{o['mcp']:,} mcp · "
+                f"{count_n(o['model_responses'], 'model response')} · "
                 f"last {ts(o['last_ts'])}"
             )
             if not self._auto_sync:
                 status += " · auto-sync OFF"
-            self._set_status(status)
+            if o["unparsed_records"]:
+                # Keep the status line honest: panels showing 0 while records
+                # went unclaimed means the format moved, not that usage stopped.
+                status += f" · ! {count_n(o['unparsed_records'], 'record')} unparsed"
+            if self._schema_note:
+                status += f" · schema: {self._schema_note}"
+            if self._status_note:
+                # Every number above is the last known one, not the current one.
+                status += f" · ! {self._status_note}"
+            return status
+
+        def _report_query_error(self, exc: sqlite3.Error) -> None:
+            """Name a failed re-query instead of leaving the old page on screen.
+
+            A tab that could not be refreshed keeps its previous rows, which look
+            exactly like usage the user still has; a locked or damaged file has to
+            say so in the one place the user reads.
+            """
+            self._report_seq += 1
+            self._status_note = f"{type(exc).__name__}: {exc}"
+            self._set_status(self._status_line())
 
         def _refresh_active_tab(self, conn=None) -> None:
             """Refresh only the visible tab (5s timer / tab activation).
@@ -603,12 +699,14 @@ if HAVE_TEXTUAL:
             """
             if not self._usage_ready:
                 return
+            seq = self._report_seq
             pane = self.query_one(TabbedContent).active
             own = conn is None
             if own:
                 try:
                     conn = db.open_db(self.db_path, readonly=True)
-                except sqlite3.Error:
+                except sqlite3.Error as exc:
+                    self._report_query_error(exc)
                     return
             try:
                 if pane == "tab-usage":
@@ -618,9 +716,18 @@ if HAVE_TEXTUAL:
                     if fn:
                         # Plugins ignores its bounds (all-time).
                         getattr(self, fn)(conn, *self._bounds_for(pane))
+            except sqlite3.Error as exc:
+                self._report_query_error(exc)
+                return
             finally:
                 if own:
                     conn.close()
+            if self._report_seq == seq and self._status_note:
+                # These queries went through and nothing in them complained, so
+                # the bar's warning has been disproved. No full refresh is owed:
+                # a hidden tab is re-queried the moment the user opens it.
+                self._status_note = ""
+                self._set_status(self._status_line())
 
         def on_tabbed_content_tab_activated(
                 self, event: TabbedContent.TabActivated) -> None:
@@ -650,17 +757,25 @@ if HAVE_TEXTUAL:
         # each column needs ~28 cells for a 24-char panel line plus
         # border/padding, so 4 x 28 = 112.
         COMPACT_WIDTH = 112
+        # A panel line is 24 columns of content plus 2 border and 2 padding, so a
+        # two-up cell needs 28. Measured: the panels region is 2 cells narrower
+        # than the terminal, so two columns stop fitting below 60.
+        STACKED_WIDTH = 60
 
         def _apply_responsive_layout(self, width=None) -> None:
-            # Panels side by side on wide terminals; stacked when narrow. Every
-            # summary page (Dashboard + Usage) uses .summary-panels.
+            # Panels side by side on wide terminals; two-up when narrow; stacked
+            # below that, where a second column would wrap a value mid-line. Every
+            # summary page (Dashboard + Usage) uses .summary-panels. Only
+            # .summary-panels has a rule for `stacked`; dash rows never two-up.
             if width is None:
                 width = self.size.width
             try:
                 compact = width < self.COMPACT_WIDTH
+                stacked = width < self.STACKED_WIDTH
                 for selector in (".summary-panels", ".dash-row"):
                     for el in self.query(selector):
                         el.set_class(compact, "compact")
+                        el.set_class(stacked, "stacked")
             except Exception:
                 pass
 
@@ -725,8 +840,11 @@ if HAVE_TEXTUAL:
             else:
                 start_date = datetime.fromtimestamp(
                     start / 1000).strftime("%Y-%m-%d")
-                self.query_one("#usage-window", Static).update(
-                    f"{label}\n{start_date} — {end_date}")
+                # "Today" is one calendar day: printing it as a range of the same
+                # date twice read like a bug, and every 1d window hit it.
+                span = (start_date if start_date == end_date
+                        else f"{start_date} — {end_date}")
+                self.query_one("#usage-window", Static).update(f"{label}\n{span}")
 
         def _refresh_usage(self, conn=None) -> None:
             # Recompute the window from the CURRENT time on every refresh — never
@@ -745,6 +863,7 @@ if HAVE_TEXTUAL:
                 except sqlite3.Error as e:
                     self.query_one("#usage-status", Static).update(
                         f"usage unavailable: {e}")
+                    self._report_query_error(e)
                     return
             try:
                 s = db.q_usage_summary(conn, start, end)
@@ -754,6 +873,9 @@ if HAVE_TEXTUAL:
                 # e.g. an un-migrated DB where the newer columns are missing.
                 self.query_one("#usage-status", Static).update(
                     f"usage query failed ({e}); run: cbut sync")
+                # The page note is local; the bar is what a user reads from
+                # another tab, so the failure has to reach both.
+                self._report_query_error(e)
             finally:
                 if own:
                     conn.close()
@@ -781,16 +903,18 @@ if HAVE_TEXTUAL:
                 "-" if frac is None else f"{frac * 100:.1f}%")
             missing = []
             if s["missing_prompt"]:
-                missing.append(f"{s['missing_prompt']} missing input")
+                missing.append(f"{s['missing_prompt']:,} missing input")
             if s["missing_completion"]:
-                missing.append(f"{s['missing_completion']} missing output")
+                missing.append(f"{s['missing_completion']:,} missing output")
             if req == 0:
                 note = "no data in window"
             elif missing:
                 note = ", ".join(missing)
             else:
                 note = "complete"
-            put("#sum-missing", "Incomplete", note)
+            # The panel reports completeness either way; naming it "Incomplete"
+            # made the good case read "Incomplete: complete".
+            put("#sum-missing", "Completeness", note)
 
         # --- Dashboard page ------------------------------------------------
 
@@ -813,6 +937,7 @@ if HAVE_TEXTUAL:
                 # e.g. an un-migrated DB where the newer columns are missing.
                 self.query_one("#dash-note", Static).update(
                     f"dashboard query failed ({e}); run: cbut sync")
+                self._report_query_error(e)
                 return
             self._render_dashboard_kpi(kpi)
             self._render_dashboard_tokens(s)
@@ -859,7 +984,7 @@ if HAVE_TEXTUAL:
             # counts are COUNT-based -> a real 0; avg_ms is NULL when nothing ran.
             self._put_panel("#dash-rt-completed", "Completed", f"{a['completed'] or 0:,}")
             self._put_panel("#dash-rt-incomplete", "Incomplete", f"{a['incomplete'] or 0:,}")
-            self._put_panel("#dash-rt-avg", "Avg tool ms", fmt_n(a["avg_ms"]))
+            self._put_panel("#dash-rt-avg", "Avg tool time", ms(a["avg_ms"]))
             self._put_panel("#dash-rt-sessions", "Sessions", f"{a['sessions'] or 0:,}")
             self._put_panel("#dash-rt-projects", "Projects", f"{a['projects'] or 0:,}")
 
@@ -868,7 +993,7 @@ if HAVE_TEXTUAL:
             if not top:
                 self.query_one("#dash-models", Static).update("nothing in this window")
                 return
-            lines = [f"{i}. {r['model']:<26}{fmt_n(r['total_tokens']):>12}"
+            lines = [f"{i}. {clip(r['model'], 26):<26}{fmt_n(r['total_tokens']):>12}"
                      f"  {r['requests']:>5} req"
                      for i, r in enumerate(top, 1)]
             self.query_one("#dash-models", Static).update("\n".join(lines))
@@ -879,9 +1004,9 @@ if HAVE_TEXTUAL:
             if not top:
                 self.query_one("#dash-tools", Static).update("nothing in this window")
                 return
-            lines = [f"{i}. {r['tool_name']:<22}{r['calls']:>7,}"
-                     f" {'call' if r['calls'] == 1 else 'calls':<5}"
-                     f" {fmt_n(r['avg_ms'])} ms"
+            lines = [f"{i}. {clip(r['tool_name'], 22):<22}"
+                     f"{count_n(r['calls'], 'call'):>12}"
+                     f" · {ms(r['avg_ms'])}"
                      for i, r in enumerate(top, 1)]
             self.query_one("#dash-tools", Static).update("\n".join(lines))
 
@@ -891,7 +1016,11 @@ if HAVE_TEXTUAL:
         def _sparkline(self, values) -> str:
             peak = max(values) if values else 0
             if peak <= 0:
-                return ""
+                # A quiet window still draws something: an empty string left a
+                # blank region on the Dashboard, which reads as "widget broken"
+                # rather than "no calls". A dotted baseline says the same thing
+                # as the zero-height bars it replaces, without inventing a bar.
+                return "·" * len(values)
             out = []
             for v in values:
                 level = 0 if v <= 0 else min(8, max(1, round(v / peak * 8)))
@@ -920,11 +1049,15 @@ if HAVE_TEXTUAL:
                 d += timedelta(days=1)
             series = [counts.get(day.isoformat(), 0) for day in days]
             self.query_one("#dash-activity", Static).update(self._sparkline(series))
-            if series:
+            # The day list is never empty (a window always contains at least
+            # today), so the branch that matters is "no calls in it", not
+            # "no days" — the old `if series:` test was always true.
+            if any(series):
                 self.query_one("#dash-activity-axis", Static).update(
                     f"{days[0]:%m-%d} → {days[-1]:%m-%d} · peak {max(series):,}/day")
             else:
-                self.query_one("#dash-activity-axis", Static).update("no activity")
+                self.query_one("#dash-activity-axis", Static).update(
+                    f"{days[0]:%m-%d} → {days[-1]:%m-%d} · no activity")
 
         @staticmethod
         def _hit_rate(hit, miss, write) -> str:
@@ -934,16 +1067,9 @@ if HAVE_TEXTUAL:
         def _fill_usage_logs(self, conn, start, end) -> None:
             rows = db.q_usage_request_logs(conn, start, end,
                                            limit=self.USAGE_LOG_LIMIT)
-            if rows:
-                self.query_one("#usage-note", Static).update(
-                    "Newest first · cache hit=read, write=create · "
-                    "no cost/duration/status"
-                )
-            else:
-                # Explicit empty state, never a blank region.
-                self.query_one("#usage-note", Static).update(
-                    "No requests in this window — widen the time range above."
-                )
+            self.query_one("#usage-note", Static).update(
+                "Newest first · cache hit=read, write=create · "
+                "no cost/duration/status" if rows else "")
             out = [[
                 local_time(r["ts"]), r["model"] or "-",
                 fmt_n(r["usage_total_tokens"]),
@@ -956,7 +1082,11 @@ if HAVE_TEXTUAL:
                                r["prompt_cache_miss_tokens"],
                                r["prompt_cache_write_tokens"]),
             ] for r in rows]
-            self._fill(self.query_one("#t-usage", DataTable), out)
+            # The shared empty state, like the other seven tables: a note above an
+            # untouched table reads as a page that failed to load.
+            self._fill_or_empty(
+                self.query_one("#t-usage", DataTable), out,
+                "No requests in this window — widen the range above.")
 
         def on_select_changed(self, event: Select.Changed) -> None:
             if event.select.id != "range":
@@ -1002,7 +1132,10 @@ if HAVE_TEXTUAL:
             # S = toggle the automatic sync switch. Distinct from R: it does not
             # trigger a sync itself.
             self._auto_sync = not self._auto_sync
-            self._set_status(f"Auto sync: {'ON' if self._auto_sync else 'OFF'}")
+            # The line itself carries the state ("· auto-sync OFF"); a bespoke
+            # message here used to wipe the counts off the bar until an unrelated
+            # refresh happened to put them back.
+            self._set_status(self._status_line())
             self.notify(f"Auto sync: {'ON' if self._auto_sync else 'OFF'}")
             if self._usage_ready:
                 self._render_usage_status()
@@ -1010,6 +1143,13 @@ if HAVE_TEXTUAL:
         # --- automatic sync / refresh timers --------------------------------
 
         def _auto_sync_tick(self) -> None:
+            # The same shutdown guard as _auto_refresh_tick (D-003). A timer can
+            # fire once more while the app is closing; _request_sync then reaches
+            # for an event loop that is already gone and raises
+            # "RuntimeError: no running event loop", leaving a worker coroutine
+            # that is never awaited.
+            if not self.is_running:
+                return
             if self._auto_sync:
                 self._request_sync()
 
@@ -1022,22 +1162,6 @@ if HAVE_TEXTUAL:
             if not self.is_running:
                 return
             self._refresh_active_tab()
-
-        def _load_sync_module(self):
-            """Load cbut-sync.py (hyphenated name) as a module.
-
-            Registered under a fixed name in sys.modules so tests can patch
-            ``app.sync_mod.run`` without triggering a real filesystem scan.
-            """
-            name = "cbut_sync_embedded"
-            mod = sys.modules.get(name)
-            if mod is None:
-                path = Path(__file__).with_name("cbut-sync.py")
-                spec = importlib.util.spec_from_file_location(name, str(path))
-                mod = importlib.util.module_from_spec(spec)
-                sys.modules[name] = mod
-                spec.loader.exec_module(mod)
-            return mod
 
         def _request_sync(self) -> None:
             # Guard against concurrent syncs: if one is running, mark a pending
@@ -1054,7 +1178,7 @@ if HAVE_TEXTUAL:
             # connection is shared across threads.
             try:
                 if self.sync_mod is None:
-                    self.sync_mod = self._load_sync_module()
+                    self.sync_mod = db.load_sync()
                 stats = self.sync_mod.run(quiet=True, db_path=self.db_path)
                 self.call_from_thread(self._on_sync_done, True, stats, None)
             except Exception as e:  # report, never swallow
@@ -1068,9 +1192,16 @@ if HAVE_TEXTUAL:
                     self.refresh_data()          # new rows can touch any tab
                 else:
                     self._refresh_active_tab()   # nothing changed -> light refresh
-                self.notify(f"Synced {stats.get('files_indexed', 0)} files")
+                    # A light refresh does not rewrite the bar, so without this
+                    # the transient "Syncing…" from `r` survives the sync that
+                    # already finished.
+                    self._set_status(self._status_line())
+                self.notify(f"Synced {count_n(stats.get('files_indexed', 0), 'file')}")
             else:
-                self._set_status("Sync failed: " + (err or "unknown error")[:200])
+                # The same composer as the data line: a failed sync is a fact
+                # *about* the numbers, not a replacement for them.
+                self._status_note = "Sync failed: " + (err or "unknown error")[:200]
+                self._set_status(self._status_line())
                 self.notify("Sync failed — keeping current data", severity="error")
             if self._sync_pending:
                 self._sync_pending = False
