@@ -91,8 +91,10 @@ HANDLED_RECORD_TYPES = frozenset({
     "turn-metrics", "session-meta", "ai-title",
 })
 # Types present in real transcripts that claim no handler, measured on this
-# machine 2026-10-09: ``reasoning`` 14757, ``file-history-snapshot`` 5786,
-# ``summary`` 346. They stay inside the unparsed count deliberately — an
+# machine 2026-10-09: ``reasoning`` by the tens of thousands,
+# ``file-history-snapshot`` by the thousands, ``summary`` by the hundreds —
+# `cbut health` prints the exact figures for whoever owns this database.
+# They stay inside the unparsed count deliberately — an
 # allowlist quieting them would also hide the day one of them starts carrying
 # something we index. Anything new appears beside them in `cbut health`.
 
