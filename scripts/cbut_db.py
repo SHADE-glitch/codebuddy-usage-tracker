@@ -19,7 +19,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # --- locations -------------------------------------------------------------
 
@@ -112,7 +112,6 @@ CREATE TABLE IF NOT EXISTS model_responses (
     usage_available            INTEGER DEFAULT 0,
     missing                    TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_model_resp_session ON model_responses(session_id);
 CREATE INDEX IF NOT EXISTS idx_model_resp_model   ON model_responses(model);
 CREATE INDEX IF NOT EXISTS idx_model_resp_ts      ON model_responses(ts);
 CREATE INDEX IF NOT EXISTS idx_model_resp_model_ts ON model_responses(model, ts);
@@ -129,7 +128,6 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     model       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tool_name    ON tool_calls(tool_name);
-CREATE INDEX IF NOT EXISTS idx_tool_session ON tool_calls(session_id);
 CREATE INDEX IF NOT EXISTS idx_tool_ts      ON tool_calls(ts);
 CREATE INDEX IF NOT EXISTS idx_tool_cat     ON tool_calls(category);
 
@@ -556,9 +554,32 @@ def _drop_prose_columns(conn: sqlite3.Connection) -> bool:
     return True
 
 
+DEAD_SESSION_INDEXES = ("idx_tool_session", "idx_model_resp_session")
+
+
+def _drop_dead_session_indexes(conn: sqlite3.Connection) -> bool:
+    """v6: remove the two indexes that serve no query.
+
+    Both exist to answer ``WHERE session_id = ?``, and no query in this file has one
+    (``test_no_query_filters_by_session_id`` keeps that true). They are paid for on every
+    insert — ≈ 2.2 MiB of a ≈ 15 MiB database — and are the only indexes that earn nothing.
+    Dropping them costs no information: an index is derived state, and rebuilding one is
+    a single ``CREATE INDEX`` if a session-keyed screen ever arrives.
+    """
+    present = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index'")}
+    dead = [name for name in DEAD_SESSION_INDEXES if name in present]
+    if not dead:
+        return False
+    for name in dead:
+        conn.execute(f"DROP INDEX {name}")
+    return True
+
+
 MIGRATIONS = (
     ("model_responses cache and total columns", _migrate_model_responses),
     ("prose columns removed", _drop_prose_columns),
+    ("dead session indexes dropped", _drop_dead_session_indexes),
 )
 
 

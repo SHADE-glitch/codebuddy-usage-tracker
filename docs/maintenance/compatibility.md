@@ -60,7 +60,8 @@ The two local interpreters **link different SQLite builds**, so "the SQLite here
 
 No separate `sqlite3` binary is required or assumed; the library comes from whichever build Python's
 `sqlite3` module links against. The journal is WAL and `PRAGMA user_version` is unused: the schema
-version lives in the `meta` table as `schema_version` (currently **5**) and `ensure_schema()` refuses
+version lives in the `meta` table as `schema_version` (currently **6** — v5 removed two prose columns,
+v6 dropped two indexes that no query used) and `ensure_schema()` refuses
 to open a newer database with older code rather than silently no-op'ing the `CREATE TABLE IF NOT
 EXISTS` set.
 

@@ -67,10 +67,16 @@ PY
 | `idx_model_resp_model` | ≈ 0.5 MiB |
 | all explicit `idx_*` | ≈ 5 MiB — **about a third of the file** |
 
-The two bolded indexes exist to serve `WHERE session_id = ?`. **No query in `cbut_db.py` has a
+**Resolved as of schema v6**: the two bolded indexes existed to serve `WHERE session_id = ?`, and
+**no query in `cbut_db.py` has a
 `session_id` predicate** (a handful of its query strings mention the column at all, and only as a
-projection, a `GROUP BY`, or an insert target), so they are paid for on every insert and never used
-for a read. They are also exactly the kind of claim that goes stale, so the check is one command
+projection, a `GROUP BY`, or an insert target), so they were paid for on every insert and never used
+for a read. They are now dropped by a migration; the table above stays as the "before". Re-running the
+dbstat query on a migrated database should show ≈ 2.2 MiB less in `idx_*` — and if it does not, the
+migration did not run. The justification is itself guarded now
+(`test_no_query_filters_by_session_id` reads the real source), because this is exactly the kind of
+claim that goes stale: build a session-keyed screen and that test fails, telling you the index is due
+back. The same check is one command
 — it prints the ratio, and today it prints `0 of 81`:
 
 ```bash
@@ -81,8 +87,11 @@ q = re.findall(r'\"((?:[^\"]|\\\\.)*?(?:SELECT|WITH)[^\"]*)\"', src, re.I)
 print(sum(1 for s in q if re.search(r'session_id\s*(?:=|IN|IS|LIKE)', s, re.I)), 'of', len(q), 'queries filter by session_id')"
 ```
 
-Deleting an index is a schema change: it needs a `D-###` entry, and it only goes in after the
-session-detail screens (which are the obvious future consumer) are either built or ruled out.
+Dropping an index is a schema change: it needed a `D-###` entry, and it only went in once the
+session-detail screens (the obvious future consumer) were **ruled out** rather than merely unbuilt —
+`AGENTS.md` fixes every panel's key as the entity *name*, and windows shrink counts but never the list,
+so a session-keyed read contradicts the panel model instead of extending it. If that decision is ever
+reversed, the index is one `CREATE INDEX` away and the guard above says so before you ship it.
 
 ## Query cost
 
