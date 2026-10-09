@@ -298,3 +298,22 @@ Cost     More documentation, each tied to a command. A page that is not generate
          this round refuses to add
 Commit   673255c 4d0f8ab
 
+### D-021 · 2026-10-09 · perf
+Symptom  Two indexes — `idx_tool_session` and `idx_model_resp_session` — existed to answer
+         `WHERE session_id = ?`, and no query in the data layer ever did. They were maintained on
+         every insert and read by nobody: together about a seventh of the whole database file
+Change   Schema v6. `SCHEMA_SQL` no longer creates them, and a migration drops exactly those two and
+         leaves every live index alone. Ruled out rather than merely unbuilt: panels are keyed on the
+         entity **name** and a window shrinks counts but never the list, so a session-keyed read
+         contradicts the panel model instead of extending it
+Evidence L0 three cases: a new database carries neither index; a hand-rebuilt v5 database loses those
+         two and keeps `idx_tool_name` / `idx_model_resp_model_ts`; and the justification itself is a
+         test that reads the real source (`0 of 81` queries filter by `session_id`) with a floor on how
+         many queries the extractor must find, so a broken extractor cannot pass as a clean result.
+         L2 on the real database: index count 12 → 10, `integrity_check ok`, freelist ≈ 20 → ≈ 570
+         pages
+Cost     The file did not get smaller — dropping an index returns pages to the freelist, and only
+         `VACUUM` hands them back, which is not worth running for 2.2 MiB. If a session-detail screen
+         is ever built, the guard above fails first and the index is one `CREATE INDEX` away
+Commit   d75ad24
+
