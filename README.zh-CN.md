@@ -103,11 +103,13 @@ CodeBuddy 其实**已经在写**你需要的数据，只是**从不展示**。�
 Usage tab 仿照会话用量面板的样式，但每个数字都来自磁盘上的转录：
 
 - **Usage 页保留自己的范围**（默认 **今天**），在 Usage tab 激活时显示在共享顶部栏里；其他每个 tab 也各自保留，互不影响。选项为 今天 / 2 天 / 3 天 / 7 天 / 30 天 / 全部时间 —— 以当前时刻结尾的**整段本地自然日**（00:00 → 现在），**不是**「当前减 N 小时」，也**不是** tracker 首次运行的时刻。本页的 **Window / Requests** 面板显示当前范围的日期。
-- **单一的 Request Logs 列表**，最近的请求在前。列顺序对齐 cc-switch 的请求记录 —— 时间 · 模型 · usage 总计 · 输入 · 输出 · API 总计 · 缓存读取(hit) · 缓存未命中(miss) · 缓存创建(write) · 缓存命中率。cc-switch 的供应商、费用、耗时、HTTP 状态码列在转录里没有数据源，因此**略去而非估算**。优先列在最左；缓存明细可通过横向滚动查看。
+- **单一的 Request Logs 列表**，最近的请求在前。列顺序对齐 cc-switch 的请求记录 —— 时间 · 模型 · usage 总计 · 输入 · 输出 · API 总计 · 缓存读取(hit) · 缓存未命中(miss) · 缓存创建(write) · 缓存命中率。cc-switch 的供应商、费用、耗时、HTTP 状态码列在转录里没有数据源，因此**略去而非估算**。优先列在最左；终端太窄放不下时，列计划会**整列收起**尾部而不是把标签切一半——表格上方那行会写明收了哪几列、要多宽才能全部看到。
 - **与 Tokens 相同的准确性规则** —— **API 总计** = 有 provider 原始值时用原始值，否则 `输入 + 输出`。另有一个 **Usage 总计**（`输入 + 输出 + 缓存 hit`）仅供参照，并明确标注它会重复计入缓存 hit（约 2 倍 API 总计）。缓存 hit/miss/write 绝不并入 API 总计，缺失值保持 `-`。
 - **缓存命中率** = `缓存 hit / (缓存 hit + 缓存 miss + 缓存 write)` —— 即「可缓存输入」，与 cc-switch 一致；某行没有缓存数据时显示 `-`。
 - **汇总面板高度受限并内部滚动**，因此下方的 Request Logs 表在小终端上也始终可见。80×24 实测：
-  面板转为两列、高度仍受限，表格保留 11 行；而十列放不进 80 格，右侧缓存列要靠横向滚动看到。
+  面板转为两列、高度仍受限，表格保留 9 行（测试把下限钉在 6）；列计划此时只显示 **10 列里的前 5 列**，
+  表上方那行写明被收起的 5 列。具体收哪几列取决于数据 —— 宽度是按真实行内容量出来的，不是假设的；
+  同一宽度下 Tokens 页显示 9 列中的 6 列。没有任何一列被切成半截。
 
 ## 📋 环境要求
 
@@ -204,7 +206,7 @@ sync_secs = 30       # TUI 自动同步定时器
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 294 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 298 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -214,7 +216,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 294 tests ... OK
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
 | `test_sync.py` | 82 | 转录解析、工具归类、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
-| `test_tui.py` | 70 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、窄终端布局、状态栏诚实性 |
+| `test_tui.py` | 74 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、窄终端布局与"列计划"（放不下就整列收起，不再切一半）、状态栏诚实性 |
 | `test_usage.py` | 61 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）、token 汇总、Dashboard 查询、结构版本门禁、索引值不值得留 |
 | `test_config.py` | 18 | 设置层：默认值没变、文件、env 优先级、坏文件会让 `main()` 在启动 TUI 前就退出，以及 app 真的读了哪些键 |
 | `test_dispatcher.py` | 12 | `bin/cbut`：子命令转发、venv 解析、装不上时 help 仍然能跑 |
@@ -238,7 +240,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 294 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 294 个用例 |
+| `scripts/tests/` | 上面那 298 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、以及体积与性能的固定度量法和基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |

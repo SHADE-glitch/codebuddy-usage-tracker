@@ -1,7 +1,7 @@
 # Compatibility
 
 What this tool claims to work against, and how much of that claim is actually checked. Every line
-was read off this machine or out of a file on 2026-10-09; nothing here is remembered.
+was read off this machine or out of a file on 2026-10-09 / 2026-10-10; nothing here is remembered.
 
 ## Python
 
@@ -21,16 +21,17 @@ machine" are different claims and each needs its own run. `__pycache__` on this 
 `cpython-313` and `cpython-314` artefacts, which is how the gap showed up — 3.11 and 3.12 have since
 been exercised in throwaway venvs (table below) rather than guessed at.
 
-What has actually been executed, as of 2026-10-09 — re-run after the settings layer landed, because
-that layer imports `tomllib`, which is standard library only from exactly the floor this table's
-bottom row sits on:
+What has actually been executed, most recently on 2026-10-10 — re-run after the settings layer and
+the narrow-terminal column plan landed, because the first imports `tomllib`, which is standard
+library only from exactly the floor this table's bottom row sits on, and the second changes layout
+code every interpreter draws:
 
 | Interpreter | Suite on this machine | Notes |
 |---|---|---|
-| `.venv` 3.13.14 | **Ran 294, OK** (97.3 s) | what the TUI runs on |
-| 3.14.4 (system build, sqlite 3.46.1) | **Ran 294, OK** (95.1 s) | throwaway venv on the system interpreter — a different SQLite build, same green |
-| 3.12.14 (CI's version) | **Ran 294, OK** (106.8 s) | throwaway `uv venv --python 3.12` + `textual>=8.2,<9`, i.e. the way CI builds it — run *before* pushing, so CI is not the first place 3.12 sees this code |
-| 3.11.15 (the promised floor) | **Ran 294, OK** (115.7 s) | throwaway `uv venv --python 3.11` in `/tmp`, `textual==8.2.8`, sqlite 3.53.1 — this is the row that would fail first if `tomllib` were not available at the floor. Not a project venv, delete it and nothing is lost |
+| `.venv` 3.13.14 | **Ran 298, OK** (113.0 s) | what the TUI runs on |
+| 3.14.4 (system build, sqlite 3.46.1) | **Ran 298, OK** (104.9 s) | throwaway venv on the system interpreter — a different SQLite build, same green |
+| 3.12.14 (CI's version) | **Ran 298, OK** (123.1 s) | throwaway `uv venv --python 3.12` + `textual>=8.2,<9`, i.e. the way CI builds it — run *before* pushing, so CI is not the first place 3.12 sees this code |
+| 3.11.15 (the promised floor) | **Ran 298, OK** (129.7 s) | throwaway `uv venv --python 3.11` in `/tmp`, `textual==8.2.8`, sqlite 3.53.1 — this is the row that would fail first if `tomllib` were not available at the floor. Not a project venv, delete it and nothing is lost |
 
 All four interpreters this project can plausibly meet are therefore measured, and the CI version is
 not an exception. What is still *not* certified: the exact runner image, `pip` resolution and Python

@@ -102,6 +102,13 @@ def all_rows(table):
     return [table.get_row_at(i) for i in range(table.row_count)]
 
 
+# Textual's default test terminal is 80x24, and below the width where a table's
+# columns fit, the column plan drops the tail (see test 58). A case that reads
+# cells by position therefore has to ask for a terminal wide enough to show all
+# of them, otherwise it asserts against a table that was never meant to be full.
+WIDE = (160, 40)
+
+
 def insert_tool_calls(path, rows):
     """rows: (call_id, session_id, project, tool_name, category, ts,
     duration_ms, status)."""
@@ -209,7 +216,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             ("m1", "s1", "m", None, None, None, None, now - 3600_000, 0),
         ])
         app = TrackerApp(str(self.db_path))
-        async with app.run_test() as pilot:
+        async with app.run_test(size=WIDE) as pilot:
             await pilot.pause()
             t = app.query_one("#t-tokens", tui.DataTable)
             row = all_rows(t)[0]
@@ -227,7 +234,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             ("m1", "s1", "m", 10, 20, 3, 4, now - 3600_000, 1),
         ], cache={"m1": (7, 8, 9)})
         app = TrackerApp(str(self.db_path))
-        async with app.run_test() as pilot:
+        async with app.run_test(size=WIDE) as pilot:
             await pilot.pause()
             t = app.query_one("#t-tokens", tui.DataTable)
             row = all_rows(t)[0]
@@ -250,7 +257,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             ("m2", "s1", "nulled", 1, 1, None, None, now - 3600_000 + 1, 1),
         ], cache={"m1": (0, 0, 0)})   # m2 has no cache entry -> NULL
         app = TrackerApp(str(self.db_path))
-        async with app.run_test() as pilot:
+        async with app.run_test(size=WIDE) as pilot:
             await pilot.pause()
             t = app.query_one("#t-tokens", tui.DataTable)
             rows = {r[0]: r for r in all_rows(t)}
@@ -507,7 +514,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             ("a", "s1", "m", 10, 20, 0, 0, now - 3600_000, 1),
         ], cache={"a": (999999, 888888, 7)})
         app = TrackerApp(str(self.db_path))
-        async with app.run_test() as pilot:
+        async with app.run_test(size=WIDE) as pilot:
             await pilot.pause()
             await self._usage_all_time(app, pilot)
             t = app.query_one("#t-usage", tui.DataTable)
@@ -1535,6 +1542,136 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                     self.assertGreater(pane.size.height, 0)
                     for table in app.query(f"#{tab} DataTable"):
                         self.assertGreater(table.size.height, 0)
+
+    # 58. the two wide tables get a column plan instead of a clipped tail
+    async def test_narrow_terminals_get_a_column_plan_not_a_cut(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [
+            (f"m{i}", f"s{i % 2}", "claude-sonnet-4-5-20260101-ext",
+             120000 + i, 15000 + i, 90000 + i, 1000 + i, now - i * 60000, 1)
+            for i in range(6)],
+            cache={f"m{i}": (88000 + i, 30000 + i, 1200 + i) for i in range(6)},
+            ptotals={f"m{i}": 135000 + i for i in range(6)})
+        for tab, tid, note_id, cols in (
+                ("tab-tokens", "#t-tokens", "#colnote-tokens", tui.TOKEN_COLUMNS),
+                ("tab-usage", "#t-usage", "#colnote-usage", tui.USAGE_COLUMNS)):
+            with self.subTest(tab=tab):
+                app = TrackerApp(str(self.db_path))
+                async with app.run_test(size=(80, 24)) as pilot:
+                    await pilot.pause()
+                    app.query_one(tui.TabbedContent).active = tab
+                    await pilot.pause()
+                    t = app.query_one(tid, tui.DataTable)
+                    labels = [str(c.label) for c in t.columns.values()]
+                    self.assertLess(len(labels), len(cols),
+                                    "the full set was kept and cut at the edge")
+                    # The claim of a *plan* (not a scroll): what is shown fits.
+                    self.assertLessEqual(
+                        sum(c.content_width for c in t.columns.values())
+                        + 2 * len(labels), t.region.width,
+                        f"{labels} still exceed {t.region.width}")
+                    note = app.query_one(note_id, tui.Static)
+                    text = str(note.content)
+                    for hidden in [c for c in cols if c not in labels]:
+                        self.assertIn(hidden, text,
+                                      f"{hidden} is gone and the note does not say so")
+                    self.assertIn(f"{len(labels)} of {len(cols)}", text,
+                                  "the note's numbers must be the table's numbers")
+                    # The note is not allowed to be cut the way the table was: a
+                    # message about hidden columns that is itself hidden is a lie.
+                    # Wrapping is fine, so the rendered lines are joined flat.
+                    rendered = " ".join(" ".join(
+                        "".join(s.text for s in note.render_line(y))
+                        for y in range(note.region.height)).split())
+                    for hidden in [c for c in cols if c not in labels]:
+                        self.assertIn(hidden, rendered,
+                                      f"the note names {hidden} but the screen cuts it off")
+
+    # 59. a wide terminal keeps every column and says nothing
+    async def test_a_wide_terminal_hides_no_columns_and_notes_nothing(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [
+            (f"m{i}", f"s{i % 2}", "claude-sonnet-4-5-20260101-ext",
+             120000 + i, 15000 + i, 90000 + i, 1000 + i, now - i * 60000, 1)
+            for i in range(6)],
+            cache={f"m{i}": (88000 + i, 30000 + i, 1200 + i) for i in range(6)},
+            ptotals={f"m{i}": 135000 + i for i in range(6)})
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(160, 30)) as pilot:
+            await pilot.pause()
+            for tab, tid, note_id, cols in (
+                    ("tab-tokens", "#t-tokens", "#colnote-tokens", tui.TOKEN_COLUMNS),
+                    ("tab-usage", "#t-usage", "#colnote-usage", tui.USAGE_COLUMNS)):
+                with self.subTest(tab=tab):
+                    app.query_one(tui.TabbedContent).active = tab
+                    await pilot.pause()
+                    t = app.query_one(tid, tui.DataTable)
+                    self.assertEqual([str(c.label) for c in t.columns.values()],
+                                     list(cols))
+                    self.assertEqual(str(app.query_one(note_id, tui.Static).content), "",
+                                     "a note on a page that hides nothing is noise")
+
+    # 60. widening hands the columns back — without losing the rows
+    async def test_widening_the_terminal_restores_the_dropped_columns(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [
+            (f"m{i}", f"s{i % 2}", "claude-sonnet-4-5",
+             120000 + i, 15000 + i, 90000 + i, 1000 + i, now - i * 60000, 1)
+            for i in range(6)],
+            cache={f"m{i}": (88000 + i, 30000 + i, 1200 + i) for i in range(6)},
+            ptotals={f"m{i}": 135000 + i for i in range(6)})
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tokens"
+            await pilot.pause()
+            t = app.query_one("#t-tokens", tui.DataTable)
+            narrow_labels = [str(c.label) for c in t.columns.values()]
+            rows = t.row_count
+            self.assertLess(len(narrow_labels), len(tui.TOKEN_COLUMNS))
+            await pilot.resize_terminal(160, 30)
+            await pilot.pause()
+            self.assertEqual([str(c.label) for c in t.columns.values()],
+                             list(tui.TOKEN_COLUMNS),
+                             "widening never gave the columns back")
+            self.assertEqual(t.row_count, rows, "the rebuild lost rows")
+            self.assertEqual(str(app.query_one("#colnote-tokens", tui.Static).content), "")
+
+    # 61. a rebuilt table must still know which entity its row is
+    async def test_the_row_key_survives_the_narrow_rebuild(self):
+        now = int(time.time() * 1000)
+        long_names = ["claude-sonnet-4-5-20260101-ext", "gpt-5.1-codex-max-20260101"]
+        make_db(self.db_path, [
+            (f"m{i}", f"s{i % 2}", long_names[i % 2],
+             120000 + i, 15000 + i, 90000 + i, 1000 + i, now - i * 60000, 1)
+            for i in range(6)],
+            cache={f"m{i}": (88000 + i, 30000 + i, 1200 + i) for i in range(6)},
+            ptotals={f"m{i}": 135000 + i for i in range(6)})
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tokens"
+            await pilot.pause()
+            t = app.query_one("#t-tokens", tui.DataTable)
+            self.assertEqual(t.row_count, 2)
+            labels = [str(c.label) for c in t.columns.values()]
+            self.assertLess(len(labels), len(tui.TOKEN_COLUMNS),
+                            "this case is only about a *rebuilt* table")
+            t.move_cursor(row=1)
+            await pilot.pause()
+            key = list(t.rows.keys())[1]
+            # the real routing handler, same message a click posts
+            shown = str(t.get_cell_at(t.cursor_coordinate))
+            app.on_data_table_row_selected(
+                tui.DataTable.RowSelected(t, t.cursor_row, key))
+            await pilot.pause()
+            await pilot.pause()
+            top = app.screen_stack[-1]
+            self.assertIsInstance(top, tui.ModelResponsesScreen,
+                                  f"a cut table cannot open its detail screen ({top!r})")
+            self.assertEqual(top.model, shown,
+                             "the rebuilt rows lost the key that names their model")
+            self.assertIn(shown, long_names, "the cell is not one of the two models")
 
 
 if __name__ == "__main__":

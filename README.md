@@ -134,8 +134,9 @@ the transcripts on disk:
   records — time · model · usage total · input · output · API total · cache hit (read) ·
   cache miss · cache write · cache hit rate. cc-switch's provider, cost, duration and
   HTTP-status columns have no transcript source, so they are omitted rather than
-  estimated. The priority columns sit leftmost; the cache detail is
-  reachable by horizontal scroll.
+  estimated. The priority columns sit leftmost, and on a narrow terminal a column plan
+  drops the tail instead of cutting it mid-label — the line above the table then names
+  what is hidden and how wide the terminal has to be to show all of it.
 - **Same accuracy rules as Tokens** — **API Total** = provider total when present, else
   `Input + Output`. A separate **Usage Total** (`Input + Output + cache hit`) is shown for
   reference, explicitly labelled as re-adding cache hit (~2× the API total). Cache
@@ -144,8 +145,10 @@ the transcripts on disk:
   cacheable input, matching cc-switch. It shows `-` when a row has no cache data.
 - **The summary panels are height-capped and scroll internally**, so the Request Logs
   table below them stays visible even on a small terminal. Measured at 80×24: the panels
-  go two-up and stay capped, the table keeps 11 rows — and because ten columns do not fit
-  in 80 cells, its right-hand cache columns are reached by horizontal scroll.
+  go two-up and stay capped, the table keeps 9 rows (a test holds the floor at 6), and the
+  column plan shows the first **5 of its 10** columns with a note above the table naming the
+  other five. Which five depends on the data — the widths are measured from the rows, not
+  assumed — and the Tokens page keeps 6 of 9 at the same width. Nothing is cut mid-label.
 
 ## 📋 Requirements
 
@@ -248,7 +251,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 294 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 298 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -259,7 +262,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | Suite | Tests | Covers |
 |---|---:|---|
 | `test_sync.py` | 82 | transcript parsing, tool classification, incremental vs `--full` re-sync, crash recovery, unparsed-record accounting |
-| `test_tui.py` | 70 | tab wiring and report shapes through Textual's own `run_test` harness, narrow-terminal layout, status-line truthfulness |
+| `test_tui.py` | 74 | tab wiring and report shapes through Textual's own `run_test` harness, narrow-terminal layout and the column plan that replaces a clipped tail, status-line truthfulness |
 | `test_usage.py` | 61 | the calendar-day windows (Today / 2 / 3 / 7 / 30 days / all), the token totals, the Dashboard queries, the schema gate, and which indexes earn their keep |
 | `test_config.py` | 18 | the settings layer: defaults unchanged, file, env precedence, a broken file that stops `main()` before the TUI starts, and the keys the app actually reads |
 | `test_dispatcher.py` | 12 | `bin/cbut`: subcommand routing, venv resolution, help without a resolvable install |
@@ -284,7 +287,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 294 tests above |
+| `scripts/tests/` | the 298 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, and the size & performance baseline with the commands that produced it |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

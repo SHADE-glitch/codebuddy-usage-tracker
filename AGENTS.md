@@ -128,6 +128,12 @@ tool runs from a checkout, so the version only needs to move when a documented c
   local 00:00 (`"1d"` = today, `"2d"` = from yesterday's 00:00, …) and ends at the current time;
   each tab keeps its own window. Do not switch to rolling hours or a shared range — the
   natural-day boundary and per-tab independence are both deliberate.
+- **A table never shows a half column.** The two wide tables (`t-tokens`, `t-usage`) are filled
+  through `_fill_wide`, which keeps the longest **prefix** of their columns and names the dropped
+  ones on the note line above the table. A cell past the right edge used to be cut mid-label with no
+  keyboard way to reach it, so "it scrolls" is not an acceptable answer. New wide tables register in
+  `WIDE_TABLES` (columns, note id, cells lost to the surroundings) — the chrome and the 2-cell per
+  column cost there are measured, not derived, and `MIN_SHOWN` keeps a floor of 2 columns.
 - **Keep `context tokens` and per-model token totals apart.** They are different measurements
   (turn-metrics `tokenDelta` vs per-response model tokens from transcripts) and summing them is
   wrong.

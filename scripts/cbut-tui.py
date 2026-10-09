@@ -238,6 +238,11 @@ if HAVE_TEXTUAL:
         .panel-title { text-style: bold; color: $accent; }
         #usage-status, #usage-window { padding: 0; }
         #usage-note, #dash-note { padding: 0 1; color: $text-muted; }
+        /* One line per wide table, only when columns were dropped — an always-on
+           note above a table that hides nothing is noise that costs a row. Auto
+           height because a note that is itself cut off at the right edge would be
+           the same defect it exists to report. */
+        .col-note { padding: 0 1; color: $text-muted; height: auto; display: none; }
         #dash-activity { color: $accent; }
         #dash-activity-axis { color: $text-muted; }
         #t-usage { height: 1fr; min-height: 6; }
@@ -311,6 +316,9 @@ if HAVE_TEXTUAL:
             self._last_refresh = None      # epoch ms
             self._last_sync = None         # epoch ms
             self._usage_ready = False
+            # table id -> (rows, empty message, key index, key kind) for the two
+            # wide tables, so a resize can re-plan them without re-querying.
+            self._wide_rows = {}
             # Set from migrate() on mount: "" when the schema is usable,
             # otherwise the reason it is not ("newer", "failed: …").
             self._schema_note = ""
@@ -409,6 +417,7 @@ if HAVE_TEXTUAL:
                 with TabPane("MCP", id="tab-mcp"):
                     yield DataTable(id="t-mcp", zebra_stripes=True)
                 with TabPane("Tokens", id="tab-tokens"):
+                    yield Static(id="colnote-tokens", classes="col-note")
                     yield DataTable(id="t-tokens", zebra_stripes=True)
                 with TabPane("Usage", id="tab-usage"):
                     yield Vertical(
@@ -444,6 +453,7 @@ if HAVE_TEXTUAL:
                             id="usage-panels", classes="summary-panels",
                         ),
                         Static(id="usage-note"),
+                        Static(id="colnote-usage", classes="col-note"),
                         DataTable(id="t-usage", zebra_stripes=True),
                         id="usage-box",
                     )
@@ -548,6 +558,73 @@ if HAVE_TEXTUAL:
         def _set_status(self, msg: str) -> None:
             self.query_one("#status", Static).update(msg)
 
+        # --- narrow-terminal column plan -------------------------------------
+
+        @staticmethod
+        def _column_widths(labels, rows):
+            """What DataTable will charge for each column: label or widest cell."""
+            return [max(len(str(label)),
+                        max((len(str(r[i])) for r in rows), default=0))
+                    for i, label in enumerate(labels)]
+
+        def _set_columns(self, table, cols) -> None:
+            if [str(c.label) for c in table.columns.values()] == list(cols):
+                return
+            table.clear(columns=True)
+            table.add_columns(*cols)
+
+        def _fill_wide(self, table_id, rows, empty_msg, key_index=0, key_kind=None,
+                       width=None):
+            """Fill a wide table with the longest prefix of columns that fits.
+
+            Prefix, not priority re-ordering: both tables are already ordered most
+            essential first (name, total, then the cache detail), so dropping the
+            tail is the plan. The cells past the right edge used to be cut
+            mid-label with no keyboard way to reach them.
+            """
+            table = self.query_one(f"#{table_id}", DataTable)
+            labels, note_id, chrome = self.WIDE_TABLES[table_id]
+            self._wide_rows[table_id] = (rows, empty_msg, key_index, key_kind)
+            note = self.query_one(f"#{note_id}", Static)
+            width = width or self.size.width or table.region.width
+            if not width or not rows:
+                # Either the first layout has not happened yet (both are 0, and
+                # planning against 0 would drop everything) or there is nothing to
+                # protect: an empty-state row spans the whole label set.
+                self._set_columns(table, labels)
+                self._fill_or_empty(table, rows, empty_msg, key_index, key_kind)
+                note.update("")
+                note.display = False
+                if not width:
+                    self.call_after_refresh(self._plan_wide_tables)
+                return
+            widths = self._column_widths(labels, rows)
+            budget = width - chrome
+            keep = len(labels)
+            while keep > self.MIN_SHOWN and sum(widths[:keep]) + self.CELL_COST * keep > budget:
+                keep -= 1
+            self._set_columns(table, labels[:keep])
+            self._fill_or_empty(table, [r[:keep] for r in rows],
+                                empty_msg, key_index, key_kind)
+            if keep >= len(labels):
+                note.update("")
+                note.display = False
+                return
+            cuts = sum(widths[:keep]) + self.CELL_COST * keep > budget
+            note.update(f"{keep} of {len(labels)} columns · hidden: "
+                        f"{', '.join(labels[keep:])} · widen to "
+                        f"{sum(widths) + self.CELL_COST * len(labels) + chrome}"
+                        + (" · even these are cut" if cuts else ""))
+            note.display = True
+
+        def _plan_wide_tables(self, width=None) -> None:
+            """Re-plan from the cached rows — a resize must not re-query."""
+            for table_id, (rows, empty_msg, key_index, key_kind) in list(
+                    self._wide_rows.items()):
+                self._fill_wide(table_id, rows, empty_msg,
+                                key_index=key_index, key_kind=key_kind,
+                                width=width)
+
         def _fill_tools(self, conn, start=None, end=None) -> None:
             self._fill_or_empty(
                 self.query_one("#t-tools", DataTable),
@@ -596,7 +673,6 @@ if HAVE_TEXTUAL:
             # Reuses q_model_tokens; never re-parses transcripts and never mixes
             # in sessions.tokens (tokenDelta). Total = API total (provider total
             # when present). Usage Total is the display-only re-add of cache hit.
-            mt = self.query_one("#t-tokens", DataTable)
             rows = [[r["model"], fmt_n(r["usage_total_tokens"]),
                      f"{r['responses']:,}",
                      fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
@@ -605,8 +681,8 @@ if HAVE_TEXTUAL:
                      fmt_n(r["prompt_cache_miss_tokens"]),
                      fmt_n(r["prompt_cache_write_tokens"])]
                     for r in db.q_model_tokens(conn, start_ts=start, end_ts=end)]
-            self._fill_or_empty(mt, rows, "No model responses yet",
-                                key_kind="model")
+            self._fill_wide("t-tokens", rows, "No model responses yet",
+                            key_kind="model")
 
         # pane id -> the fill method for that tab (usage handled separately).
         _PANE_FILL = {
@@ -773,6 +849,20 @@ if HAVE_TEXTUAL:
         # than the terminal, so two columns stop fitting below 60.
         STACKED_WIDTH = 60
 
+        # The two tables with more columns than a narrow terminal has cells. Each
+        # entry is table id -> (every column in display order, the note that names
+        # what was dropped, the cells the table loses to its surroundings). All
+        # three numbers are measured, not guessed: at 80/100/160 columns the Tokens
+        # table's region is 2 cells narrower than the terminal and the Usage table's
+        # is 4 (its box is padded), and `virtual_size.width` equals
+        # `sum(content_width) + 2 * n_columns` on both.
+        WIDE_TABLES = {
+            "t-tokens": (TOKEN_COLUMNS, "colnote-tokens", 2),
+            "t-usage": (USAGE_COLUMNS, "colnote-usage", 4),
+        }
+        CELL_COST = 2         # a column's own content width plus its 2-cell gutter
+        MIN_SHOWN = 2         # never narrow a table down to a single unnamed column
+
         def _apply_responsive_layout(self, width=None) -> None:
             # Panels side by side on wide terminals; two-up when narrow; stacked
             # below that, where a second column would wrap a value mid-line. Every
@@ -793,6 +883,7 @@ if HAVE_TEXTUAL:
         def on_resize(self, event) -> None:  # textual.events.Resize
             # event.size carries the NEW size (self.size still lags here).
             self._apply_responsive_layout(event.size.width)
+            self._plan_wide_tables(event.size.width)
 
         def _range_of(self, pane):
             """The window key for a pane, or ``None`` for the all-time Plugins
@@ -1095,9 +1186,8 @@ if HAVE_TEXTUAL:
             ] for r in rows]
             # The shared empty state, like the other seven tables: a note above an
             # untouched table reads as a page that failed to load.
-            self._fill_or_empty(
-                self.query_one("#t-usage", DataTable), out,
-                "No requests in this window — widen the range above.")
+            self._fill_wide("t-usage", out,
+                            "No requests in this window — widen the range above.")
 
         def on_select_changed(self, event: Select.Changed) -> None:
             if event.select.id != "range":
