@@ -25,11 +25,12 @@ counts are printed by the check, never copied into this file.
 > the one hash, and each names the specific test or measurement that proves its own half. Future rounds
 > should commit by concern instead of making this note necessary.
 >
-> It happened once more, which is the honest reason this heading is plural now. D-022 and D-023 cite
-> `20ffd24`, a `feat(config)` commit carrying one repair to a path that had **already shipped** and one
-> guard for a feature that was dead until its test moved onto the path a user actually takes. Both were
-> found in the same function as the feature and are recorded separately anyway: an entry a reader can
-> search for is worth more than a tidy commit graph.
+> It has happened twice since, which is the honest reason this heading is plural now. D-022 and D-023
+> cite `20ffd24`, a `feat(config)` commit carrying one repair to a path that had **already shipped** and
+> one guard for a feature that was dead until its test moved onto the path a user actually takes. D-024
+> cites `86d4220`, a `feat(tui)` commit that withdraws a sentence both READMEs had been asserting about
+> scrolling — a promise the code never kept. Both were found in the same function as the feature and are
+> recorded separately anyway: an entry a reader can search for is worth more than a tidy commit graph.
 
 `kind` ∈ `fix` | `perf` | `taste` | `guard` | `revert` | `chore` — see AGENTS.md § Recording
 conventions for the cut.
@@ -365,4 +366,32 @@ Cost     AGENTS.md already requires a failing case for every behaviour change; w
          the case has to sit — on the path the user takes, not on the constructor. A dict-injection
          test stays useful and simply cannot be the only one
 Commit   20ffd24
+
+### D-024 · 2026-10-10 · taste
+Symptom  The two wide tables were cut rather than planned. Measured at 80×24: Tokens rendered **6 of 9**
+         columns, Usage **5 of 10**, the rest clipped past the right edge mid-label — and unreachable,
+         because `right`, `ctrl+right`, `shift+right` and `end` each left `scroll_x` at 0.0 (only a
+         programmatic `scroll_right()` moved it). Both READMEs asserted the opposite: the cache columns
+         are "reachable by horizontal scroll". That claim is withdrawn, not softened
+Change   A column plan: fill the longest **prefix** of the table's columns that fits, and name the
+         dropped ones on a line above the table, with the width that would show everything. Prefix and
+         not re-ordering because both tables already put the essential columns leftmost, so the tail is
+         exactly what a narrow terminal should not be paying for. Widths are measured from the rows (a
+         column costs its content width + a 2-cell gutter; the table loses 2 cells — Tokens — or 4 —
+         Usage — to its surroundings), never from a constant baked in for the current data. A resize
+         re-plans from cached rows instead of re-querying
+Evidence L0 four cases, red before green: at 80×24 each table shows fewer columns than it has **and**
+         what it shows fits its own region **and** the note names every hidden column with matching
+         numbers; at 160×30 nothing is dropped and the note is empty (the control that keeps the note
+         from becoming decoration); widening hands the columns back with the row count intact; and a
+         rebuilt row still routes to its model's detail screen, because the row key is the thing a
+         cut-and-rebuilt table could silently lose. The note's own honesty was proved the same way as
+         D-022's: with `height: 1` the case fails on `'Cache write' not found in '… Cache hit, Cache
+         miss, Cache'`, so `height: auto` is a measured answer and not a preference
+Cost     The note costs a row when it wraps (at 80×24 the Usage table keeps 9 rows instead of 10, with
+         a test floor of 6), and a width-band change resets the table cursor, because restoring a
+         highlight across `clear(columns=True)` would need the key re-derived. Four value tests that
+         read cells by position now ask for a 160-column terminal — on a narrow one those columns are
+         legitimately absent, and asserting against a column that was never drawn proves nothing
+Commit   86d4220
 
