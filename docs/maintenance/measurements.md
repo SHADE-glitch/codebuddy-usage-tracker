@@ -34,7 +34,7 @@ PY
 |---|---|
 | file size | ≈ 15 MiB |
 | page size / count | 4 KiB × ≈ 3.8k pages |
-| freelist | ≈ 20 pages (tens of KiB reclaimable by `VACUUM`) |
+| freelist | ≈ 20 pages before the v6 index drop; **≈ 570 pages (≈ 2.2 MiB) after it** — dropping an index returns its pages to the freelist, it does **not** shrink the file. `VACUUM` would, and it is not worth running for 2.2 MiB |
 | journal / synchronous | `wal` / `2` (FULL) |
 | auto_vacuum | `0` (none) |
 | `PRAGMA user_version` | `0` — unused by design; the schema version lives in `meta` |
