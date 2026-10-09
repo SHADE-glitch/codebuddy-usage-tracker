@@ -80,7 +80,7 @@ python3 -c "import sqlite3; print(sqlite3.sqlite_version)"   # needs >= 3.35
 |---|---|
 | Record shapes, field names and on-disk layout | **verified against the logs on this machine** — see [`codebuddy-format.md`](codebuddy-format.md); `test_format_registry.py` holds the code and that list together |
 | `dpkg` reports `codebuddy-cn 4.12.0` | the **IDE** package, not the CLI whose logs are read. Do not cite it as the log format's version |
-| README badge "CodeBuddy 2.16x — schema verified against 2.161.4" | **source not machine-confirmable.** The CLI is launched through a shell alias here, its version is not readable from the logs, and no transcript line carries a version field. The number needs its origin stated before it can be kept as a claim |
+| A CodeBuddy **version number** (e.g. "2.161.4") | **not machine-confirmable here, so not claimed.** The CLI is launched through a shell alias, no transcript line carries a `version`/`clientVersion`/`appVersion` field (measured: 0 hits), and `dpkg` only proves the IDE package. The READMEs used to print "schema verified against 2.161.4"; that claim was removed because nothing here can re-derive it — the verified statement is "the schema matches the logs on this machine". If the owner supplies the source, put the number back with its provenance attached |
 | Log volume actually parsed | ≈ 500 `projects/**/*.jsonl` transcripts. `traces/` (≈ 1.4k `.jsonl` + ≈ 0.7k `.json`) is **not** ingested. Exact counts are personal usage data — see [`measurements.md`](measurements.md) for the rounding rule and the commands that reprint them |
 
 If CodeBuddy's log layout changes, the symptom is a panel going empty while `cbut sync` reports

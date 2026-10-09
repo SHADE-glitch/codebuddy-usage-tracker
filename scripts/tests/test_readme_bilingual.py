@@ -24,9 +24,27 @@ ZH = ROOT / "README.zh-CN.md"
 
 H2_RE = re.compile(r"^## ", re.M)
 
+# GitHub's anchor: lowercase, drop everything that is not a letter, digit, space or
+# hyphen, then spaces to hyphens. Emoji disappear with it — but the variation selector
+# and zero-width joiner *survive*, hiding inside the anchor. Stripping them (the obvious
+# regex) reports every emoji heading as a broken link: a false positive on 28/28 entries.
+_ANCHOR_KEEP = re.compile(r"[^\w \-️‍]+", re.U)
+TOC_LINK = re.compile(r"^\s*-\s*\[[^\]]*\]\(#([^)]+)\)", re.M)
+HEADING = re.compile(r"^#{2,3}\s+(.*)$", re.M)
+
 
 def read(path):
     return path.read_text(encoding="utf-8")
+
+
+def anchor_of(heading):
+    return _ANCHOR_KEEP.sub("", heading.strip().lower()).replace(" ", "-")
+
+
+def dead_toc_links(text):
+    """In-page TOC links with no matching heading — the class this guard owns."""
+    anchors = {anchor_of(m.group(1)) for m in HEADING.finditer(text)}
+    return [link for link in TOC_LINK.findall(text) if link not in anchors]
 
 
 def h2_count(text):
@@ -64,6 +82,29 @@ class TestReadmeBilingual(unittest.TestCase):
                 other, head,
                 "%s must offer the language switcher (%s) before its first '##' section"
                 % (path.name, other))
+
+
+    def test_every_toc_link_resolves_to_a_heading(self):
+        """A TOC entry whose heading was deleted renders as a dead link on GitHub.
+
+        Deleting a section is the mistake this catches: the section-count test above
+        only compares the two files against each other, so removing one section from
+        *both* READMEs passes it while leaving both tables of contents pointing at
+        nothing. Includes its own control — an instrument that cannot report a known
+        dead link is not guarding anything.
+        """
+        for path in (EN, ZH):
+            dead = dead_toc_links(read(path))
+            self.assertEqual(
+                dead, [],
+                "%s links these anchors with no heading: %s" % (path.name, dead))
+
+        control = "## 🧹 Uninstall\n\n- [🤝 Contributing](#-contributing)\n"
+        self.assertEqual(dead_toc_links(control), ["-contributing"],
+                         "the checker cannot see a dead link, so it proves nothing")
+        real = "## 🧹 Uninstall\n\n- [🧹 Uninstall](#-uninstall)\n"
+        self.assertEqual(dead_toc_links(real), [],
+                         "the checker reports a dead link that is not dead")
 
 
 if __name__ == "__main__":

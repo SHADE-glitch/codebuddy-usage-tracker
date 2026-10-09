@@ -1,6 +1,6 @@
 # 🐾 CodeBuddy Usage Tracker (`cbut`)
 
-![CodeBuddy](https://img.shields.io/badge/CodeBuddy-2.16x-blue?logo=robotframework&logoColor=white)
+![CodeBuddy](https://img.shields.io/badge/CodeBuddy-reads%20local%20logs-blue?logo=robotframework&logoColor=white)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue?logo=python&logoColor=white)
 ![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite&logoColor=white)
 ![Textual](https://img.shields.io/badge/TUI-Textual-ff69b4?logo=terminal&logoColor=white)
@@ -29,7 +29,6 @@
 - [📁 Repository layout](#-repository-layout)
 - [⚠️ Limitations & roadmap](#️-limitations--roadmap)
 - [🧹 Uninstall](#-uninstall)
-- [🤝 Contributing](#-contributing)
 - [🙏 Attribution](#-attribution)
 - [📄 License](#-license)
 
@@ -152,7 +151,7 @@ the transcripts on disk:
 | | |
 |---|---|
 | 🐧 OS | Linux — developed and verified on Ubuntu; other distributions **unverified** |
-| 🐾 CodeBuddy | 2.16x — schema verified against 2.161.4 |
+| 🐾 CodeBuddy | CodeBuddy Code — the schema is verified against **the logs on your machine**, not against a version number: no transcript line carries one, and the CLI here is launched through a shell alias, so its version is not machine-confirmable. See [`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md#codebuddy) |
 | 🐍 Python | 3.11+ — the full suite run green on **3.11, 3.12, 3.13 and 3.14** (CI runs 3.12). Headless commands need only the stdlib |
 | 🖥️ `textual` | only for the interactive TUI (installed by `install.sh`) |
 
@@ -223,7 +222,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 272 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 273 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -243,7 +242,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `test_maintenance_docs.py` | 9 | the generated format doc cannot drift from the code |
 | `test_readme_counts.py` | 4 | the suite table above is the suite table the runner would print |
 | `test_record_coverage.py` | 6 | every covered commit is recorded in `CHANGELOG.md` |
-| `test_readme_bilingual.py` | 3 | the two READMEs stay one document in two languages |
+| `test_readme_bilingual.py` | 4 | the two READMEs stay one document in two languages, and every table-of-contents link has a heading to land on |
 
 `test_readme_counts.py` is what keeps this table honest: a suite added without a row, or a row left
 at an old number, fails the suite.
@@ -258,7 +257,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 272 tests above |
+| `scripts/tests/` | the 273 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, and the size & performance baseline with the commands that produced it |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
@@ -297,17 +296,6 @@ rm -rf ~/.local/share/codebuddy-usage-tracker                      # the SQLite 
 
 Deleting the repository directory (with its `.venv`) finishes it. CodeBuddy's own files
 were only ever read, so there is nothing to restore there. 🗑️
-
-## 🤝 Contributing
-
-Issues and pull requests are welcome — 🐛 a mis-classified tool, 📈 a window that adds up
-wrong, or 💡 a report you would want that isn't there. Two things keep a change landing:
-
-- run `python3 -m unittest discover -s scripts/tests` first, and add a case alongside a
-  behaviour change;
-- keep the two guarantees intact: **read-only** towards CodeBuddy's logs, and **metadata
-  only** in the database. A PR that stores prompt text or argument values is off-purpose,
-  however useful it looks.
 
 ## 🙏 Attribution
 

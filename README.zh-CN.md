@@ -1,6 +1,6 @@
 # 🐾 CodeBuddy 使用追踪器（`cbut`）
 
-![CodeBuddy](https://img.shields.io/badge/CodeBuddy-2.16x-blue?logo=robotframework&logoColor=white)
+![CodeBuddy](https://img.shields.io/badge/CodeBuddy-reads%20local%20logs-blue?logo=robotframework&logoColor=white)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue?logo=python&logoColor=white)
 ![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite&logoColor=white)
 ![Textual](https://img.shields.io/badge/TUI-Textual-ff69b4?logo=terminal&logoColor=white)
@@ -29,7 +29,6 @@
 - [📁 仓库结构](#-仓库结构)
 - [⚠️ 限制与路线图](#️-限制与路线图)
 - [🧹 卸载](#-卸载)
-- [🤝 参与贡献](#-参与贡献)
 - [🙏 致谢](#-致谢)
 - [📄 许可](#-许可)
 
@@ -114,7 +113,7 @@ Usage tab 仿照会话用量面板的样式，但每个数字都来自磁盘上�
 | | |
 |---|---|
 | 🐧 系统 | Linux —— 在 Ubuntu 上开发验证；其他发行版**未验证** |
-| 🐾 CodeBuddy | 2.16x —— schema 按 2.161.4 实测 |
+| 🐾 CodeBuddy | CodeBuddy Code —— schema 是**按你本机的日志**实测的，不是按版本号：转录行里没有任何版本字段，而本机 `codebuddy` 是 shell alias，版本号取不到。详见 [`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md#codebuddy) |
 | 🐍 Python | 3.11+ —— 全套在 **3.11 / 3.12 / 3.13 / 3.14** 上均跑绿（CI 跑的是 3.12）。无头命令只需标准库 |
 | 🖥️ `textual` | 仅交互式 TUI 需要（由 `install.sh` 安装） |
 
@@ -181,7 +180,7 @@ cbut format              # 🧾  本工具依赖的 CodeBuddy 字段与路径
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 272 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 273 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -200,7 +199,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 272 tests ... OK
 | `test_maintenance_docs.py` | 9 | 生成的格式依赖文档不可能与代码脱节 |
 | `test_readme_counts.py` | 4 | 上面这张表就是运行器会打印的那张表 |
 | `test_record_coverage.py` | 6 | 每个被覆盖的提交都记录进 `CHANGELOG.md` |
-| `test_readme_bilingual.py` | 3 | 两份 README 始终是「一份文档、两种语言」 |
+| `test_readme_bilingual.py` | 4 | 两份 README 始终是「一份文档、两种语言」，且目录里每个链接都落得到真实标题 |
 
 `test_readme_counts.py` 负责让这张表不说谎：新增套件却不加行、或行里的数字过期，套件就会红。
 
@@ -214,7 +213,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 272 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 272 个用例 |
+| `scripts/tests/` | 上面那 273 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、以及体积与性能的固定度量法和基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
@@ -244,15 +243,6 @@ rm -rf ~/.local/share/codebuddy-usage-tracker                      # SQLite 索�
 
 再把仓库目录（连同它的 `.venv`）删掉就干净了。CodeBuddy 自己的文件从头到尾只被读过，
 没有需要恢复的东西。🗑️
-
-## 🤝 参与贡献
-
-欢迎 issue 和 pull request —— 🐛 某个工具归类错了、📈 某个窗口算得不对、💡 缺你想要的一份
-报告，都可以。两点能让改动顺利合进来：
-
-- 先跑 `python3 -m unittest discover -s scripts/tests`；改了行为就配一个能复现该行为的用例；
-- 守住两条承诺：对 CodeBuddy 日志**只读**，库里**只存元数据**。存提示词正文或参数值的 PR
-  与这个项目的目的相悖，看起来再有用也不收。
 
 ## 🙏 致谢
 

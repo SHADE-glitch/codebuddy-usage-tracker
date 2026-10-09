@@ -151,6 +151,11 @@ tool runs from a checkout, so the version only needs to move when a documented c
 - **Code and user-facing output are English** (identifiers, comments, CLI/TUI text).
 - **Docs are bilingual**: `README.md` (English, landing page) and `README.zh-CN.md` (Chinese).
   Edit both together and keep section order aligned; a section added on one side alone is drift.
+- **A behaviour change ships with a case that fails without it.** Not a style preference — the rule
+  that made this round's worst bug visible: the parser change that emptied the Commands panel passed
+  every test, because every command fixture took the *other* branch. If no test goes red when you undo
+  the change, the change is not verified yet (and provoke it: remove the fix on purpose and read the
+  failure).
 - Commit messages follow Conventional Commits (`feat:` / `fix:` / `docs:` / `chore:`), code before
   docs.
 
