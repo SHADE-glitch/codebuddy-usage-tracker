@@ -287,12 +287,14 @@ Change   `docs/maintenance/` — the generated format list, a version matrix tha
          rounded because exact volumes of a personal index are personal data. `AGENTS.md` gained
          "Invariants and how to check them" and "Format coupling", and its stale rules were deleted or
          rewritten rather than appended to. README's counts, both languages, are pinned by
-         `test_readme_counts.py`
+         `test_readme_counts.py`. The same rounding applies inside the code: the unclaimed-types comment
+         in the registry printed per-machine counts, and now states the order of magnitude and points at
+         `cbut health` for whoever owns the real figures
 Evidence L0 `test_maintenance_docs.py` fails if the generated block drifts from the registry;
          `test_readme_counts.py` compares every README row against the loader; every command published
          in these files was run, including the dependency scan whose output corrected the earlier
          "Textual imports socket/ssl" sentence — measured: no installed package imports `socket`/`ssl`
 Cost     More documentation, each tied to a command. A page that is not generated or checked is a page
          this round refuses to add
-Commit   673255c
+Commit   673255c 4d0f8ab
 
