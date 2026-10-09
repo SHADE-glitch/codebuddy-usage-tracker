@@ -338,8 +338,9 @@ Evidence L0 `test_config.py::HealthSurfaceTest.test_health_reports_the_database_
          real CLI in a child process and asserts both halves — the given path appears **and** the
          default path does not. Red was proved after the fact, not assumed: the old line was
          re-introduced, the case failed with `'/tmp/tmpfo6p7qb_/u.db' not found in '… db path
-         /home/shade/.local/share/…'`, and `git diff --exit-code` then confirmed the file back at its
-         committed bytes
+         ~/.local/share/codebuddy-usage-tracker/usage.db'` (the leading home directory is elided here,
+         as everywhere else in this record — the failure printed it in full), and `git diff --exit-code`
+         then confirmed the file back at its committed bytes
 Cost     Nothing structural. The point of recording it is that `health` is the command used to find
          out which database is being read, so a wrong path there casts doubt on every number printed
          above it
