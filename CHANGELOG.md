@@ -16,7 +16,7 @@ counts are printed by the check, never copied into this file.
 > `docs:` commit that also corrected stale CLI help, D-002 a `fix:` — coverage follows the touched
 > paths and the `feat` exclusion, not the author's intent.
 >
-> **The one exception, and why it is honest.** D-006…D-020 all cite `673255c`, whose subject is `feat:`
+> **The exceptions, and why they are honest.** D-006…D-020 all cite `673255c`, whose subject is `feat:`
 > and which the class rule above would therefore skip. It was landed as a single bundled commit, and
 > inside it are repairs and guards, not product: a promise the code had already broken, an upstream
 > change that emptied panels silently, destructive steps with no rollback, and a regression that one
@@ -24,6 +24,12 @@ counts are printed by the check, never copied into this file.
 > exactly the case where the class stops describing the content — so the entries are recorded against
 > the one hash, and each names the specific test or measurement that proves its own half. Future rounds
 > should commit by concern instead of making this note necessary.
+>
+> It happened once more, which is the honest reason this heading is plural now. D-022 and D-023 cite
+> `20ffd24`, a `feat(config)` commit carrying one repair to a path that had **already shipped** and one
+> guard for a feature that was dead until its test moved onto the path a user actually takes. Both were
+> found in the same function as the feature and are recorded separately anyway: an entry a reader can
+> search for is worth more than a tidy commit graph.
 
 `kind` ∈ `fix` | `perf` | `taste` | `guard` | `revert` | `chore` — see AGENTS.md § Recording
 conventions for the cut.
@@ -316,4 +322,47 @@ Cost     The file did not get smaller — dropping an index returns pages to the
          `VACUUM` hands them back, which is not worth running for 2.2 MiB. If a session-detail screen
          is ever built, the guard above fails first and the index is one `CREATE INDEX` away
 Commit   d75ad24
+
+### D-022 · 2026-10-09 · fix
+Symptom  `cbut health` printed the **default** database path whatever `--db` was handed. Pointed at a
+         throwaway file it answered under `db path` with
+         `~/.local/share/codebuddy-usage-tracker/usage.db` — while every line below it (transcript
+         files, indexed rows, last activity, unparsed) came from the connection `--db` had opened. The
+         one line that says *which database you are reading* was the one that did not know
+Change   print `args.db`. It landed inside a `feat:` commit rather than as its own `fix:` because it
+         was found while writing the settings line that now sits next to it in the same function; the
+         class exclusion would have hidden a repair to something that had already shipped, so it is
+         recorded against that hash
+Evidence L0 `test_config.py::HealthSurfaceTest.test_health_reports_the_database_it_was_handed` runs the
+         real CLI in a child process and asserts both halves — the given path appears **and** the
+         default path does not. Red was proved after the fact, not assumed: the old line was
+         re-introduced, the case failed with `'/tmp/tmpfo6p7qb_/u.db' not found in '… db path
+         /home/shade/.local/share/…'`, and `git diff --exit-code` then confirmed the file back at its
+         committed bytes
+Cost     Nothing structural. The point of recording it is that `health` is the command used to find
+         out which database is being read, so a wrong path there casts doubt on every number printed
+         above it
+Commit   20ffd24
+
+### D-023 · 2026-10-09 · guard
+Symptom  The settings layer was dead on arrival in the app it was written for: `main()` built
+         `TrackerApp` without ever calling `load_config()`. A written `config.toml` changed nothing, a
+         syntactically broken one stopped nothing — the TUI started on defaults and printed the escape
+         codes of a live interface. The suite was green throughout, because the test that called
+         itself "wiring" handed the constructor a **dict** and so never walked the path a user takes
+Change   `main()` passes `config=db.load_config()`. The case covering it drives `main()` with
+         `TrackerApp.run` replaced — not as a mocking preference but because the unhypothetical
+         alternative in a test is a real event loop that blocks forever, and a regression that ignored
+         the file would then show up as a hang rather than as a failure
+Evidence L0 `CliWiringTest`, run red first and observed red (`(5, 100, 200) != (3, 25, 50)`, and
+         `0 != 2` where exit 2 was required) before the one-line change made it green: a file's
+         `top_n` / `log_limit` / `detail_limit` reach the app through `main()`; no file at all keeps
+         the shipped defaults; a broken file returns 2 naming the path and never reaches `run()`.
+         Also proved outside the harness — `CBUT_CONFIG=<broken file>` against a real database exits 2
+         with `your settings are not usable: /tmp/bad-cbut.toml: not valid TOML (Invalid value (at
+         line 1, column 9))` in 166 bytes of stderr, no terminal escape codes, i.e. nothing started
+Cost     AGENTS.md already requires a failing case for every behaviour change; what this adds is where
+         the case has to sit — on the path the user takes, not on the constructor. A dict-injection
+         test stays useful and simply cannot be the only one
+Commit   20ffd24
 
