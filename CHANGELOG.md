@@ -456,3 +456,37 @@ Cost     Suite 303 → 304. The guard pins coverage, not the count: no test asse
          tenth table should fail a test for being unplanned, not for being one past a number in some
          prose. What changed is where a future count has to come from — the source walk, not memory
 Commit   57190c4
+
+
+### D-027 · 2026-10-10 · taste
+Symptom  The column plan had a floor it could not raise: when two name columns alone were wider than
+         the terminal, the honest note still described a table that was cut (`even these are cut`),
+         and on real data one column caused it. Measured on this machine's database, read-only from a
+         `/tmp` copy since deleted — tool median 9 / max 22, model max 24, agent max 20, plugin max 19,
+         skill max 28, **project path median 16 but max 74, with 162 of 482 rows over 24**. So the
+         cap is not for names at all: it is for the one column whose beginning is the same in every
+         row and whose end is the only part that distinguishes them
+Change   `_cap_cell` fits a cell to `NAME_CAP = 28`, keeping the **end** of anything containing `/`
+         and the **head** of everything else; the cap is chosen as a measurement, with the per-column
+         numbers written next to it in the source. It engages only when the table would otherwise lose
+         a column — the plan tries the real widths first, so a wide terminal never loses characters —
+         and when it engages the note says `cells capped at 28` rather than going quiet. A row keeps
+         being keyed from the **uncapped** value (`key_rows`), because two entities sharing the visible
+         prefix must still route apart
+Evidence L0 four cases, three of them red before the code existed: a 74-cell path no longer pushes
+         columns off an 80-wide History screen and each cell ends `…` with the distinguishing tail
+         intact; a name without a slash keeps its head; the note says `cells capped at 28` when it cut
+         characters but hid no column; and two tools whose names share 28 visible characters still open
+         their own detail screen. The last case was proved non-vacuous without editing the product:
+         an in-memory variant that keyed rows from the capped cells was run against the real app and
+         Textual refused the table outright — `DuplicateKey: The row key … already exists.` Two further
+         reds were the product's fault and stayed red until fixed: the cap first fired on wide
+         terminals (`t-skills hides nothing and still warns`), and it compared rendered cells against
+         raw ints, reporting a phantom cap on every numeric column
+Cost     Suite 308, all four interpreters re-run. Real-data effect at 80×24: History 2/5 → 5/5 columns,
+         nothing else changes (Tokens 5/9, Usage 5/10, Model responses 6/12); at 60×24 History goes
+         2/5 → 3/5 and that page no longer needs the floor clause either. What the cap does **not** fix
+         is a table whose label row alone exceeds the terminal, or a reader who needs the whole path:
+         the full value is on disk and in the row key, not on the screen — widening past the plan's
+         `widen to N` figure brings back columns, and only an uncapped cell brings back characters
+Commit   8aa6987
