@@ -1,3 +1,5 @@
+<p align="right"><a href="README.md"><b>English</b></a> | <a href="README.zh-CN.md">简体中文</a></p>
+
 # 🐾 CodeBuddy Usage Tracker (`cbut`)
 
 ![CodeBuddy](https://img.shields.io/badge/CodeBuddy-reads%20local%20logs-blue?logo=robotframework&logoColor=white)
@@ -10,8 +12,6 @@
 
 > 🔭 See how you **actually** use [CodeBuddy Code](https://cnb.cool/codebuddy/codebuddy-code) —
 > every 🧰 built-in tool, 🎯 skill, 🤖 agent, 🧩 plugin and 🔌 MCP tool.
-
-**English** · [简体中文](README.zh-CN.md)
 
 ---
 

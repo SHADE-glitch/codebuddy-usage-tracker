@@ -1,3 +1,5 @@
+<p align="right"><a href="README.md">English</a> | <a href="README.zh-CN.md"><b>简体中文</b></a></p>
+
 # 🐾 CodeBuddy 使用追踪器（`cbut`）
 
 ![CodeBuddy](https://img.shields.io/badge/CodeBuddy-reads%20local%20logs-blue?logo=robotframework&logoColor=white)
@@ -10,8 +12,6 @@
 
 > 🔭 看清你**真正**是怎么用 [CodeBuddy Code](https://cnb.cool/codebuddy/codebuddy-code) 的 ——
 > 每一个 🧰 内置工具、🎯 skill、🤖 agent、🧩 插件和 🔌 MCP 工具。
-
-[English](README.md) · **简体中文**
 
 ---
 
