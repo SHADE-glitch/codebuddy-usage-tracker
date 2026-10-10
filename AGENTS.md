@@ -214,8 +214,8 @@ tool runs from a checkout, so the version only needs to move when a documented c
   `no_settings_env()`, which hides **every name derived from `db.ENV_NAMES`** (a hand-copied list is how
   the next key gets forgotten here too), and the check is that the whole suite is run twice: once clean,
   once with every setting set to a hostile value. Five cases were red that way before the helper existed.
-- Commit messages follow Conventional Commits (`feat:` / `fix:` / `docs:` / `chore:`), code before
-  docs.
+- Commit messages are **English** and follow Conventional Commits (`feat:` / `fix:` / `docs:` /
+  `chore:`), code before docs.
 
 ## Recording conventions
 - **`feat` commits are out of scope, by class.** This is an original project with no upstream, so a
