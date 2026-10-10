@@ -131,7 +131,7 @@ Usage tab 仿照会话用量面板的样式，但每个数字都来自磁盘上�
 |---|---|
 | 🐧 系统 | Linux —— 在 Ubuntu 上开发验证；其他发行版**未验证** |
 | 🐾 CodeBuddy | CodeBuddy Code —— schema 是**按你本机的日志**实测的，不是按版本号：转录行里没有任何版本字段，而本机 `codebuddy` 是 shell alias，版本号取不到。详见 [`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md#codebuddy) |
-| 🐍 Python | 3.11+ —— 全套在 **3.11 / 3.12 / 3.13 / 3.14** 上均跑绿（CI 跑的是 3.12）。无头命令只需标准库 |
+| 🐍 Python | 3.11+ —— 全套在 **3.11 / 3.12 / 3.13 / 3.14** 上均跑绿（CI 跑的是 3.11 和 3.14）。无头命令只需标准库 |
 | 🖥️ `textual` | 仅交互式 TUI 需要（由 `install.sh` 安装） |
 
 ## 🚀 安装

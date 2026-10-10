@@ -2,6 +2,14 @@
 
 Guidance for AI coding agents working in this repository.
 
+> **Shared standard.** Root file names, the process-draft location (`docs/reports/`), the
+> `CHANGELOG` entry format, CI version pinning and entry commands, the test entry command, and
+> the runtime ignore list are defined once in the machine-wide `STANDARD.md` (outside this
+> repository) and are not restated here.
+>
+> **Push over SSH, never HTTPS.** Verify `git remote get-url --push origin` starts with `git@`
+> before pushing; if it starts with `https://`, fix it first — never push over HTTPS.
+
 ## What this is
 
 A **passive** usage tracker for CodeBuddy Code: it parses the logs CodeBuddy already writes and
@@ -39,7 +47,7 @@ Single file: `python3 -m unittest scripts.tests.test_sync` (or the matching `pyt
 
 ## CI
 
-GitHub Actions runs on every `push` and `pull_request` (`.github/workflows/ci.yml`, Python 3.12):
+GitHub Actions runs on every `push` and `pull_request` (`.github/workflows/ci.yml`, Python matrix of **3.11 and 3.14** — the floor and the declared upper bound):
 
 ```bash
 python3 -m pip install -r requirements.txt
@@ -53,12 +61,12 @@ The checkout must fetch full history (`fetch-depth: 0`): the record-coverage tes
 the L0 verification tier below, so a change that fails here fails everywhere. Run it locally before
 pushing — do not leave the first run to CI.
 
-**Green CI does not certify the interpreter you are using.** CI runs Python 3.12; this repository's
+**Green CI does not certify the interpreter you are using.** CI runs Python 3.11 and 3.14; this repository's
 local venv is created at 3.13 (`install.sh`) and the system `python3` may be newer — the version
 matrix and what each number means live in
 [`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md). If a change depends on
 interpreter behaviour, say which version you actually ran, and consider widening the CI matrix
-rather than assuming 3.12 speaks for all of them.
+rather than assuming those two speak for all of them.
 
 - **Keep CI in step with the code.** Update `.github/workflows/ci.yml` in the *same change* that
   makes it stale — never as a later cleanup.
@@ -169,14 +177,14 @@ tool runs from a checkout, so the version only needs to move when a documented c
   before it can be counted honestly.
 - **Never commit runtime state or working notes**: `usage.db`, `.venv/`, `__pycache__/`, generated
   systemd units in user paths, and the session reports — `STATE.md`, `PROFILE.md`, `AUDIT.md`,
-  `PLAN.md`, `VERIFY.md`. Those five are working documents, not artifacts: the repository is
-  public, and they contain real paths, real counts and open defects. `.gitignore` covers them; if a
-  check needs to change and it starts matching a file that should stay local, fix the ignore list
-  in the same commit. Long-lived maintenance material goes in `docs/maintenance/` and *is* committed.
+  `PLAN.md`, `VERIFY.md` — which live under `docs/reports/` and are ignored by a non-anchored
+  `reports/` rule. Those are working documents, not artifacts: the repository is public, and they
+  contain real paths, real counts and open defects. If a check needs to change and it starts
+  matching a file that should stay local, fix the ignore list in the same commit. Long-lived
+  maintenance material goes in `docs/maintenance/` and *is* committed.
 
 ## Conventions
 
-- **Code and user-facing output are English** (identifiers, comments, CLI/TUI text).
 - **Docs are bilingual**: `README.md` (English, landing page) and `README.zh-CN.md` (Chinese).
   Edit both together and keep section order aligned; a section added on one side alone is drift.
 - **Settings are read once, in one place.** `db.load_config()` resolves environment > file >
@@ -210,9 +218,6 @@ tool runs from a checkout, so the version only needs to move when a documented c
   docs.
 
 ## Recording conventions
-- Repairs, performance work, drift guards and withdrawals land in
-  [`CHANGELOG.md`](CHANGELOG.md) as `D-###` entries; ids are monotonic and never reused, so a gap
-  means an entry was deleted and the check fails rather than calling it cleanup.
 - **`feat` commits are out of scope, by class.** This is an original project with no upstream, so a
   feature is the product, not a droppable deviation — features are documented in the READMEs. The
   exclusion is one regex over the commit subject inside the check; it must not decay into a
@@ -223,8 +228,6 @@ tool runs from a checkout, so the version only needs to move when a documented c
   earlier work → `revert`; cleanup owed nothing either way → `chore`.
 - **An empty covered window is legal only when the header says so.** If the window contains covered
   commits but the record has no entries, the check fails: a pass over an empty set proves nothing.
-- An entry is an assertion **as of its commit**, not current state. Never re-verify an old entry;
-  never hand-copy an aggregate count here — the check and the test suite print them.
 - **Verification tiers** (named by what the claim needs, not by the tool): **L0** =
   `python3 -m unittest discover -s scripts/tests` (temp database, no host), **L1** = a throwaway
   store outside the repository (`--db /tmp/…`) fed by the real logs or by copied logs, **L2** = the

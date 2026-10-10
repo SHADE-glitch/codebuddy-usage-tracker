@@ -175,7 +175,7 @@ the transcripts on disk:
 |---|---|
 | 🐧 OS | Linux — developed and verified on Ubuntu; other distributions **unverified** |
 | 🐾 CodeBuddy | CodeBuddy Code — the schema is verified against **the logs on your machine**, not against a version number: no transcript line carries one, and the CLI here is launched through a shell alias, so its version is not machine-confirmable. See [`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md#codebuddy) |
-| 🐍 Python | 3.11+ — the full suite run green on **3.11, 3.12, 3.13 and 3.14** (CI runs 3.12). Headless commands need only the stdlib |
+| 🐍 Python | 3.11+ — the full suite run green on **3.11, 3.12, 3.13 and 3.14** (CI runs 3.11 and 3.14). Headless commands need only the stdlib |
 | 🖥️ `textual` | only for the interactive TUI (installed by `install.sh`) |
 
 ## 🚀 Install
