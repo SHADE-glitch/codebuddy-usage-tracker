@@ -611,3 +611,30 @@ Cost     Suite 316 (this file 4 → 5). What it does not buy: the case proves th
          shipping while invisible in both languages
 Commit   6459bb7
 
+### D-032 · 2026-10-10 · guard
+Symptom  AGENTS.md promises "Tests never touch real state" — each suite builds a throwaway database in a
+         temp directory and the live `usage.db` is never opened — but the promise had no check. It has
+         been broken once (a dispatcher test ran a real `cbut sync --full` against the live store), and
+         on 2026-10-10 a moved `usage.db` mtime cost an hour: nothing in the repository could say whether
+         a test had opened it (it was the maintainer's own TUI session). A rule with no check is a
+         preference, and a wrong guess about it costs an hour
+Change   `_hermetic.py` installs a process-wide `sys.addaudithook` that refuses a `sqlite3.connect`
+         naming the real database (the read-only `file:...?mode=ro` form included — the rule is "never
+         opened", not "never written") and a `subprocess.Popen` that would run one of our entry points
+         without `CBUT_DB` or `--db` steering it away. Every `test_*.py` imports it, and
+         `test_hermetic.py` fails on any module that stops. The launch test reads argv, not raw text: a
+         `git` pathspec (`git log -- bin/cbut`) and a `bash -n bin/cbut` syntax check name an entry point
+         without executing one, and refusing those would be a false positive the suite would answer with
+         meaningless `CBUT_DB` pins. No production code moved
+Evidence L0 2026-10-10: `python3 -m unittest discover -s scripts/tests` — `Ran 326`, `OK`. The coverage
+         case is red before the twelve modules import the tripwire and green after; the enforcement cases
+         carry their own controls (a `CBUT_DB`-pinned child and an unrelated `python -c` are allowed, so
+         a hook that refused every subprocess would fail the pair). With the text rule instead of argv
+         the same run was `failures=3, errors=4` — the four errors came from a `git` call (twice), the
+         `bash -n` check and the crash child, none of which runs our code
+Cost     Suite 316 → 326 (test_hermetic.py: new, 10 cases). What it does not buy: the hook is in-process,
+         so a child that opens the real database directly is caught only by the launch test, and that
+         test decides from argv — an inline `bash -c "bin/cbut sync"` is out of scope, named in the
+         module docstring
+Commit   e6e25ef
+
