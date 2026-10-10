@@ -16,21 +16,21 @@ counts are printed by the check, never copied into this file.
 > `docs:` commit that also corrected stale CLI help, D-002 a `fix:` — coverage follows the touched
 > paths and the `feat` exclusion, not the author's intent.
 >
-> **The exceptions, and why they are honest.** D-006…D-020 all cite `673255c`, whose subject is `feat:`
+> **When a bundled `feat:` commit still needs entries.** D-006…D-020 all cite `673255c`, whose subject is `feat:`
 > and which the class rule above would therefore skip. It was landed as a single bundled commit, and
 > inside it are repairs and guards, not product: a promise the code had already broken, an upstream
 > change that emptied panels silently, destructive steps with no rollback, and a regression that one
 > commit introduced and another recorded. The exclusion is by commit **class**, and a bundled commit is
 > exactly the case where the class stops describing the content — so the entries are recorded against
-> the one hash, and each names the specific test or measurement that proves its own half. Future rounds
-> should commit by concern instead of making this note necessary.
+> the one hash, and each names the specific test or measurement that proves its own half.
 >
-> It has happened twice since, which is the honest reason this heading is plural now. D-022 and D-023
-> cite `20ffd24`, a `feat(config)` commit carrying one repair to a path that had **already shipped** and
-> one guard for a feature that was dead until its test moved onto the path a user actually takes. D-024
-> cites `86d4220`, a `feat(tui)` commit that withdraws a sentence both READMEs had been asserting about
-> scrolling — a promise the code never kept. Both were found in the same function as the feature and are
-> recorded separately anyway: an entry a reader can search for is worth more than a tidy commit graph.
+> The condition, stated so it can be checked rather than counted: **a `feat` commit gets entries when it
+> carries something a reader would have to revert on its own** — a repair to a path that had already
+> shipped, a guard for a promise the code had broken, a claim being withdrawn. `20ffd24` (D-022, D-023),
+> `86d4220` (D-024) and `7ae28ae` (D-025) meet it; the other `feat` commits in `git log` do not, and are
+> not recorded. Earlier versions of this heading said "the one exception", then "the exceptions", then
+> carried a count — each rotted the moment the next commit landed, which is why it is now a rule with
+> named examples instead of a number.
 
 `kind` ∈ `fix` | `perf` | `taste` | `guard` | `revert` | `chore` — see AGENTS.md § Recording
 conventions for the cut.
@@ -396,3 +396,31 @@ Cost     The note costs a row when it wraps (at 80×24 the Usage table keeps 9 r
          legitimately absent, and asserting against a column that was never drawn proves nothing
 Commit   86d4220
 
+
+### D-025 · 2026-10-10 · taste
+Symptom  The rule written one commit earlier — "a table never shows a half column" — was true for two
+         of the eleven tables in the app. Measured with long names at 80×24: `t-tools` needs 90 cells
+         for a 78-wide region, `t-mcp` needs 137, and the widest table anywhere in the tool is the
+         pushed **Model responses** screen — 12 columns needing 135 cells, which had never been said a
+         word about. Both detail screens also predated the empty-state convention: no rows meant a
+         blank table, the one thing the other eight panes had been fixed not to do
+Change   The mechanism moved out of `TrackerApp` into `WideTableMixin`; each host declares its own
+         `WIDE_TABLES` and `on_mount` now builds columns from that registry instead of a second inline
+         list, so a table cannot gain a column the plan does not know how to name. Chrome measured per
+         host: 2 cells inside a tab pane, 4 on the padded Usage page, 0 on a pushed screen that spans
+         the terminal. Both screens fill through `_fill_wide`, which gives them the empty row as well
+Evidence L0 five cases (303 total, all four interpreters re-run): an every-tab loop at 60 and 80 that
+         asserts per table "shown is a prefix of the registry, it fits, and every dropped name appears
+         on the note", with a non-vacuous floor (`t-mcp` and `t-usage` must show up in the dropped set or
+         the loop proved nothing); the two screens at 80 and at 220 wide; registry-equality; and the MCP
+         row key surviving a drop to exactly two columns. One case had to be **widened** to keep its
+         meaning: the message-id masking test ran at the default 80, where that column is not shown at
+         all — `assertNotIn(raw_id, cells)` was passing because nothing was rendered, not because
+         anything was masked
+Cost     The floor is where this stops being a fix: two name columns that alone exceed the screen (MCP
+         server + tool = 143 cells at 78) are still cut, and what the change guarantees is that the
+         note ends with `even these are cut` instead of implying the table fits. A per-column cap on
+         name columns is the next candidate and is deliberately not in this commit. The first version of
+         the every-tab assertion said "what is shown always fits"; it went red on that MCP case, and the
+         product was right — the assertion was the bug
+Commit   7ae28ae
