@@ -271,7 +271,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 326 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 327 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -293,7 +293,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `test_maintenance_docs.py` | 9 | the generated format doc cannot drift from the code |
 | `test_readme_counts.py` | 5 | the suite table above is the suite table the runner would print, and both pages document every setting the loader knows |
 | `test_record_coverage.py` | 6 | every covered commit is recorded in `CHANGELOG.md` |
-| `test_readme_bilingual.py` | 4 | the two READMEs stay one document in two languages, and every table-of-contents link has a heading to land on |
+| `test_readme_bilingual.py` | 5 | the two READMEs stay one document in two languages, and every table-of-contents link has a heading to land on |
 
 `test_readme_counts.py` is what keeps this table honest: a suite added without a row, or a row left
 at an old number, fails the suite.
@@ -308,7 +308,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 326 tests above |
+| `scripts/tests/` | the 327 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, and the size & performance baseline with the commands that produced it |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
