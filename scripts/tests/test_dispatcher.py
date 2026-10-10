@@ -18,6 +18,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
 ROOT = Path(__file__).resolve().parents[2]
 CBUT = ROOT / "bin" / "cbut"

@@ -19,6 +19,8 @@ import time
 import unittest
 from datetime import datetime
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 from types import SimpleNamespace
 
 SCRIPTS = Path(__file__).resolve().parents[1]
