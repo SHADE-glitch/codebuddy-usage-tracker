@@ -1680,10 +1680,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             # The cell and the key are deliberately different objects now: the cell
             # is the capped rendering, the route is the whole name. Asserting only
             # `top.model == shown` would have passed either way.
-            self.assertEqual(shown, tui.WideTableMixin._cap_cell(full))
-            if len(full) > tui.WideTableMixin.NAME_CAP:
+            self.assertEqual(shown, app._cap_cell(full))
+            if len(full) > app.name_cap:
                 self.assertNotEqual(shown, full, "a long name was not capped at all")
-            self.assertIn(shown, [tui.WideTableMixin._cap_cell(n) for n in long_names],
+            self.assertIn(shown, [app._cap_cell(n) for n in long_names],
                           "the cell is not one of the two models' renderings")
 
     # 62. the plan is a rule for every table, not two of them
@@ -1741,7 +1741,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                                 # something was cut it must say it — a silent cap is
                                 # the same lie as a silent column drop.
                                 rows = app._wide_rows[t.id][0]
-                                over = any(c is not None and len(str(c)) > app.NAME_CAP
+                                over = any(c is not None and len(str(c)) > app.name_cap
                                            for r in rows for c in r)
                                 flat = " ".join(" ".join(
                                     "".join(s.text for s in note.render_line(y))
@@ -1751,7 +1751,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                                                  f"but a cell needs capping={over}")
                                 if over:
                                     self.assertEqual(
-                                        flat, f"cells capped at {app.NAME_CAP}",
+                                        flat, f"cells capped at {app.name_cap}",
                                         f"{t.id} capped characters and the note says "
                                         f"{flat!r}")
                                 else:
@@ -1912,7 +1912,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             scr = app.screen_stack[-1]
             t = scr.query_one("#hist-table", tui.DataTable)
-            cap = tui.WideTableMixin.NAME_CAP
+            cap = app.name_cap
             labels = [str(c.label) for c in t.columns.values()]
             self.assertEqual(labels, list(tui.HISTORY_COLUMNS),
                              f"a 74-cell path still pushed columns off the screen: {labels}")
@@ -1938,7 +1938,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             app.query_one(tui.TabbedContent).active = "tab-tools"
             await pilot.pause()
             t = app.query_one("#t-tools", tui.DataTable)
-            cap = tui.WideTableMixin.NAME_CAP
+            cap = app.name_cap
             cell = t.get_row_at(0)[0]
             self.assertLessEqual(len(cell), cap)
             self.assertTrue(cell.startswith(LONG_TOOL[:cap - 1]),
@@ -2001,7 +2001,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             t = scr.query_one("#hist-table", tui.DataTable)
             self.assertEqual(len(t.columns), len(tui.HISTORY_COLUMNS),
                              "no column is hidden, so the note should be describing characters")
-            cap = tui.WideTableMixin.NAME_CAP
+            cap = app.name_cap
             flat = " ".join(" ".join("".join(s.text for s in
                                              scr.query_one("#colnote-hist", tui.Static)
                                              .render_line(y))
@@ -2011,7 +2011,76 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"cells capped at {cap}", flat,
                           f"a silent character cut: {flat!r}")
 
-    # 71. every table the source can build has a plan
+    # 71. a configured cap has to be the number that actually renders, on every host
+    async def test_a_configured_cap_reaches_the_detail_screen_too(self):
+        """The cap lives on a mixin as a CLASS attribute, so a per-instance setting
+        can be plumbed and still miss a host. The pushed screens are where the long
+        project paths really are — a cap honoured only by the tabs would leave the
+        worst column untouched, which is C6's shape: written, wired, not in force on
+        the path the user takes.
+        """
+        now = int(time.time() * 1000)
+        LONG_TOOL = "an_entity_name_without_any_slash_that_is_far_too_long_for_a_column"
+        BASE = "/home/user/a-path-whose-tail-is-the-only-part-that-differs"
+        insert_tool_calls(self.db_path, [
+            (f"c{i}", f"s{i}", f"{BASE}/proj-{i}", LONG_TOOL, "builtin",
+             now - i * 60_000, 10, "completed") for i in range(2)])
+        app = TrackerApp(str(self.db_path), config={
+            "top_n": 5, "log_limit": 100, "detail_limit": 200, "refresh_secs": 5,
+            "sync_secs": 30, "name_cap": 12})
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            self.assertEqual(app.name_cap, 12)
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            t = app.query_one("#t-tools", tui.DataTable)
+            for r in range(t.row_count):
+                self.assertLessEqual(len(str(t.get_row_at(r)[0])), 12,
+                                     "the tab ignored the configured cap")
+            flat = " ".join(" ".join("".join(s.text for s in
+                            app.query_one("#colnote-tools", tui.Static).render_line(y))
+                            for y in range(app.query_one("#colnote-tools",
+                                                         tui.Static).region.height)).split())
+            self.assertIn("cells capped at 12", flat,
+                          f"the note still quotes the class default: {flat!r}")
+            app.push_screen(tui.HistoryScreen("tool", LONG_TOOL))
+            await pilot.pause()
+            scr = app.screen_stack[-1]
+            self.assertEqual(scr.name_cap, 12,
+                             "the pushed screen renders with the class attribute instead")
+            ht = scr.query_one("#hist-table", tui.DataTable)
+            for r in range(ht.row_count):
+                self.assertLessEqual(len(str(ht.get_row_at(r)[1])), 12,
+                                     "a detail screen ignored the configured cap")
+            self.assertEqual(scr._cap_cell("a" * 40), "a" * 11 + "…",
+                             "the cap helper itself is not reading the instance value")
+
+    # 72. the next detail screen cannot inherit the class default by accident
+    def test_every_pushed_screen_resolves_the_cap_from_the_app(self):
+        """``name_cap`` is overridden per class, so a screen that forgets it renders
+        with the shipped 28 while the settings file says otherwise — and nothing the
+        suite does today would notice, because the behaviour cases can only push the
+        screens that already exist. This one enumerates the hosts from the module,
+        so a new one has to earn the override.
+        """
+        hosts = [obj for obj in vars(tui).values()
+                 if isinstance(obj, type) and issubclass(obj, tui.WideTableMixin)
+                 and issubclass(obj, tui.Screen)]
+        self.assertGreaterEqual(len(hosts), 2,
+                                f"only {len(hosts)} screen hosts enumerated — "
+                                "the query broke, so this guard proves nothing")
+        missing = sorted(c.__name__ for c in hosts if "name_cap" not in c.__dict__)
+        self.assertFalse(missing,
+                         f"these screens cap with the class attribute, not the setting: "
+                         f"{missing}")
+        # Control: a mixin screen without the override really does fail the predicate,
+        # so the pass above is not the result of a test that can never go red.
+        probe = type("UnoverriddenScreen", (tui.WideTableMixin, tui.Screen), {})
+        self.assertTrue(hasattr(probe, "name_cap"),
+                        "the mixin stopped supplying a default; the guard below is vacuous")
+        self.assertNotIn("name_cap", probe.__dict__)
+
+    # 73. every table the source can build has a plan
     def test_every_datatable_in_the_source_is_registered(self):
         """`The plan covers every table` is a claim about the source, so check it there.
 

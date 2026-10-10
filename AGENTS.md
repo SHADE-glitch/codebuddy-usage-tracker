@@ -141,15 +141,21 @@ tool runs from a checkout, so the version only needs to move when a documented c
   already registered, so an unplanned table would clip in silence). Chrome and the 2-cell per-column
   cost are measured, not derived; `MIN_SHOWN = 2` is the floor, and a table that cannot fit even those
   two says `even these are cut` on its note instead of pretending it fits.
-- **Long cells are capped at `NAME_CAP = 28`, and only when a column would otherwise be dropped.** The
-  cap value is a measurement, not a preference: on this machine's data every entity name fits (tool 22,
+- **Long cells are capped at `name_cap` (default 28), and only when a column would otherwise be dropped.**
+  The default is a measurement, not a preference: on this machine's data every entity name fits (tool 22,
   model 24, agent 20, plugin 19, skill 28) and the only column that runs past it is the project path
   (162 of 482 rows over 24, longest 74). `_cap_cell` keeps the **end** of anything containing `/` — a
   path's head is the prefix every row shares — and the **head** of everything else. If a table fits at
   its real widths the cap stays out, so a wide terminal never loses characters; when it engages the
-  note says `cells capped at 28`, because a silent character cut is the same lie as a silent column
+  note prints the number in force, because a silent character cut is the same lie as a silent column
   drop. A row is therefore keyed from the **uncapped** value (`key_rows` in `_fill`): two entities that
   render identically must still route to their own detail screen. Do not cap by truncating the key.
+  A host reads the cap through the `name_cap` **property**, never the `NAME_CAP` attribute: `NAME_CAP`
+  is only the shipped default, which `TrackerApp.__init__` shadows from the settings file. A pushed
+  screen has no config of its own, so it must override the property to read the app — and because
+  forgetting that is invisible on every screen the suite knows today,
+  `test_every_pushed_screen_resolves_the_cap_from_the_app` enumerates the mixin's `Screen` hosts and
+  fails on any that does not define the override itself.
 - **Keep `context tokens` and per-model token totals apart.** They are different measurements
   (turn-metrics `tokenDelta` vs per-response model tokens from transcripts) and summing them is
   wrong.
@@ -176,10 +182,15 @@ tool runs from a checkout, so the version only needs to move when a documented c
 - **Settings are read once, in one place.** `db.load_config()` resolves environment > file >
   `DEFAULTS`. Adding a knob means: one entry in `DEFAULTS`, one in `ENV_NAMES`, one in `_BOUNDS`, and
   one assignment in the app — `test_config.py` pins the default against the constant it replaces, so a
-  settings layer cannot quietly retune shipped behaviour. A malformed file raises `ConfigError` and the
-  entry point turns it into a message naming the path; **never fall back silently** — a user editing a
-  file that is not being read is the worst failure this surface can have. Nothing writes the file, and
-  no setting lives in the database.
+  settings layer cannot quietly retune shipped behaviour. The assignment has to land where the value is
+  *used*: a class constant read by a mixin is shadowed per instance, and every host that inherits it
+  needs the same resolution (`name_cap` above) — a key the loader returns and no renderer consults is
+  a setting the user can edit with no effect. `cbut health` prints whatever `load_config()` returned,
+  keyed by the names the file uses, so a knob cannot be added and go unreported
+  (`test_health_prints_every_key_the_loader_knows` enumerates `DEFAULTS` against the output).
+  A malformed file raises `ConfigError` and the entry point turns it into a message naming the path;
+  **never fall back silently** — a user editing a file that is not being read is the worst failure this
+  surface can have. Nothing writes the file, and no setting lives in the database.
 - **A behaviour change ships with a case that fails without it.** Not a style preference — the rule
   that made this round's worst bug visible: the parser change that emptied the Commands panel passed
   every test, because every command fixture took the *other* branch. If no test goes red when you undo

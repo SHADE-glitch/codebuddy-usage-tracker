@@ -298,10 +298,12 @@ def cmd_health(conn, args):
     try:
         cfg = db.load_config()
         state = "" if db.CONFIG_PATH.is_file() else " (absent — defaults)"
-        print(f"  settings       {db.CONFIG_PATH}{state} — "
-              f"top_n={cfg['top_n']} log_limit={cfg['log_limit']} "
-              f"detail_limit={cfg['detail_limit']} "
-              f"refresh={cfg['refresh_secs']}s sync={cfg['sync_secs']}s")
+        # Every key the loader knows, spelled the way the settings file spells it.
+        # A hand-listed line here goes stale one key at a time, and it silently
+        # renames what it does print — both are worse than printing nothing at all.
+        values = " ".join(f"{k}={v}{'s' if k.endswith('_secs') else ''}"
+                          for k, v in sorted(cfg.items()))
+        print(f"  settings       {db.CONFIG_PATH}{state} — {values}")
     except db.ConfigError as exc:
         print(f"  settings       NOT READ — {exc}")
     try:

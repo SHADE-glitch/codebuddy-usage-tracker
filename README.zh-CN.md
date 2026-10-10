@@ -115,11 +115,13 @@ Usage tab 仿照会话用量面板的样式，但每个数字都来自磁盘上�
   而且只要有一张表没进登记表就会有用例失败。所以名字长到会把列挤出屏幕时，代价是少几列，而不是少可读性。
   下限是 2 列：连「名字 + 第一个数字」都放不进 80 格时，提示行会写 `even these are cut`
   （这些也仍然被切），而不是假装表格放得下。
-- **远超该占宽度的单元格会被截到 28 个字符** —— 这是本机数据量出来的：实体名全部放得下
+- **远超该占宽度的单元格会被截到 28 个字符**（默认值，设置项 `name_cap`）—— 这个数是本机数据量出来的：
+  实体名全部放得下
   （tool 22、model 24、agent 20、plugin 19、skill 28），唯一超出的是项目路径
   （482 行里 162 行超过 24，最长 74）。路径**从左边截**（`…/work/backend-service`），
   因为它的开头是每行都相同的前缀、能区分彼此的在结尾；其它值**从右边截**，保住可读的头部。
-  截了就会说：提示行写 `cells capped at 28`，而且它只在「不截就要丢列」时才生效——宽终端照样显示完整值。
+  截了就会说：提示行写 `cells capped at 28`（印的是当前生效的数，不是写死的常量），
+  而且它只在「不截就要丢列」时才生效——宽终端照样显示完整值。
   两个名字共享可见前缀的行仍各自进自己的详情页，因为行键用的是未截断的值。
   本机实际收益：History 页在 80×24 从 5 列里的 2 列回到 **5 列全显**，其它页读数不变。
 
@@ -198,13 +200,14 @@ cbut format              # 🧾  本工具依赖的 CodeBuddy 字段与路径
 top_n = 5            # Dashboard 里 Top models / Top tools 的行数
 log_limit = 100      # Usage 页的请求行数
 detail_limit = 200   # 历史 / 模型响应详情页的行数
+name_cap = 28        # 单元格最宽渲染多少字符，超出就截断
 refresh_secs = 5     # TUI 重绘定时器
 sync_secs = 30       # TUI 自动同步定时器
 ```
 
 - **优先级：环境变量 > 文件 > 默认值。** 每个键也读 `CBUT_TOP_N`、`CBUT_LOG_LIMIT`、
-  `CBUT_DETAIL_LIMIT`、`CBUT_REFRESH_SECS`、`CBUT_SYNC_SECS`。
-- **配置文件坏了就直接拦住 TUI**，并说出是哪个文件、哪一行——而不是默默用默认值启动。
+  `CBUT_DETAIL_LIMIT`、`CBUT_NAME_CAP`、`CBUT_REFRESH_SECS`、`CBUT_SYNC_SECS`。
+- **配置文件坏了就直接拦住 TUI**，并说出是哪个文件、哪个键——而不是默默用默认值启动。
   一边编辑一个不被读取的文件，是设置层最坏的失败方式。`cbut health` 会给同样的判定，并写明它读到了哪个文件。
 - **未知键直接拒绝**：拼错的设置会永远什么都不做，而且不吭声。值也做类型与范围校验
   （`top_n = 0` 是空白面板，不是偏好）。
@@ -218,7 +221,7 @@ sync_secs = 30       # TUI 自动同步定时器
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 310 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 313 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -228,9 +231,9 @@ python3 -m unittest discover -s scripts/tests     # Ran 310 tests ... OK
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
 | `test_sync.py` | 82 | 转录解析、工具归类、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
-| `test_tui.py` | 84 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、状态栏诚实性 |
+| `test_tui.py` | 86 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、单元格上限与它背后的设置项、状态栏诚实性 |
 | `test_usage.py` | 61 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）、token 汇总、Dashboard 查询、结构版本门禁、索引值不值得留 |
-| `test_config.py` | 18 | 设置层：默认值没变、文件、env 优先级、坏文件会让 `main()` 在启动 TUI 前就退出，以及 app 真的读了哪些键 |
+| `test_config.py` | 19 | 设置层：默认值没变、文件、env 优先级、坏文件会让 `main()` 在启动 TUI 前就退出、app 真的读了哪些键，以及 `cbut health` 把每个键都报出来 |
 | `test_dispatcher.py` | 12 | `bin/cbut`：子命令转发、venv 解析、装不上时 help 仍然能跑 |
 | `test_format_registry.py` | 10 | CodeBuddy 格式登记表与解析器双向一致 |
 | `test_privacy.py` | 11 | import 白名单，**加上绕过它的调用方式**（`__import__`/`eval`/`import_module`）、任何表任何文本列都不落自由文本、不写 CodeBuddy 自己的文件 |
@@ -252,7 +255,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 310 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 310 个用例 |
+| `scripts/tests/` | 上面那 313 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、以及体积与性能的固定度量法和基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |

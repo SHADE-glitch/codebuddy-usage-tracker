@@ -51,6 +51,7 @@ class DefaultsTest(unittest.TestCase):
         self.assertEqual(cfg["top_n"], 5)
         self.assertEqual(cfg["log_limit"], 100)
         self.assertEqual(cfg["detail_limit"], 200)
+        self.assertEqual(cfg["name_cap"], 28, "the cap is a measured default, not a round number")
         self.assertEqual(cfg["refresh_secs"], 5)
         self.assertEqual(cfg["sync_secs"], 30)
 
@@ -63,7 +64,7 @@ class DefaultsTest(unittest.TestCase):
         tui = load_tui("cbut_tui_for_config")
         app = tui.TrackerApp
         for key, attr in (("top_n", "DASH_TOP"), ("log_limit", "USAGE_LOG_LIMIT"),
-                          ("detail_limit", "DETAIL_LIMIT")):
+                          ("detail_limit", "DETAIL_LIMIT"), ("name_cap", "NAME_CAP")):
             self.assertEqual(
                 db.DEFAULTS[key], getattr(app, attr),
                 f"DEFAULTS[{key!r}] no longer matches TrackerApp.{attr} — the settings "
@@ -79,6 +80,7 @@ class FileTest(unittest.TestCase):
                 'refresh_secs = 1.5\n'
                 'sync_secs = 120\n'
                 'detail_limit = 50\n'
+                'name_cap = 40\n'
             ))
             cfg = db.load_config(path)
         self.assertEqual(cfg["top_n"], 3)
@@ -86,6 +88,7 @@ class FileTest(unittest.TestCase):
         self.assertEqual(cfg["refresh_secs"], 1.5)
         self.assertEqual(cfg["sync_secs"], 120)
         self.assertEqual(cfg["detail_limit"], 50)
+        self.assertEqual(cfg["name_cap"], 40)
 
     def test_a_comment_and_blank_lines_are_not_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -123,7 +126,9 @@ class BrokenFileTest(unittest.TestCase):
     def test_an_out_of_range_value_is_refused(self):
         """Zero rows of Top tools is not a preference, it is a broken panel."""
         for key, bad in (("top_n", 0), ("log_limit", -5), ("refresh_secs", 0),
-                         ("sync_secs", -1)):
+                         ("sync_secs", -1), ("name_cap", 0), ("name_cap", 4000)):
+            # a cap of 0 hides every value, a cap of 4000 is not a cap: both are typos,
+            # and a typo has to fail loudly rather than render a blank screen
             with self.subTest(key=key), tempfile.TemporaryDirectory() as tmp:
                 path = write_config(tmp, f"{key} = {bad}\n")
                 with self.assertRaises(db.ConfigError):
@@ -171,16 +176,19 @@ class WiringTest(unittest.TestCase):
 
     def test_the_app_reads_its_limits_from_the_config(self):
         app = self._app({"top_n": 2, "log_limit": 7, "detail_limit": 11,
-                         "refresh_secs": 5, "sync_secs": 30})
+                         "refresh_secs": 5, "sync_secs": 30, "name_cap": 15})
         self.assertEqual(app.DASH_TOP, 2)
         self.assertEqual(app.USAGE_LOG_LIMIT, 7)
         self.assertEqual(app.DETAIL_LIMIT, 11)
+        self.assertEqual(app.name_cap, 15,
+                         "the app must expose the cap it will actually render with")
 
     def test_with_no_config_the_app_keeps_the_shipped_defaults(self):
         app = self._app(None)
         self.assertEqual(app.DASH_TOP, db.DEFAULTS["top_n"])
         self.assertEqual(app.USAGE_LOG_LIMIT, db.DEFAULTS["log_limit"])
         self.assertEqual(app.DETAIL_LIMIT, db.DEFAULTS["detail_limit"])
+        self.assertEqual(app.name_cap, db.DEFAULTS["name_cap"])
 
 
 class CliWiringTest(unittest.TestCase):
@@ -219,17 +227,21 @@ class CliWiringTest(unittest.TestCase):
         return rc, (started[0] if started else None), out.getvalue() + err.getvalue(), cfg_path
 
     def test_the_settings_file_reaches_the_app_through_main(self):
-        rc, app, out, cfg = self._main("top_n = 3\nlog_limit = 25\ndetail_limit = 50\n")
+        rc, app, out, cfg = self._main(
+            "top_n = 3\nlog_limit = 25\ndetail_limit = 50\nname_cap = 33\n")
         self.assertEqual(rc, 0, out)
         self.assertIsNotNone(app, "main() never started the app")
         self.assertEqual((app.DASH_TOP, app.USAGE_LOG_LIMIT, app.DETAIL_LIMIT), (3, 25, 50),
                          f"main() built an app that ignored {cfg}")
+        self.assertEqual(app.name_cap, 33,
+                         f"main() built an app ignoring the cap in {cfg}")
 
     def test_no_file_means_main_starts_with_the_shipped_defaults(self):
         rc, app, out, _ = self._main(None)
         self.assertEqual(rc, 0, out)
         self.assertIsNotNone(app)
         self.assertEqual(app.DASH_TOP, db.DEFAULTS["top_n"])
+        self.assertEqual(app.name_cap, db.DEFAULTS["name_cap"])
         self.assertEqual(app.USAGE_LOG_LIMIT, db.DEFAULTS["log_limit"])
         self.assertEqual(app.DETAIL_LIMIT, db.DEFAULTS["detail_limit"])
 
@@ -255,9 +267,10 @@ class HealthSurfaceTest(unittest.TestCase):
         return proc.returncode, proc.stdout + proc.stderr
 
     def _env(self, db_path, extra):
-        base = {k: v for k, v in os.environ.items()
-                if k not in {"CBUT_CONFIG", "CBUT_TOP_N", "CBUT_LOG_LIMIT",
-                             "CBUT_DETAIL_LIMIT", "CBUT_REFRESH_SECS", "CBUT_SYNC_SECS"}}
+        # Strip every setting the loader can read, not a hand-picked few: an
+        # ambient CBUT_* value would otherwise change the output this file asserts on.
+        hidden = set(db.ENV_NAMES.values()) | {"CBUT_CONFIG"}
+        base = {k: v for k, v in os.environ.items() if k not in hidden}
         base.update(extra)
         return {"os": base, "db": str(db_path)}
 
@@ -275,6 +288,25 @@ class HealthSurfaceTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn(str(cfg), out, "health must say which settings file it read")
         self.assertIn("top_n=4", out)
+
+    def test_health_prints_every_key_the_loader_knows(self):
+        """The report is the only place a user learns a setting exists and what it is
+        set to right now. The line used to hand-list five keys, so a sixth could be
+        read by the app, honoured by the tables, and still be absent here — the same
+        shape as every other "wired but not in force" entry in the record. Listing
+        what was loaded makes the claim un-rottable; this case is what proves it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            # Point at a file that does not exist inside the tmpdir: an unset
+            # CBUT_CONFIG would fall back to the real ~/.config/cbut/config.toml,
+            # and whatever that person happens to have set is not this test's input.
+            absent = Path(tmp) / "absent" / "config.toml"
+            rc, out = self._health(self._env(self._make_db(tmp),
+                                             {"CBUT_CONFIG": str(absent)}))
+        self.assertEqual(rc, 0, out)
+        missing = sorted(k for k in db.DEFAULTS if f"{k}=" not in out)
+        self.assertFalse(missing,
+                         f"health reads these settings but never reports them: {missing}")
 
     def test_a_broken_settings_file_is_reported_instead_of_hiding(self):
         """A syntax error is owed the path and a location, not a key name.

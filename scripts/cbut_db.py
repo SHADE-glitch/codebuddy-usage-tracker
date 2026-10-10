@@ -57,6 +57,9 @@ DEFAULTS = {
     "top_n": 5,           # rows in the Dashboard's Top models / Top tools
     "log_limit": 100,     # Usage page request rows
     "detail_limit": 200,  # rows on a history / model-response screen
+    "name_cap": 28,       # widest cell a table renders; 28 is measured on real data,
+                          # not a round number — every entity name fits it, only the
+                          # project path does not. See NAME_CAP in cbut-tui.py.
     "refresh_secs": 5,    # TUI redraw timer
     "sync_secs": 30,      # TUI auto-sync timer
 }
@@ -65,6 +68,7 @@ ENV_NAMES = {
     "top_n": "CBUT_TOP_N",
     "log_limit": "CBUT_LOG_LIMIT",
     "detail_limit": "CBUT_DETAIL_LIMIT",
+    "name_cap": "CBUT_NAME_CAP",
     "refresh_secs": "CBUT_REFRESH_SECS",
     "sync_secs": "CBUT_SYNC_SECS",
 }
@@ -75,6 +79,8 @@ _BOUNDS = {
     "top_n": (1, 100, int),
     "log_limit": (1, 1000, int),
     "detail_limit": (1, 1000, int),
+    # below 8 nothing readable survives the cut; above ~200 the cap is not a cap
+    "name_cap": (8, 200, int),
     "refresh_secs": (0.5, 3600, (int, float)),
     "sync_secs": (1, 86400, (int, float)),
 }

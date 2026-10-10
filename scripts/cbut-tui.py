@@ -172,18 +172,29 @@ if HAVE_TEXTUAL:
         # costs no name and buys back the 46 cells a path was spending.
         NAME_CAP = 28
 
-        @classmethod
-        def _cap_cell(cls, text: str) -> str:
-            """Fit one cell to ``NAME_CAP``, keeping the half that carries meaning.
+        @property
+        def name_cap(self) -> int:
+            """The cap this host actually renders with.
+
+            ``NAME_CAP`` is the shipped default, which the app shadows from the
+            settings file. A screen pushed on top of the app has no config of its
+            own, so it overrides this to read the app — otherwise a configured cap
+            would silently apply to the tabs and not to the detail screens.
+            """
+            return self.NAME_CAP
+
+        def _cap_cell(self, text: str) -> str:
+            """Fit one cell to ``name_cap``, keeping the half that carries meaning.
 
             A path's beginning is the shared prefix (`/home/user/…` repeated down
             the column) and its end is what distinguishes the rows, so paths are
             capped from the left. Everything else — a tool, a model, a skill — is
             read from the start, so it is capped from the right.
             """
-            if len(text) <= cls.NAME_CAP:
+            cap = self.name_cap
+            if len(text) <= cap:
                 return text
-            keep = cls.NAME_CAP - 1
+            keep = cap - 1
             return ("…" + text[-keep:]) if "/" in text else (text[:keep] + "…")
 
         def _fill(self, table, rows, key_index=0, key_kind=None, key_rows=None):
@@ -296,12 +307,12 @@ if HAVE_TEXTUAL:
             self._set_columns(table, labels[:keep])
             self._fill_or_empty(table, [r[:keep] for r in shown],
                                 empty_msg, key_index, key_kind, key_rows=rows)
-            cap_note = f" · cells capped at {self.NAME_CAP}" if capped else ""
+            cap_note = f" · cells capped at {self.name_cap}" if capped else ""
             if keep >= len(labels):
                 # Nothing is hidden, so the only thing worth saying is that
                 # characters were cut — and the full value only comes back at the
                 # width named below, which is why it has to be said out loud.
-                note.update(f"cells capped at {self.NAME_CAP}" if capped else "")
+                note.update(f"cells capped at {self.name_cap}" if capped else "")
                 note.display = capped
                 return
             cuts = sum(widths[:keep]) + self.CELL_COST * keep > budget
@@ -327,6 +338,10 @@ if HAVE_TEXTUAL:
         # A pushed screen spans the terminal, so its table loses no cells to its
         # surroundings — measured: region width == terminal width at 60/80/100.
         WIDE_TABLES = {"hist-table": (HISTORY_COLUMNS, "colnote-hist", 0)}
+
+        @property
+        def name_cap(self) -> int:
+            return self.app.name_cap
 
         def __init__(self, kind: str, name: str, display: str | None = None):
             super().__init__()
@@ -363,6 +378,10 @@ if HAVE_TEXTUAL:
 
         BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
         WIDE_TABLES = {"resp-table": (RESPONSE_COLUMNS, "colnote-resp", 0)}
+
+        @property
+        def name_cap(self) -> int:
+            return self.app.name_cap
 
         def __init__(self, model: str):
             super().__init__()
@@ -486,6 +505,9 @@ if HAVE_TEXTUAL:
             self.DASH_TOP = self.config["top_n"]
             self.USAGE_LOG_LIMIT = self.config["log_limit"]
             self.DETAIL_LIMIT = self.config["detail_limit"]
+            # Shadows WideTableMixin.NAME_CAP for this host and every screen pushed
+            # on top of it; the property ``name_cap`` is what reads it.
+            self.NAME_CAP = self.config["name_cap"]
             # Injectable wall clock (seconds since the epoch). Defaults to
             # time.time, so a real run is unchanged; tests pass a fixed value to
             # pin "now". The calendar-day windows are derived from this clock,
