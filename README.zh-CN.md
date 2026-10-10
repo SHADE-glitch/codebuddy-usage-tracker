@@ -221,7 +221,7 @@ sync_secs = 30       # TUI 自动同步定时器
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 315 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 316 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -239,7 +239,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 315 tests ... OK
 | `test_privacy.py` | 11 | import 白名单，**加上绕过它的调用方式**（`__import__`/`eval`/`import_module`）、任何表任何文本列都不落自由文本、不写 CodeBuddy 自己的文件 |
 | `test_snapshots.py` | 9 | 破坏性步骤前自动留快照、列举、回滚、保留份数 |
 | `test_maintenance_docs.py` | 9 | 生成的格式依赖文档不可能与代码脱节 |
-| `test_readme_counts.py` | 4 | 上面这张表就是运行器会打印的那张表 |
+| `test_readme_counts.py` | 5 | 上面这张表就是运行器会打印的那张表，并且两份页面都把 loader 认识的每个设置项写全了 |
 | `test_record_coverage.py` | 6 | 每个被覆盖的提交都记录进 `CHANGELOG.md` |
 | `test_readme_bilingual.py` | 4 | 两份 README 始终是「一份文档、两种语言」，且目录里每个链接都落得到真实标题 |
 
@@ -255,7 +255,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 315 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 315 个用例 |
+| `scripts/tests/` | 上面那 316 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、以及体积与性能的固定度量法和基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
