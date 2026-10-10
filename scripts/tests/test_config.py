@@ -4,7 +4,7 @@ B12 chose a TOML file outside the repository (`~/.config/cbut/config.toml`) with
 environment able to override it, because the standard library has read a TOML parser since
 3.11 and adding one dependency for this was not worth it.
 
-Three properties this suite exists to hold:
+Four properties this suite exists to hold:
 
 1. **Nothing changes when no file exists.** The defaults are the values the interface had
    before any of this, asserted against the constants the TUI still carries — a settings
@@ -14,11 +14,16 @@ Three properties this suite exists to hold:
    read, which is worse than refusing to start.
 3. **Precedence is env > file > default**, and an unknown key is rejected rather than ignored,
    because a typo in a key name is exactly the bug nobody notices.
+4. **No case depends on the shell it runs in.** Several cases assert what the *file* or the
+   *defaults* produce, and an exported ``CBUT_TOP_N`` outranks both — so without the isolation
+   below, this suite passes on a clean shell and fails on a configured one, which reads exactly
+   like a regression in the settings layer.
 
 Standard library only; every case points `CBUT_CONFIG` at a temp file so nothing here reads
 or writes `~/.config`.
 """
 
+import contextlib
 import importlib
 import os
 import sys
@@ -30,6 +35,24 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
 import cbut_db as db  # noqa: E402
+
+
+@contextlib.contextmanager
+def no_settings_env():
+    """Hide every setting name the loader can read, then put it back exactly.
+
+    Derived from ``db.ENV_NAMES`` rather than listed, because a hand-copied set is how the
+    next key added to the layer gets forgotten here too.
+    """
+    saved = {name: os.environ.pop(name, None) for name in db.ENV_NAMES.values()}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def write_config(tmp, text):
@@ -47,7 +70,8 @@ def load_tui(name):
 
 class DefaultsTest(unittest.TestCase):
     def test_no_file_gives_the_values_the_interface_already_had(self):
-        cfg = db.load_config(Path("/nonexistent/cbut/config.toml"))
+        with no_settings_env():
+            cfg = db.load_config(Path("/nonexistent/cbut/config.toml"))
         self.assertEqual(cfg["top_n"], 5)
         self.assertEqual(cfg["log_limit"], 100)
         self.assertEqual(cfg["detail_limit"], 200)
@@ -73,7 +97,7 @@ class DefaultsTest(unittest.TestCase):
 
 class FileTest(unittest.TestCase):
     def test_a_valid_file_changes_what_the_app_uses(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, no_settings_env():
             path = write_config(tmp, (
                 'top_n = 3\n'
                 'log_limit = 25\n'
@@ -91,7 +115,7 @@ class FileTest(unittest.TestCase):
         self.assertEqual(cfg["name_cap"], 40)
 
     def test_a_comment_and_blank_lines_are_not_an_error(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, no_settings_env():
             path = write_config(tmp, "# my settings\n\ntop_n = 8\n")
             cfg = db.load_config(path)
         self.assertEqual(cfg["top_n"], 8)
@@ -137,30 +161,42 @@ class BrokenFileTest(unittest.TestCase):
 
 class PrecedenceTest(unittest.TestCase):
     def test_environment_beats_the_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, no_settings_env():
             path = write_config(tmp, "top_n = 3\n")
-            old = os.environ.get("CBUT_TOP_N")
             os.environ["CBUT_TOP_N"] = "9"
-            try:
-                cfg = db.load_config(path)
-            finally:
-                if old is None:
-                    del os.environ["CBUT_TOP_N"]
-                else:
-                    os.environ["CBUT_TOP_N"] = old
+            cfg = db.load_config(path)
         self.assertEqual(cfg["top_n"], 9)
 
     def test_an_environment_value_is_validated_too(self):
-        old = os.environ.get("CBUT_TOP_N")
-        os.environ["CBUT_TOP_N"] = "not-a-number"
-        try:
+        with no_settings_env():
+            os.environ["CBUT_TOP_N"] = "not-a-number"
             with self.assertRaises(db.ConfigError):
                 db.load_config(Path("/nonexistent/cbut/config.toml"))
-        finally:
-            if old is None:
-                del os.environ["CBUT_TOP_N"]
-            else:
-                os.environ["CBUT_TOP_N"] = old
+
+    def test_an_out_of_range_environment_value_is_refused(self):
+        """The bounds are not only a file check.
+
+        If `CBUT_NAME_CAP=0` sailed through, the environment would be a way to ask
+        for a blank panel that the settings file refuses — and the message has to
+        name the variable, since that is what the reader actually set.
+        """
+        with no_settings_env():
+            os.environ["CBUT_NAME_CAP"] = "0"
+            with self.assertRaises(db.ConfigError) as ctx:
+                db.load_config(Path("/nonexistent/cbut/config.toml"))
+        self.assertIn("CBUT_NAME_CAP", str(ctx.exception),
+                      f"the refusal names the file, not the variable: {ctx.exception}")
+
+    def test_a_fractional_interval_can_come_from_the_environment(self):
+        """The env path parses with ``int()`` first, so a fraction is the fallback's case.
+
+        Without it the reader cannot tell whether `CBUT_REFRESH_SECS=1.5` is honoured
+        or silently dropped back to the default.
+        """
+        with no_settings_env():
+            os.environ["CBUT_REFRESH_SECS"] = "1.5"
+            cfg = db.load_config(Path("/nonexistent/cbut/config.toml"))
+        self.assertEqual(cfg["refresh_secs"], 1.5)
 
 
 class WiringTest(unittest.TestCase):
@@ -212,7 +248,7 @@ class CliWiringTest(unittest.TestCase):
         self.addCleanup(lambda: delattr(tui.TrackerApp, "run"))
         tui.TrackerApp.run = lambda self: started.append(self)
         old_path = db.CONFIG_PATH
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, no_settings_env():
             cfg_path = (write_config(tmp, cfg_text) if cfg_text is not None
                         else Path(tmp) / "absent.toml")
             db.CONFIG_PATH = cfg_path

@@ -196,6 +196,12 @@ tool runs from a checkout, so the version only needs to move when a documented c
   every test, because every command fixture took the *other* branch. If no test goes red when you undo
   the change, the change is not verified yet (and provoke it: remove the fix on purpose and read the
   failure).
+- **A settings case must pass in someone else's shell.** Anything asserting the file or the defaults
+  is asserting them *under* the environment, which outranks both — so the case reads as a settings-layer
+  regression the moment a developer exports one `CBUT_*` value. `test_config.py` wraps those cases in
+  `no_settings_env()`, which hides **every name derived from `db.ENV_NAMES`** (a hand-copied list is how
+  the next key gets forgotten here too), and the check is that the whole suite is run twice: once clean,
+  once with every setting set to a hostile value. Five cases were red that way before the helper existed.
 - Commit messages follow Conventional Commits (`feat:` / `fix:` / `docs:` / `chore:`), code before
   docs.
 
