@@ -424,3 +424,35 @@ Cost     The floor is where this stops being a fix: two name columns that alone 
          the every-tab assertion said "what is shown always fits"; it went red on that MCP case, and the
          product was right — the assertion was the bug
 Commit   7ae28ae
+
+
+### D-026 · 2026-10-10 · fix
+Symptom  Two numbers in the shipped prose were written from memory instead of measured. The
+         `WideTableMixin` docstring, D-025 and AGENTS.md all said the plan covers "the eleven
+         tables"; a walk of `cbut-tui.py` finds **nine** `DataTable(id=…)` — seven inside the eight
+         tabs (Dashboard draws panels, not a table) and one on each pushed detail screen. Both
+         READMEs also promised "the Tokens page keeps **6 of 9**" at 80×24. Against a copy of this
+         machine's own database the plan keeps **5 of 9**, and the 6 was never a plan reading at
+         all: it is D-024's count of columns visible *before* the plan existed, a different
+         quantity reused as the plan's output. The English README said the nine share "the same
+         registry" when each host declares its own `WIDE_TABLES`
+Change   The census is corrected to nine everywhere it appeared, with the counting method named
+         beside it. The READMEs (both languages) keep the one reading that re-measured true (Usage
+         5 of 10) and label it "readings from this machine's own database at 80×24, yours will
+         differ" rather than presenting it as a property of the page; the borrowed Tokens count is
+         deleted instead of replaced, because a number that rots in a README is worse than no
+         number. "Same registry" became "the same plan"
+Evidence `test_every_datatable_in_the_source_is_registered` parses the source, collects every
+         `DataTable(id=…)` literal, and fails in both directions — a table no host registers, or a
+         registry entry naming a table the source never builds. It is the check the prose never had:
+         every layout test loops over a registry, so an unplanned table would clip in silence while
+         the claim stayed true of the tables that were known. Provoked by deleting the `t-plugins`
+         line: `AssertionError: {'t-plugins'} is not false : unplanned tables, free to clip:
+         ['t-plugins']`, and the file restored so `git diff` showed only the docstring line. The
+         readings above are the app under `run_test` at 80×24 and 60×24 against a **copy** of the
+         real database in `/tmp`, Usage switched to all-time; the real file was never opened by them
+         and the copy is deleted
+Cost     Suite 303 → 304. The guard pins coverage, not the count: no test asserts "nine", because a
+         tenth table should fail a test for being unplanned, not for being one past a number in some
+         prose. What changed is where a future count has to come from — the source walk, not memory
+Commit   57190c4
