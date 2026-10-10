@@ -450,7 +450,11 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             (mid, "s1", "m", None, None, None, None, 1000, 0),
         ])
         app = TrackerApp(str(self.db_path))
-        async with app.run_test() as pilot:
+        # Twelve columns need ~133 cells, so at the default 80 the plan would drop the
+        # very columns this case is about — and `assertNotIn(mid, ...)` would then pass
+        # for the wrong reason (nothing shown, not masked). Ask for a terminal wide
+        # enough that the masking itself is what is being tested.
+        async with app.run_test(size=WIDE) as pilot:
             await app.push_screen(tui.ModelResponsesScreen("m"))
             await pilot.pause()
             scr = app.screen_stack[-1]
@@ -1672,6 +1676,193 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(top.model, shown,
                              "the rebuilt rows lost the key that names their model")
             self.assertIn(shown, long_names, "the cell is not one of the two models")
+
+    # 62. the plan is a rule for every table, not two of them
+    async def test_no_table_shows_a_half_column_at_any_width(self):
+        """Loop every tab at 60 and 80 wide: what is shown fits, or the note lies.
+
+        The floor at the bottom is the point of the case. A loop that only ever
+        measured tables which happen to fit would pass without the plan existing at
+        all, so it also counts the tables that had to drop something.
+        """
+        now = int(time.time() * 1000)
+        LONG = "an-entity-name-long-enough-to-push-a-column-off-an-80-column-screen"
+        make_db(self.db_path, [
+            (f"m{i}", f"s{i % 2}", LONG, 120000 + i, 15000 + i, 90000 + i,
+             1000 + i, now - i * 500_000, 1) for i in range(4)],
+            cache={f"m{i}": (88000 + i, 30000 + i, 1200 + i) for i in range(4)},
+            ptotals={f"m{i}": 135000 + i for i in range(4)})
+        insert_tool_calls(self.db_path, [
+            (f"c{i}", "s1", "/p", LONG, "builtin", now - i * 60000, 10, "completed")
+            for i in range(3)])
+        insert_mcp_usage(self.db_path, [
+            (f"mc{i}", LONG, LONG + "-tool", "s1", "/p", now - i * 60000,
+             "completed", 10) for i in range(2)])
+        conn = db.open_db(self.db_path)
+        conn.executemany(
+            "INSERT INTO skill_usage(call_id, skill, plugin, session_id, project, ts,"
+            " status, duration_ms) VALUES(?,?,?,?,?,?,?,?)",
+            [(f"sk{i}", LONG, LONG, "s1", "/p", now - i * 60000, "completed", 20)
+             for i in range(2)])
+        conn.executemany(
+            "INSERT INTO agent_usage(call_id, agent_type, kind, source, session_id,"
+            " project, ts, status, duration_ms) VALUES(?,?,?,?,?,?,?,?,?)",
+            [(f"ag{i}", LONG, "active", "tool", "s1", "/p", now - i * 60000,
+              "completed", 30) for i in range(2)])
+        conn.commit()
+        conn.close()
+
+        for width in (60, 80):
+            app = TrackerApp(str(self.db_path))
+            dropped = []
+            async with app.run_test(size=(width, 24)) as pilot:
+                await pilot.pause()
+                for tab in app.TAB_IDS:
+                    with self.subTest(width=width, tab=tab):
+                        app.query_one(tui.TabbedContent).active = tab
+                        await pilot.pause(0.05)
+                        for t in app.query(f"#{tab} DataTable"):
+                            full = list(app.WIDE_TABLES[t.id][0])
+                            labels = [str(c.label) for c in t.columns.values()]
+                            note = app.query_one(f"#{app.WIDE_TABLES[t.id][1]}",
+                                                 tui.Static)
+                            if labels == full:
+                                self.assertFalse(note.display,
+                                                 f"{t.id} hides nothing and still warns")
+                                continue
+                            dropped.append(t.id)
+                            # what remains is a prefix of the registry, every name
+                            # that went away is on the note, and the row is whole.
+                            self.assertEqual(labels, full[:len(labels)],
+                                             f"{t.id} shows columns out of order")
+                            need = sum(c.content_width for c in t.columns.values()) \
+                                + 2 * len(labels)
+                            flat = " ".join(" ".join(
+                                "".join(s.text for s in note.render_line(y))
+                                for y in range(note.region.height)).split())
+                            for hidden in full[len(labels):]:
+                                self.assertIn(hidden, flat,
+                                              f"{hidden} is gone and unnamed")
+                            self.assertIn(f"{len(labels)} of {len(full)}", flat,
+                                          "the note's numbers are not the table's")
+                            if need > t.region.width:
+                                # Only legal at the floor: two name columns wider than
+                                # the screen cannot be cut further, so the note has to
+                                # say so instead of the table pretending it fits.
+                                self.assertLessEqual(len(labels), app.MIN_SHOWN,
+                                                     f"{t.id} stops above the floor")
+                                self.assertIn("even these are cut", flat,
+                                              f"{t.id} is still cut and does not say so")
+                            else:
+                                self.assertNotIn("even these are cut", flat,
+                                                 f"{t.id} fits but warns about being cut")
+            # The two the fixture is built to overflow, at every width — without this
+            # the loop could pass by never planning anything at all.
+            self.assertIn("t-mcp", dropped)
+            self.assertIn("t-usage", dropped)
+
+    # 63. the pushed screens are planned too — they are the widest tables here
+    async def test_the_detail_screens_get_the_column_plan(self):
+        now = int(time.time() * 1000)
+        LONG = "claude-sonnet-4-5-20260101-plus-an-extra-qualifier-segment"
+        make_db(self.db_path, [
+            (f"m{i}", "s1", LONG, 120000 + i, 15000 + i, 90000 + i, 1000 + i,
+             now - i * 60000, 1) for i in range(3)],
+            cache={f"m{i}": (88000 + i, 30000 + i, 1200 + i) for i in range(3)})
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.push_screen(tui.ModelResponsesScreen(LONG))
+            await pilot.pause()
+            scr = app.screen_stack[-1]
+            t = scr.query_one("#resp-table", tui.DataTable)
+            cols = list(t.columns.values())
+            self.assertLess(len(cols), len(tui.RESPONSE_COLUMNS),
+                            "the 12-column table was left to clip")
+            self.assertLessEqual(sum(c.content_width for c in cols) + 2 * len(cols),
+                                 t.region.width)
+            note = scr.query_one("#colnote-resp", tui.Static)
+            self.assertTrue(note.display)
+            hidden = [c for c in tui.RESPONSE_COLUMNS if c not in
+                      [str(x.label) for x in cols]]
+            flat = " ".join(" ".join("".join(s.text for s in note.render_line(y))
+                                    for y in range(note.region.height)).split())
+            for label in hidden:
+                self.assertIn(label, flat, f"{label} is gone and unnamed")
+
+    # 64. a wide terminal shows every column on the screens and warns about nothing
+    async def test_the_detail_screens_show_all_columns_when_they_fit(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [("m1", "s1", "m", 1, 1, 0, 0, now, 1)])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(220, 40)) as pilot:
+            await pilot.pause()
+            for screen, tid, note_id, cols in (
+                    (tui.ModelResponsesScreen("m"), "#resp-table", "#colnote-resp",
+                     tui.RESPONSE_COLUMNS),
+                    (tui.HistoryScreen("tool", "Bash"), "#hist-table", "#colnote-hist",
+                     tui.HISTORY_COLUMNS)):
+                with self.subTest(table=tid):
+                    app.push_screen(screen)
+                    await pilot.pause()
+                    t = app.screen_stack[-1].query_one(tid, tui.DataTable)
+                    self.assertEqual([str(c.label) for c in t.columns.values()],
+                                     list(cols))
+                    note = app.screen_stack[-1].query_one(note_id, tui.Static)
+                    self.assertFalse(note.display,
+                                     "a note above a table that hides nothing is noise")
+                    await pilot.press("escape")
+                    await pilot.pause()
+
+    # 65. the registry is the only source of column truth
+    async def test_the_columns_on_screen_are_exactly_the_registered_ones(self):
+        """`on_mount` builds from WIDE_TABLES; this pins every entry to that.
+
+        Without it a table could gain a column in one place and the plan would drop a
+        name it never declared — the note would then be describing a column that does
+        not exist.
+        """
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(220, 40)) as pilot:
+            await pilot.pause()
+            for tid, (cols, note_id, _chrome) in app.WIDE_TABLES.items():
+                with self.subTest(table=tid):
+                    t = app.query_one(f"#{tid}", tui.DataTable)
+                    self.assertEqual([str(c.label) for c in t.columns.values()],
+                                     list(cols))
+                    self.assertTrue(app.query_one(f"#{note_id}", tui.Static))
+            for screen_cls, attrs in ((tui.HistoryScreen, "WIDE_TABLES"),
+                                      (tui.ModelResponsesScreen, "WIDE_TABLES")):
+                self.assertTrue(getattr(screen_cls, attrs))
+
+    # 66. a planned table must still route its row to the right entity
+    async def test_the_mcp_row_key_survives_the_narrow_plan(self):
+        now = int(time.time() * 1000)
+        LONG = "server-name-long-enough-to-force-the-plan-to-drop-columns-here"
+        insert_mcp_usage(self.db_path, [
+            (f"mc{i}", LONG, f"{LONG}-tool-{i}", "s1", "/p", now - i * 60000,
+             "completed", 10) for i in range(2)])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(60, 24)) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-mcp"
+            await pilot.pause()
+            t = app.query_one("#t-mcp", tui.DataTable)
+            self.assertEqual([str(c.label) for c in t.columns.values()],
+                             ["server", "tool"],
+                             "the plan cut into the two columns the row key is built from")
+            t.move_cursor(row=1)
+            await pilot.pause()
+            key = list(t.rows.keys())[1]
+            app.on_data_table_row_selected(
+                tui.DataTable.RowSelected(t, t.cursor_row, key))
+            await pilot.pause()
+            await pilot.pause()
+            scr = app.screen_stack[-1]
+            self.assertIsInstance(scr, tui.HistoryScreen)
+            self.assertEqual(scr.entity, f"{LONG}-tool-1",
+                             "the rebuilt rows lost the key that names their tool")
 
 
 if __name__ == "__main__":

@@ -103,6 +103,22 @@ USAGE_COLUMNS = ("Time", "Model", "Usage Total", "Input", "Output",
 TOKEN_COLUMNS = ("Model", "Usage Total", "Requests", "Input", "Output",
                  "API Total", "Cache hit", "Cache miss", "Cache write")
 
+# Entity tabs and the two detail screens. Declared here rather than inline at
+# `add_columns` because the column plan needs the full list to compute a prefix from,
+# and a plan that cannot name the columns it dropped is a silent truncation wearing a
+# guard's clothes.
+TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "avg", "last used")
+SKILLS_COLUMNS = ("skill", "calls", "ok", "last used")
+AGENTS_COLUMNS = ("agent", "calls", "last used")
+PLUGINS_COLUMNS = ("plugin", "uses", "skills", "agents", "cmds")
+MCP_COLUMNS = ("server", "tool", "calls", "ok", "last used")
+HISTORY_COLUMNS = ("when", "project", "session", "status", "duration")
+# Twelve columns need 170 cells: on an 80-wide terminal more than half of this table
+# used to sit past the right edge with no key that would bring it back.
+RESPONSE_COLUMNS = ("when", "model", "prompt", "completion", "total",
+                    "cache_r", "cache_w", "cache_hit", "cache_miss",
+                    "cache_write", "usage", "message_id")
+
 
 if HAVE_TEXTUAL:
 
@@ -132,73 +148,204 @@ if HAVE_TEXTUAL:
                 yield Select(RANGE_OPTIONS, value=self._range_value,
                              allow_blank=False, id="range")
 
-    class HistoryScreen(Screen):
+    class WideTableMixin:
+        """The narrow-terminal column plan, shared by every host that owns a table.
+
+        A rule that covers two of the eleven tables is not a rule, so the mechanism
+        lives here and each host declares its own ``WIDE_TABLES``. ``_wide_rows`` is
+        created by each host's ``__init__`` — it must not be a class attribute, or two
+        open screens would share one row cache.
+
+        The numbers a host registers are measured on this machine, not derived: a column
+        costs its content width plus a 2-cell gutter (``virtual_size.width ==
+        sum(content_width) + 2 * n_columns``, checked on every table), and a table loses
+        a fixed number of cells to its surroundings — 2 inside a tab pane, 4 on the
+        padded Usage page, 0 on a pushed screen that spans the terminal.
+        """
+
+        CELL_COST = 2
+        MIN_SHOWN = 2      # never narrow a table down to a single unnamed column
+
+        def _fill(self, table, rows, key_index=0, key_kind=None):
+            # Remember the highlighted row by its ROW KEY, not by index: a
+            # re-sort between refreshes must not move the highlight onto a
+            # different entity (index-based restore would).
+            cur_key = None
+            cur = table.cursor_row
+            if key_kind and table.row_count:
+                try:
+                    cur_key = table.coordinate_to_cell_key(
+                        table.cursor_coordinate).row_key
+                except Exception:
+                    cur_key = None
+            table.clear()
+            n = 0
+            for r in rows:
+                # NULL renders as "-", matching fmt_n (never a blank cell).
+                cells = [("-" if c is None else str(c)) for c in r]
+                key = None
+                if key_kind:
+                    # key_index may be a single index or a tuple of indices for
+                    # a composite (unique) key, e.g. mcp -> (server, tool).
+                    idx = (key_index if isinstance(key_index, (tuple, list))
+                           else (key_index,))
+                    key = "\t".join([key_kind] + [str(r[i]) for i in idx])
+                table.add_row(*cells, key=key)
+                n += 1
+            if cur_key is not None and cur_key in table.rows:
+                table.move_cursor(row=table.get_row_index(cur_key))
+            elif not key_kind and 0 <= cur < n:
+                # Unkeyed tables (e.g. the Request Logs list) keep the old
+                # index-based restore.
+                table.move_cursor(row=cur)
+
+        def _fill_or_empty(self, table, rows, empty_msg, key_index=0,
+                           key_kind=None):
+            """Fill a table, or show an explicit empty-state row.
+
+            Mirrors ``_fill_tokens``: an empty tab must never render a blank
+            region. The empty row carries no key, so selecting it is a no-op.
+            """
+            if rows:
+                self._fill(table, rows, key_index=key_index, key_kind=key_kind)
+            else:
+                table.clear()
+                table.add_row(empty_msg, *(["-"] * (len(table.columns) - 1)))
+
+        @staticmethod
+        def _column_widths(labels, rows):
+            """What DataTable will charge for each column: label or widest cell."""
+            return [max(len(str(label)),
+                        max((len(str(r[i])) for r in rows), default=0))
+                    for i, label in enumerate(labels)]
+
+        def _set_columns(self, table, cols) -> None:
+            if [str(c.label) for c in table.columns.values()] == list(cols):
+                return
+            table.clear(columns=True)
+            table.add_columns(*cols)
+
+        def _fill_wide(self, table_id, rows, empty_msg, key_index=0, key_kind=None,
+                       width=None):
+            """Fill a wide table with the longest prefix of columns that fits.
+
+            Prefix, not priority re-ordering: both tables are already ordered most
+            essential first (name, total, then the cache detail), so dropping the
+            tail is the plan. The cells past the right edge used to be cut
+            mid-label with no keyboard way to reach them.
+            """
+            table = self.query_one(f"#{table_id}", DataTable)
+            labels, note_id, chrome = self.WIDE_TABLES[table_id]
+            self._wide_rows[table_id] = (rows, empty_msg, key_index, key_kind)
+            note = self.query_one(f"#{note_id}", Static)
+            width = width or self.size.width or table.region.width
+            if not width or not rows:
+                # Either the first layout has not happened yet (both are 0, and
+                # planning against 0 would drop everything) or there is nothing to
+                # protect: an empty-state row spans the whole label set.
+                self._set_columns(table, labels)
+                self._fill_or_empty(table, rows, empty_msg, key_index, key_kind)
+                note.update("")
+                note.display = False
+                if not width:
+                    self.call_after_refresh(self._plan_wide_tables)
+                return
+            widths = self._column_widths(labels, rows)
+            budget = width - chrome
+            keep = len(labels)
+            while keep > self.MIN_SHOWN and sum(widths[:keep]) + self.CELL_COST * keep > budget:
+                keep -= 1
+            self._set_columns(table, labels[:keep])
+            self._fill_or_empty(table, [r[:keep] for r in rows],
+                                empty_msg, key_index, key_kind)
+            if keep >= len(labels):
+                note.update("")
+                note.display = False
+                return
+            cuts = sum(widths[:keep]) + self.CELL_COST * keep > budget
+            note.update(f"{keep} of {len(labels)} columns · hidden: "
+                        f"{', '.join(labels[keep:])} · widen to "
+                        f"{sum(widths) + self.CELL_COST * len(labels) + chrome}"
+                        + (" · even these are cut" if cuts else ""))
+            note.display = True
+
+        def _plan_wide_tables(self, width=None) -> None:
+            """Re-plan from the cached rows — a resize must not re-query."""
+            for table_id, (rows, empty_msg, key_index, key_kind) in list(
+                    self._wide_rows.items()):
+                self._fill_wide(table_id, rows, empty_msg,
+                                key_index=key_index, key_kind=key_kind,
+                                width=width)
+
+    class HistoryScreen(WideTableMixin, Screen):
         """Recent calls for one entity, pushed on row select."""
 
         BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
+        # A pushed screen spans the terminal, so its table loses no cells to its
+        # surroundings — measured: region width == terminal width at 60/80/100.
+        WIDE_TABLES = {"hist-table": (HISTORY_COLUMNS, "colnote-hist", 0)}
 
         def __init__(self, kind: str, name: str, display: str | None = None):
             super().__init__()
             self.kind = kind
             self.entity = name              # the value queried against the DB
             self.heading = display or name  # what the title shows
+            self._wide_rows = {}
 
         def compose(self) -> ComposeResult:
             yield TopBar(f"{self.kind} · {self.heading}")
             yield Vertical(
                 Static(f"[b]{self.kind}[/b] · {self.heading}", id="hist-title"),
+                Static(id="colnote-hist", classes="col-note"),
                 DataTable(id="hist-table", zebra_stripes=True),
             )
             yield Footer()
 
         def on_mount(self) -> None:
             self.title = f"{self.kind}: {self.heading}"
-            t = self.query_one("#hist-table", DataTable)
-            t.cursor_type = "row"
-            t.add_columns("when", "project", "session", "status", "duration")
+            self.query_one("#hist-table", DataTable).cursor_type = "row"
             conn = db.open_db(self.app.db_path, readonly=True)
             try:
-                for r in db.q_history(conn, self.kind, self.entity,
-                                      self.app.DETAIL_LIMIT):
-                    t.add_row(ts(r["ts"]), r["project"] or "-",
-                              (r["session_id"] or "")[:8], r["status"] or "-",
-                              ms(r["duration_ms"]))
+                rows = [[ts(r["ts"]), r["project"] or "-",
+                         (r["session_id"] or "")[:8], r["status"] or "-",
+                         ms(r["duration_ms"])]
+                        for r in db.q_history(conn, self.kind, self.entity,
+                                              self.app.DETAIL_LIMIT)]
             finally:
                 conn.close()
+            self._fill_wide("hist-table", rows, "No calls recorded for this name")
 
-    class ModelResponsesScreen(Screen):
+    class ModelResponsesScreen(WideTableMixin, Screen):
         """Per-model recent responses, pushed on a Tokens-tab row select."""
 
         BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
+        WIDE_TABLES = {"resp-table": (RESPONSE_COLUMNS, "colnote-resp", 0)}
 
         def __init__(self, model: str):
             super().__init__()
             self.model = model
+            self._wide_rows = {}
 
         def compose(self) -> ComposeResult:
             yield TopBar(f"Model responses · {self.model}")
             yield Vertical(
                 Static(f"[b]Model responses[/b] · {self.model}", id="resp-title"),
+                Static(id="colnote-resp", classes="col-note"),
                 DataTable(id="resp-table", zebra_stripes=True),
             )
             yield Footer()
 
         def on_mount(self) -> None:
             self.title = f"Model: {self.model}"
-            t = self.query_one("#resp-table", DataTable)
-            t.cursor_type = "row"
-            t.add_columns(
-                "when", "model", "prompt", "completion", "total",
-                "cache_r", "cache_w", "cache_hit", "cache_miss", "cache_write",
-                "usage", "message_id",
-            )
+            self.query_one("#resp-table", DataTable).cursor_type = "row"
             conn = db.open_db(self.app.db_path, readonly=True)
             try:
+                rows = []
                 for r in db.q_model_responses(conn, model=self.model,
                                               limit=self.app.DETAIL_LIMIT):
                     mid = r["message_id"] or ""
                     masked = (mid[:8] + "…" + mid[-8:]) if len(mid) > 16 else mid
-                    t.add_row(
+                    rows.append([
                         ts(r["ts"]), r["model"] or "-",
                         fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
                         fmt_n(r["total_tokens"]),
@@ -207,13 +354,15 @@ if HAVE_TEXTUAL:
                         fmt_n(r["prompt_cache_hit_tokens"]),
                         fmt_n(r["prompt_cache_miss_tokens"]),
                         fmt_n(r["prompt_cache_write_tokens"]),
-                        ("yes" if r["usage_available"] else "not counted"),
+                        "yes" if r["usage_available"] else "not counted",
                         masked,
-                    )
+                    ])
             finally:
                 conn.close()
+            self._fill_wide("resp-table", rows,
+                           "No responses recorded for this model")
 
-    class TrackerApp(App):
+    class TrackerApp(WideTableMixin, App):
         CSS = """
         #hist-title, #resp-title { padding: 1 2; }
         DataTable { height: 1fr; }
@@ -407,14 +556,19 @@ if HAVE_TEXTUAL:
                         id="dash-box",
                     )
                 with TabPane("Tools", id="tab-tools"):
+                    yield Static(id="colnote-tools", classes="col-note")
                     yield DataTable(id="t-tools", zebra_stripes=True)
                 with TabPane("Skills", id="tab-skills"):
+                    yield Static(id="colnote-skills", classes="col-note")
                     yield DataTable(id="t-skills", zebra_stripes=True)
                 with TabPane("Agents", id="tab-agents"):
+                    yield Static(id="colnote-agents", classes="col-note")
                     yield DataTable(id="t-agents", zebra_stripes=True)
                 with TabPane("Plugins", id="tab-plugins"):
+                    yield Static(id="colnote-plugins", classes="col-note")
                     yield DataTable(id="t-plugins", zebra_stripes=True)
                 with TabPane("MCP", id="tab-mcp"):
+                    yield Static(id="colnote-mcp", classes="col-note")
                     yield DataTable(id="t-mcp", zebra_stripes=True)
                 with TabPane("Tokens", id="tab-tokens"):
                     yield Static(id="colnote-tokens", classes="col-note")
@@ -461,22 +615,13 @@ if HAVE_TEXTUAL:
             yield Footer()
 
         def on_mount(self) -> None:
-            for tid, cols in (
-                ("t-tools", ("tool", "calls", "ok", "fail", "avg", "last used")),
-                ("t-skills", ("skill", "calls", "ok", "last used")),
-                ("t-agents", ("agent", "calls", "last used")),
-                ("t-plugins", ("plugin", "uses", "skills", "agents", "cmds")),
-                ("t-mcp", ("server", "tool", "calls", "ok", "last used")),
-            ):
+            # One source of column truth: the registry the plan reads is the registry
+            # that creates the columns, so a table cannot gain a column the plan does
+            # not know how to drop.
+            for tid, (cols, _note, _chrome) in self.WIDE_TABLES.items():
                 t = self.query_one(f"#{tid}", DataTable)
                 t.cursor_type = "row"
                 t.add_columns(*cols)
-            tt = self.query_one("#t-tokens", DataTable)
-            tt.cursor_type = "row"
-            tt.add_columns(*TOKEN_COLUMNS)
-            tu = self.query_one("#t-usage", DataTable)
-            tu.cursor_type = "row"
-            tu.add_columns(*USAGE_COLUMNS)
             # Best-effort schema upgrade: an old DB lacks the columns every usage
             # query needs. migrate() returns a status now, so a locked or damaged
             # file is named on the status line instead of showing an empty panel
@@ -509,141 +654,36 @@ if HAVE_TEXTUAL:
 
         # --- data fill / refresh --------------------------------------------
 
-        def _fill(self, table, rows, key_index=0, key_kind=None):
-            # Remember the highlighted row by its ROW KEY, not by index: a
-            # re-sort between refreshes must not move the highlight onto a
-            # different entity (index-based restore would).
-            cur_key = None
-            cur = table.cursor_row
-            if key_kind and table.row_count:
-                try:
-                    cur_key = table.coordinate_to_cell_key(
-                        table.cursor_coordinate).row_key
-                except Exception:
-                    cur_key = None
-            table.clear()
-            n = 0
-            for r in rows:
-                # NULL renders as "-", matching fmt_n (never a blank cell).
-                cells = [("-" if c is None else str(c)) for c in r]
-                key = None
-                if key_kind:
-                    # key_index may be a single index or a tuple of indices for
-                    # a composite (unique) key, e.g. mcp -> (server, tool).
-                    idx = (key_index if isinstance(key_index, (tuple, list))
-                           else (key_index,))
-                    key = "\t".join([key_kind] + [str(r[i]) for i in idx])
-                table.add_row(*cells, key=key)
-                n += 1
-            if cur_key is not None and cur_key in table.rows:
-                table.move_cursor(row=table.get_row_index(cur_key))
-            elif not key_kind and 0 <= cur < n:
-                # Unkeyed tables (e.g. the Request Logs list) keep the old
-                # index-based restore.
-                table.move_cursor(row=cur)
 
-        def _fill_or_empty(self, table, rows, empty_msg, key_index=0,
-                           key_kind=None):
-            """Fill a table, or show an explicit empty-state row.
-
-            Mirrors ``_fill_tokens``: an empty tab must never render a blank
-            region. The empty row carries no key, so selecting it is a no-op.
-            """
-            if rows:
-                self._fill(table, rows, key_index=key_index, key_kind=key_kind)
-            else:
-                table.clear()
-                table.add_row(empty_msg, *(["-"] * (len(table.columns) - 1)))
 
         def _set_status(self, msg: str) -> None:
             self.query_one("#status", Static).update(msg)
 
         # --- narrow-terminal column plan -------------------------------------
 
-        @staticmethod
-        def _column_widths(labels, rows):
-            """What DataTable will charge for each column: label or widest cell."""
-            return [max(len(str(label)),
-                        max((len(str(r[i])) for r in rows), default=0))
-                    for i, label in enumerate(labels)]
 
-        def _set_columns(self, table, cols) -> None:
-            if [str(c.label) for c in table.columns.values()] == list(cols):
-                return
-            table.clear(columns=True)
-            table.add_columns(*cols)
 
-        def _fill_wide(self, table_id, rows, empty_msg, key_index=0, key_kind=None,
-                       width=None):
-            """Fill a wide table with the longest prefix of columns that fits.
 
-            Prefix, not priority re-ordering: both tables are already ordered most
-            essential first (name, total, then the cache detail), so dropping the
-            tail is the plan. The cells past the right edge used to be cut
-            mid-label with no keyboard way to reach them.
-            """
-            table = self.query_one(f"#{table_id}", DataTable)
-            labels, note_id, chrome = self.WIDE_TABLES[table_id]
-            self._wide_rows[table_id] = (rows, empty_msg, key_index, key_kind)
-            note = self.query_one(f"#{note_id}", Static)
-            width = width or self.size.width or table.region.width
-            if not width or not rows:
-                # Either the first layout has not happened yet (both are 0, and
-                # planning against 0 would drop everything) or there is nothing to
-                # protect: an empty-state row spans the whole label set.
-                self._set_columns(table, labels)
-                self._fill_or_empty(table, rows, empty_msg, key_index, key_kind)
-                note.update("")
-                note.display = False
-                if not width:
-                    self.call_after_refresh(self._plan_wide_tables)
-                return
-            widths = self._column_widths(labels, rows)
-            budget = width - chrome
-            keep = len(labels)
-            while keep > self.MIN_SHOWN and sum(widths[:keep]) + self.CELL_COST * keep > budget:
-                keep -= 1
-            self._set_columns(table, labels[:keep])
-            self._fill_or_empty(table, [r[:keep] for r in rows],
-                                empty_msg, key_index, key_kind)
-            if keep >= len(labels):
-                note.update("")
-                note.display = False
-                return
-            cuts = sum(widths[:keep]) + self.CELL_COST * keep > budget
-            note.update(f"{keep} of {len(labels)} columns · hidden: "
-                        f"{', '.join(labels[keep:])} · widen to "
-                        f"{sum(widths) + self.CELL_COST * len(labels) + chrome}"
-                        + (" · even these are cut" if cuts else ""))
-            note.display = True
-
-        def _plan_wide_tables(self, width=None) -> None:
-            """Re-plan from the cached rows — a resize must not re-query."""
-            for table_id, (rows, empty_msg, key_index, key_kind) in list(
-                    self._wide_rows.items()):
-                self._fill_wide(table_id, rows, empty_msg,
-                                key_index=key_index, key_kind=key_kind,
-                                width=width)
 
         def _fill_tools(self, conn, start=None, end=None) -> None:
-            self._fill_or_empty(
-                self.query_one("#t-tools", DataTable),
+            self._fill_wide(
+                "t-tools",
                 [[r["tool_name"], f"{r['calls']:,}", f"{r['completed']:,}",
                   f"{r['failed']:,}", ms(r["avg_ms"]), ts(r["last_used"])]
                  for r in db.q_tools(conn, start_ts=start, end_ts=end)],
                 "No tool calls yet", key_kind="tool")
 
         def _fill_skills(self, conn, start=None, end=None) -> None:
-            self._fill_or_empty(
-                self.query_one("#t-skills", DataTable),
+            self._fill_wide(
+                "t-skills",
                 [[r["skill"], f"{r['calls']:,}", f"{r['completed']:,}",
                   ts(r["last_used"])]
                  for r in db.q_skills(conn, start_ts=start, end_ts=end)],
                 "No skills used yet", key_kind="skill")
 
         def _fill_agents(self, conn, start=None, end=None) -> None:
-            self._fill_or_empty(
-                self.query_one("#t-agents", DataTable),
+            self._fill_wide(
+                "t-agents",
                 [[r["agent_type"], f"{r['calls']:,}", ts(r["last_used"])]
                  for r in db.q_agents(conn, start_ts=start, end_ts=end)],
                 "No agents used yet", key_kind="agent")
@@ -652,8 +692,8 @@ if HAVE_TEXTUAL:
             # No time window: the plugin list is all-time (the inventory carries
             # no timestamps), so start/end are accepted for the shared fill
             # signature but ignored. Name is the key; version is not shown.
-            self._fill_or_empty(
-                self.query_one("#t-plugins", DataTable),
+            self._fill_wide(
+                "t-plugins",
                 [[r["plugin"], f"{r['uses']:,}", f"{r['skills']:,}",
                   f"{r['agents']:,}", f"{r['commands']:,}"]
                  for r in db.q_plugins(conn)],
@@ -662,8 +702,8 @@ if HAVE_TEXTUAL:
         def _fill_mcp(self, conn, start=None, end=None) -> None:
             # Row key is unique per (server, tool): v_mcp groups by both, so two
             # tools under one server would otherwise collide and abort the mount.
-            self._fill_or_empty(
-                self.query_one("#t-mcp", DataTable),
+            self._fill_wide(
+                "t-mcp",
                 [[r["server"], r["tool"], f"{r['calls']:,}",
                   f"{r['completed']:,}", ts(r["last_used"])]
                  for r in db.q_mcp(conn, start_ts=start, end_ts=end)],
@@ -849,19 +889,21 @@ if HAVE_TEXTUAL:
         # than the terminal, so two columns stop fitting below 60.
         STACKED_WIDTH = 60
 
-        # The two tables with more columns than a narrow terminal has cells. Each
-        # entry is table id -> (every column in display order, the note that names
-        # what was dropped, the cells the table loses to its surroundings). All
-        # three numbers are measured, not guessed: at 80/100/160 columns the Tokens
-        # table's region is 2 cells narrower than the terminal and the Usage table's
-        # is 4 (its box is padded), and `virtual_size.width` equals
-        # `sum(content_width) + 2 * n_columns` on both.
+        # Every table on this screen: id -> (its columns in display order, the note
+        # that names what the plan dropped, the cells it loses to its surroundings).
+        # Chrome is 2 for a table sitting directly in a tab pane and 4 on the padded
+        # Usage page — measured at 80/100/160 columns, not derived. A table that fits
+        # keeps every column and shows no note, so registering one that does not need
+        # the plan costs nothing.
         WIDE_TABLES = {
+            "t-tools": (TOOLS_COLUMNS, "colnote-tools", 2),
+            "t-skills": (SKILLS_COLUMNS, "colnote-skills", 2),
+            "t-agents": (AGENTS_COLUMNS, "colnote-agents", 2),
+            "t-plugins": (PLUGINS_COLUMNS, "colnote-plugins", 2),
+            "t-mcp": (MCP_COLUMNS, "colnote-mcp", 2),
             "t-tokens": (TOKEN_COLUMNS, "colnote-tokens", 2),
             "t-usage": (USAGE_COLUMNS, "colnote-usage", 4),
         }
-        CELL_COST = 2         # a column's own content width plus its 2-cell gutter
-        MIN_SHOWN = 2         # never narrow a table down to a single unnamed column
 
         def _apply_responsive_layout(self, width=None) -> None:
             # Panels side by side on wide terminals; two-up when narrow; stacked
