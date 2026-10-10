@@ -22,22 +22,27 @@ machine" are different claims and each needs its own run. `__pycache__` on this 
 been exercised in throwaway venvs (table below) rather than guessed at.
 
 What has actually been executed, most recently on 2026-10-10 — re-run after the settings layer, after
-the column plan was extended to every table, after the plan got its source-level guard, and again
-after the cell cap and the dynamic-import check landed, because the first imports `tomllib`, which is
-standard library only from exactly the floor this table's bottom row sits on, and the rest change
-layout code every interpreter draws:
+the column plan was extended to every table, after the plan got its source-level guard, after the cell
+cap and the dynamic-import check landed, and again after the cap became a setting (`name_cap`), because
+the first imports `tomllib`, which is standard library only from exactly the floor this table's bottom
+row sits on, and the rest change layout code every interpreter draws:
 
 | Interpreter | Suite on this machine | Notes |
 |---|---|---|
-| `.venv` 3.13.14 | **Ran 310, OK** (140.2 s) | what the TUI runs on |
-| 3.14.4 (system build, sqlite 3.46.1) | **Ran 310, OK** (117.3 s) | throwaway venv on the system interpreter — a different SQLite build, same green |
-| 3.12.14 (CI's version) | **Ran 310, OK** (147.5 s) | throwaway `uv venv --python 3.12` + `textual>=8.2,<9`, i.e. the way CI builds it — run *before* pushing, so CI is not the first place 3.12 sees this code |
-| 3.11.15 (the promised floor) | **Ran 310, OK** (161.4 s) | throwaway `uv venv --python 3.11` in `/tmp`, `textual>=8.2,<9`, sqlite 3.53.1 — this is the row that would fail first if `tomllib` were not available at the floor. Not a project venv, delete it and nothing is lost |
+| `.venv` 3.13.14 | **Ran 313, OK** (151.7 s) | what the TUI runs on, sqlite 3.53.1 |
+| 3.14.4 (system build, sqlite 3.46.1) | **Ran 313, OK** (136.7 s) | throwaway venv on the system interpreter — a different SQLite build, same green |
+| 3.12.14 (CI's version) | **Ran 313, OK** (159.9 s) | throwaway `uv venv --python 3.12` + `textual>=8.2,<9`, i.e. the way CI builds it — run *before* pushing, so CI is not the first place 3.12 sees this code |
+| 3.11.15 (the promised floor) | **Ran 313, OK** (165.6 s) | throwaway `uv venv --python 3.11` in `/tmp`, `textual>=8.2,<9`, sqlite 3.53.1 — this is the row that would fail first if `tomllib` were not available at the floor. Not a project venv, delete it and nothing is lost |
 
-One serial pass at `64cc472`, four interpreters, four `OK`s. Earlier runs of the same day, kept
-because the counts moved and a reader will wonder: 298 when the settings layer landed, 303 when the
+One serial pass on the tree D-029 lands in (code `dd2ef52` + this record), four interpreters, four
+`OK`s. The pass certifies a **worktree**, not a commit: `test_record_coverage` reads `CHANGELOG.md`
+from disk, so the same four interpreters run at `dd2ef52` alone came back `3.13 OK / 3.12, 3.11, 3.14
+one failure each` — the guard citing a record that did not exist yet, which is the guard working, not
+a portability difference. Earlier runs of the same day, kept because the counts moved and a reader
+will wonder: 298 when the settings layer landed, 303 when the
 column plan reached every table, 304 with the source-level table census guard, 308 with the cell cap,
-310 with the dynamic-import check.
+310 with the dynamic-import check, 313 when the cap became a setting and `cbut health` started
+reporting every key it read.
 
 All four interpreters this project can plausibly meet are therefore measured, and the CI version is
 not an exception. What is still *not* certified: the exact runner image, `pip` resolution and Python

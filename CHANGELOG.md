@@ -519,3 +519,46 @@ Cost     The comment is now shorter than it was, because the sentence it carried
          closes the realistic accident — an import by string — not a determined obfuscation, and the
          entry says so instead of the comment pretending otherwise
 Commit   c480625
+
+### D-029 · 2026-10-10 · fix
+Symptom  Two gaps of one shape, both opened up by making D-027's cap configurable.
+         (1) `_cap_cell` was a `@classmethod` reading `NAME_CAP` off the **class**, so a
+         per-instance value could only ever reach the host that shadows the attribute. The tabs
+         would honour `name_cap` and the two pushed detail screens would keep rendering 28 — and
+         the pushed screens are where the long values live (they carry the project path column,
+         whose census D-027 recorded: 162 of 482 rows over 24, longest 74). A setting that reaches
+         half the surface is worse than no setting: the half it misses looks like it works.
+         (2) `cbut health` hand-listed five settings and renamed two of them — it printed
+         `refresh=5s sync=30s` for keys the file spells `refresh_secs`/`sync_secs` — so three of
+         the six knobs a user may edit did not appear under the name that works in the file
+Change   The cap is resolved through a `name_cap` **property**. `NAME_CAP` stays as the shipped
+         default, `TrackerApp.__init__` shadows it from `config["name_cap"]` the way it already
+         shadows the three limits, and each pushed screen overrides the property to read
+         `self.app.name_cap`. `name_cap` joins `DEFAULTS` (28), `ENV_NAMES` (`CBUT_NAME_CAP`) and
+         `_BOUNDS` (8..200): below 8 nothing readable survives the cut, above 200 it is not a cap.
+         `cmd_health` prints whatever `load_config()` returned, keyed the way the file spells it,
+         so the report cannot fall behind the layer one key at a time. No new import and no network
+         path — a dict comprehension inside a print that already ran
+Evidence L0 three new cases. `test_a_configured_cap_reaches_the_detail_screen_too` builds the app
+         at `name_cap = 12` and reads 12 back off the tab cells, the note text, the pushed screen's
+         own `name_cap`, its project column and `_cap_cell`. It went red twice before it was right,
+         and only the first red was the product's: then `AttributeError: 'TrackerApp' object has no
+         attribute 'name_cap'`, then my own fixture asserted a cap on a tab whose long values were
+         all on the *other* screen.
+         `test_every_pushed_screen_resolves_the_cap_from_the_app` enumerates the mixin's `Screen`
+         hosts and fails on any that does not define the override in its own `__dict__`; provoked
+         without touching a product file — an in-memory `del HistoryScreen.name_cap` turned both it
+         (`['HistoryScreen'] is not false`) and the behaviour case (`AssertionError: 28 != 12`) red.
+         `test_health_prints_every_key_the_loader_knows` compares `DEFAULTS` against the health
+         output and was red naming all three: `['name_cap', 'refresh_secs', 'sync_secs']`. A real
+         run on a throwaway database with `CBUT_NAME_CAP=40` prints `detail_limit=200 log_limit=100
+         name_cap=40 refresh_secs=5s sync_secs=30s top_n=5`
+Cost     Suite 313, four interpreters, one serial pass at this state (the four timings and any
+         SQLite difference are in docs/maintenance/compatibility.md; that table is what makes this
+         line checkable rather than remembered). What this does **not** close: every new screen
+         still has to override the property by hand — the guard names the offender, it cannot
+         install the override. And `NAME_CAP` stays on the class as the default, so reading the
+         attribute directly still compiles and still ignores the settings file, which is why the
+         check is an enumeration of hosts rather than a type
+Commit   dd2ef52
+
