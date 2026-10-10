@@ -483,10 +483,39 @@ Evidence L0 four cases, three of them red before the code existed: a 74-cell pat
          reds were the product's fault and stayed red until fixed: the cap first fired on wide
          terminals (`t-skills hides nothing and still warns`), and it compared rendered cells against
          raw ints, reporting a phantom cap on every numeric column
-Cost     Suite 308, all four interpreters re-run. Real-data effect at 80×24: History 2/5 → 5/5 columns,
+Cost     Suite 308 on the project venv (the four-interpreter matrix is re-run at the final HEAD, so
+         no number here is promised against an interpreter that has not run it). Real-data effect at 80×24:
+         History 2/5 → 5/5 columns,
          nothing else changes (Tokens 5/9, Usage 5/10, Model responses 6/12); at 60×24 History goes
          2/5 → 3/5 and that page no longer needs the floor clause either. What the cap does **not** fix
          is a table whose label row alone exceeds the terminal, or a reader who needs the whole path:
          the full value is on disk and in the row key, not on the screen — widening past the plan's
          `widen to N` figure brings back columns, and only an uncapped cell brings back characters
 Commit   8aa6987
+
+
+### D-028 · 2026-10-10 · guard
+Symptom  A privacy check described itself as covering more than it did. The needle test in
+         `test_privacy.py` carried the comment "and any dynamic import built from a string", but the
+         body scans seven fixed literals — so `__import__("socket")`, `importlib.import_module(name)`
+         and `exec(source)` would have passed an allowlist whose entire purpose is to be passed. The
+         claim was not in the product, so nothing broke when it went stale; that is exactly why no
+         check caught it
+Change   `dynamic_module_calls()` walks the AST for calls that reach a module by name: bare
+         `__import__`/`eval`/`exec`/`compile`, and `import_module`/`load_module` under any receiver.
+         Two edges are deliberate rather than thorough. Attribute calls match on the final name only,
+         so `re.compile(...)` is not mistaken for code generation — a check that fires on a regex
+         teaches everyone to ignore it. And `cbut_db.load_sync()`'s
+         `spec_from_file_location` of `cbut-sync.py` is named inside the docstring as the reviewed
+         dynamic load this guard does not flag: it resolves a path built from `__file__`, not a name
+Evidence L0 two cases. `test_no_script_reaches_a_module_by_name` runs it over all four production
+         scripts (clean — no finding, this is not a bug report).
+         `test_the_dynamic_import_detector_actually_detects` feeds the detector the four shapes it
+         claims to catch and asserts each is reported, then asserts `re.compile("a+")` is **not**; the
+         guard therefore has to show it fires without anybody editing production code to make it fire.
+         Suite 310; re-run with `python3 -m unittest scripts.tests.test_privacy`
+Cost     The comment is now shorter than it was, because the sentence it carried was a promise this
+         file cannot keep: a call built through `getattr(builtins, "ev" + "al")` still walks past. It
+         closes the realistic accident — an import by string — not a determined obfuscation, and the
+         entry says so instead of the comment pretending otherwise
+Commit   c480625
