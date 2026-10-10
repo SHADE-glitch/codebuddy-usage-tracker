@@ -109,9 +109,10 @@ Usage tab 仿照会话用量面板的样式，但每个数字都来自磁盘上�
 - **汇总面板高度受限并内部滚动**，因此下方的 Request Logs 表在小终端上也始终可见。80×24 实测：
   面板转为两列、高度仍受限，表格保留 9 行（测试把下限钉在 6）；列计划此时只显示 **10 列里的前 5 列**，
   表上方那行写明被收起的 5 列。具体收哪几列取决于数据 —— 宽度是按真实行内容量出来的，不是假设的；
-  同一宽度下 Tokens 页显示 9 列中的 6 列。没有任何一列被切成半截。
-- **列计划覆盖每一张表，不只是被抱怨的那两张**：8 个标签页加两个详情页（某个实体的调用历史、
-  某个模型的响应）都走同一张登记表，所以名字长到会把列挤出屏幕时，代价是少几列，而不是少可读性。
+  这两个数都是本机自己的数据库在 80×24 下的读数，你那台机器上的数字会不一样。没有任何一列被切成半截。
+- **列计划覆盖每一张表，不只是被抱怨的那两张**：8 个标签页里的 7 张表（Dashboard 只有面板、没有表），
+  加上两个详情页（某个实体的调用历史、某个模型的响应），一共 9 张 —— 数目是从源码里数出来的，不是估的，
+  而且只要有一张表没进登记表就会有用例失败。所以名字长到会把列挤出屏幕时，代价是少几列，而不是少可读性。
   下限是 2 列：连「名字 + 第一个数字」都放不进 80 格时，提示行会写 `even these are cut`
   （这些也仍然被切），而不是假装表格放得下。
 
@@ -210,7 +211,7 @@ sync_secs = 30       # TUI 自动同步定时器
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 303 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 304 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -220,7 +221,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 303 tests ... OK
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
 | `test_sync.py` | 82 | 转录解析、工具归类、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
-| `test_tui.py` | 79 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、状态栏诚实性 |
+| `test_tui.py` | 80 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、状态栏诚实性 |
 | `test_usage.py` | 61 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）、token 汇总、Dashboard 查询、结构版本门禁、索引值不值得留 |
 | `test_config.py` | 18 | 设置层：默认值没变、文件、env 优先级、坏文件会让 `main()` 在启动 TUI 前就退出，以及 app 真的读了哪些键 |
 | `test_dispatcher.py` | 12 | `bin/cbut`：子命令转发、venv 解析、装不上时 help 仍然能跑 |
@@ -244,7 +245,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 303 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 303 个用例 |
+| `scripts/tests/` | 上面那 304 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、以及体积与性能的固定度量法和基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |

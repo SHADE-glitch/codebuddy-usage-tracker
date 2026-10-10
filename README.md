@@ -148,12 +148,15 @@ the transcripts on disk:
   go two-up and stay capped, the table keeps 9 rows (a test holds the floor at 6), and the
   column plan shows the first **5 of its 10** columns with a note above the table naming the
   other five. Which five depends on the data — the widths are measured from the rows, not
-  assumed — and the Tokens page keeps 6 of 9 at the same width. Nothing is cut mid-label.
-- **The plan covers every table, not the two that were complained about** — the eight tabs
-  and both detail screens (a row's history, a model's responses) go through the same registry,
-  so a name long enough to push a column off the screen costs columns, not legibility. Two
-  columns is the floor: when even a name and its first number do not fit an 80-cell terminal,
-  the note says `even these are cut` rather than implying the table fits.
+  assumed — so both counts here are readings from this machine's own database at 80×24, and
+  yours will differ. Nothing is cut mid-label.
+- **The plan covers every table, not the two that were complained about** — the seven tables
+  that live in the eight tabs (Dashboard draws panels, not a table) and both detail screens
+  (a row's history, a model's responses): nine in all, counted out of the source rather than
+  estimated, and a test fails if a table ever appears without a plan. A name long enough to push
+  a column off the screen therefore costs columns, not legibility. Two columns is the floor: when
+  even a name and its first number do not fit an 80-cell terminal, the note says
+  `even these are cut` rather than implying the table fits.
 
 ## 📋 Requirements
 
@@ -256,7 +259,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 303 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 304 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -267,7 +270,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | Suite | Tests | Covers |
 |---|---:|---|
 | `test_sync.py` | 82 | transcript parsing, tool classification, incremental vs `--full` re-sync, crash recovery, unparsed-record accounting |
-| `test_tui.py` | 79 | tab wiring and report shapes through Textual's own `run_test` harness, narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, status-line truthfulness |
+| `test_tui.py` | 80 | tab wiring and report shapes through Textual's own `run_test` harness, narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, status-line truthfulness |
 | `test_usage.py` | 61 | the calendar-day windows (Today / 2 / 3 / 7 / 30 days / all), the token totals, the Dashboard queries, the schema gate, and which indexes earn their keep |
 | `test_config.py` | 18 | the settings layer: defaults unchanged, file, env precedence, a broken file that stops `main()` before the TUI starts, and the keys the app actually reads |
 | `test_dispatcher.py` | 12 | `bin/cbut`: subcommand routing, venv resolution, help without a resolvable install |
@@ -292,7 +295,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 303 tests above |
+| `scripts/tests/` | the 304 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, and the size & performance baseline with the commands that produced it |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

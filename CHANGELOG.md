@@ -399,11 +399,11 @@ Commit   86d4220
 
 ### D-025 · 2026-10-10 · taste
 Symptom  The rule written one commit earlier — "a table never shows a half column" — was true for two
-         of the eleven tables in the app. Measured with long names at 80×24: `t-tools` needs 90 cells
+         of the nine tables in the app. Measured with long names at 80×24: `t-tools` needs 90 cells
          for a 78-wide region, `t-mcp` needs 137, and the widest table anywhere in the tool is the
          pushed **Model responses** screen — 12 columns needing 135 cells, which had never been said a
          word about. Both detail screens also predated the empty-state convention: no rows meant a
-         blank table, the one thing the other eight panes had been fixed not to do
+         blank table, the one thing the seven tab tables had been fixed not to do
 Change   The mechanism moved out of `TrackerApp` into `WideTableMixin`; each host declares its own
          `WIDE_TABLES` and `on_mount` now builds columns from that registry instead of a second inline
          list, so a table cannot gain a column the plan does not know how to name. Chrome measured per

@@ -128,15 +128,19 @@ tool runs from a checkout, so the version only needs to move when a documented c
   local 00:00 (`"1d"` = today, `"2d"` = from yesterday's 00:00, …) and ends at the current time;
   each tab keeps its own window. Do not switch to rolling hours or a shared range — the
   natural-day boundary and per-tab independence are both deliberate.
-- **A table never shows a half column.** Every `DataTable` in the app — the eight tabs and both
-  pushed detail screens — is filled through `_fill_wide`, which keeps the longest **prefix** of its
+- **A table never shows a half column.** Every `DataTable` in the app — nine: the seven that live in
+  the eight tabs (Dashboard draws panels, not a table) plus one on each pushed detail screen — is
+  filled through `_fill_wide`, which keeps the longest **prefix** of its
   columns and names the dropped ones on the note line above the table. A cell past the right edge used
   to be cut mid-label with no keyboard way to reach it, so "it scrolls" is not an acceptable answer.
   The mechanism lives in `WideTableMixin`; a host declares `WIDE_TABLES` = table id → (columns, note
   id, cells lost to its surroundings), and `on_mount` builds the columns **from that registry**, so a
-  table cannot gain a column the plan does not know about. Chrome and the 2-cell per-column cost are
-  measured, not derived; `MIN_SHOWN = 2` is the floor, and a table that cannot fit even those two says
-  `even these are cut` on its note instead of pretending it fits.
+  table cannot gain a column the plan does not know about. "Every" is checked against the source, not
+  against a registry: `test_every_datatable_in_the_source_is_registered` walks `cbut-tui.py` for
+  `DataTable(id=…)` and fails on any id no host registers (a layout test can only loop over what is
+  already registered, so an unplanned table would clip in silence). Chrome and the 2-cell per-column
+  cost are measured, not derived; `MIN_SHOWN = 2` is the floor, and a table that cannot fit even those
+  two says `even these are cut` on its note instead of pretending it fits.
 - **Keep `context tokens` and per-model token totals apart.** They are different measurements
   (turn-metrics `tokenDelta` vs per-response model tokens from transcripts) and summing them is
   wrong.

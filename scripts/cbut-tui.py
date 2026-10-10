@@ -151,7 +151,7 @@ if HAVE_TEXTUAL:
     class WideTableMixin:
         """The narrow-terminal column plan, shared by every host that owns a table.
 
-        A rule that covers two of the eleven tables is not a rule, so the mechanism
+        A rule that covers two of the nine tables is not a rule, so the mechanism
         lives here and each host declares its own ``WIDE_TABLES``. ``_wide_rows`` is
         created by each host's ``__init__`` — it must not be a class attribute, or two
         open screens would share one row cache.

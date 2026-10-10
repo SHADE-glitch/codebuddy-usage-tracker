@@ -4,6 +4,7 @@ Standard library only (unittest + Textual's built-in run_test harness).
 Run:  python3 -m unittest discover -s scripts/tests
 """
 
+import ast
 import contextlib
 import importlib.util
 import inspect
@@ -1863,6 +1864,30 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(scr, tui.HistoryScreen)
             self.assertEqual(scr.entity, f"{LONG}-tool-1",
                              "the rebuilt rows lost the key that names their tool")
+
+    # 67. every table the source can build has a plan
+    def test_every_datatable_in_the_source_is_registered(self):
+        """`The plan covers every table` is a claim about the source, so check it there.
+
+        Every layout test loops over a registry, so a `DataTable` added without a
+        registry entry would clip mid-label and no test would notice — the prose would
+        still be true of the tables it knew about.
+        """
+        tree = ast.parse((SCRIPTS / "cbut-tui.py").read_text(encoding="utf-8"))
+        built = {kw.value.value for node in ast.walk(tree)
+                 if isinstance(node, ast.Call)
+                 and getattr(node.func, "id", None) == "DataTable"
+                 for kw in node.keywords
+                 if kw.arg == "id" and isinstance(kw.value, ast.Constant)}
+        registered = (set(TrackerApp.WIDE_TABLES) | set(tui.HistoryScreen.WIDE_TABLES)
+                      | set(tui.ModelResponsesScreen.WIDE_TABLES))
+        self.assertGreaterEqual(len(built), 9,
+                                f"only {len(built)} DataTable(id=…) found — the query broke")
+        self.assertFalse(built - registered,
+                         f"unplanned tables, free to clip: {sorted(built - registered)}")
+        self.assertFalse(registered - built,
+                         f"a registry names a table the source never builds: "
+                         f"{sorted(registered - built)}")
 
 
 if __name__ == "__main__":
