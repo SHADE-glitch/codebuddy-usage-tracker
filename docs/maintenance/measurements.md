@@ -43,6 +43,15 @@ PY
 | span | ≈ 3 weeks of active days → **≈ 2.3k rows/day** |
 | source logs indexed | `~/.codebuddy/projects` (≈ 500 transcripts) |
 
+**Re-measured 2026-10-10 with the same commands on the same read-only connection.** Every rounded figure
+still holds: the file is unchanged at ≈ 15 MiB — dropping the two dead indexes returned their pages to
+the freelist, not to the filesystem (566 free pages now against ≈ 570 then) — all tables together are
+still ≈ 44k rows, and the source is still ≈ 500 transcripts. What did move is *inside* the tables, by
+one or two rows per table, which is precisely what one-significant-digit rounding is here to absorb:
+this repository is public and exact counts are a picture of one person's activity level.
+`quick_check` and `integrity_check` are both `ok`, `schema_version` is 6, and
+journal / synchronous / `auto_vacuum` / `user_version` have not moved.
+
 ## Where the bytes go, and which indexes earn their keep
 
 ```bash

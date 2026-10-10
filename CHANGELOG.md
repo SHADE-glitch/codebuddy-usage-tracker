@@ -562,3 +562,52 @@ Cost     Suite 313, four interpreters, one serial pass at this state (the four t
          check is an enumeration of hosts rather than a type
 Commit   dd2ef52
 
+### D-030 · 2026-10-10 · guard
+Symptom  The settings suite passed on a clean shell and failed on a configured one. Five cases assert
+         what the file or `DEFAULTS` produce, but the loader resolves environment > file > default, so
+         an exported `CBUT_TOP_N` outranks the very value such a case is checking. Reproduced rather
+         than reasoned about — `CBUT_TOP_N=9 CBUT_NAME_CAP=40 CBUT_REFRESH_SECS=2 CBUT_LOG_LIMIT=7` gave
+         5 failures, `AssertionError: 9 != 5` and `Tuples differ: (9, 25, 50) != (3, 25, 50)`. From
+         outside, that reads as a regression in the settings layer, and only the person who actually
+         configured the tool can see it
+Change   `no_settings_env()` hides every name **derived from `db.ENV_NAMES`** around the cases that
+         assert a file-or-default value, and restores exactly what it took (a name that was unset
+         stays unset rather than becoming an empty string). Derived rather than listed: the
+         hand-copied `CBUT_*` set in `HealthSurfaceTest._env` is the same mistake D-029 corrected, and
+         a second copy here would be forgotten by the next key the layer grows. Two environment
+         branches the code had and no case claimed are now covered — an out-of-range environment value
+         is refused with the **variable** named in the message, and a fractional interval reaches
+         `refresh_secs` through the environment instead of quietly falling back to the default
+Evidence L0, three readings. The 21-case settings suite is green **with the hostile environment**,
+         after being red 5 ways in it. The whole suite was then run twice — clean, and with all six
+         settings exported — `Ran 315` both times with the **same** two failures in both (the README
+         count guards, which this round's numbers then satisfied): the identical failure set is the
+         claim, not the count. `AGENTS.md` records the rule and the check, which is the hostile run
+         itself rather than a review of the cases
+Cost     One helper and a `with` clause; no production file moved, so nothing a user sees changes.
+         What it does **not** buy: isolation is per-case, so a new case can still read the ambient
+         shell by simply not entering the block — the catch for that is re-running the suite hostile,
+         which is why it is written down as a check instead of being left to review
+Commit   141ab25
+
+### D-031 · 2026-10-10 · guard
+Symptom  The READMEs are the only place a user meets the settings surface, and both halves of it — the
+         `key = default` block and the sentence naming `CBUT_TOP_N` … `CBUT_SYNC_SECS` — are hand-typed,
+         with nothing comparing them against the loader. This is the third hand-copied list of the same
+         set found in one session: `cbut health` printed five of six keys and renamed two of those five
+         (D-029), and the test suite was isolating its own hand-copied list of variable names (D-030)
+Change   `test_both_readmes_document_every_setting` reads `db.DEFAULTS` and `db.ENV_NAMES` and requires
+         every `"<key> = <default>"` line and every override name to appear in `README.md` **and** in
+         `README.zh-CN.md`. It lives in the README check because that file's subject is exactly the
+         distance between the page and the reality. No production code moved
+Evidence L0, provoked without editing a tracked file: injecting `panel_gap = 3` + `CBUT_PANEL_GAP` into
+         the loader's own dicts turns the case red with `['panel_gap = 3'] is not false`; renaming
+         `CBUT_TOP_N` turns the second assertion red (`never names the variable that overrides these:
+         ['CBUT_TOP_N_RENAMED']`); removing both turns it green again — the control that proves neither
+         branch is decoration. Probe script: `/tmp/provoke_readme_settings_guard.py`
+Cost     Suite 316 (this file 4 → 5). What it does not buy: the case proves the page *contains* the
+         names, not that the prose around them is correct, and it cannot tell whether a documented
+         default is described honestly — that stays a reviewer's job. What it does stop is a fourth key
+         shipping while invisible in both languages
+Commit   6459bb7
+

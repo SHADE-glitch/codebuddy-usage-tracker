@@ -182,7 +182,11 @@ tool runs from a checkout, so the version only needs to move when a documented c
 - **Settings are read once, in one place.** `db.load_config()` resolves environment > file >
   `DEFAULTS`. Adding a knob means: one entry in `DEFAULTS`, one in `ENV_NAMES`, one in `_BOUNDS`, and
   one assignment in the app — `test_config.py` pins the default against the constant it replaces, so a
-  settings layer cannot quietly retune shipped behaviour. The assignment has to land where the value is
+  settings layer cannot quietly retune shipped behaviour. The READMEs are part of the surface, not
+  documentation someone does later: `test_both_readmes_document_every_setting` requires every
+  `"<key> = <default>"` and every override name to appear in both languages, because the loader is the
+  only complete copy and three hand-typed lists of this same set have now been found wrong (D-029
+  `cbut health`, D-030 the test suite's isolation, D-031 the READMEs). The assignment has to land where the value is
   *used*: a class constant read by a mixin is shadowed per instance, and every host that inherits it
   needs the same resolution (`name_cap` above) — a key the loader returns and no renderer consults is
   a setting the user can edit with no effect. `cbut health` prints whatever `load_config()` returned,
