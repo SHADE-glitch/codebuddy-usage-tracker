@@ -1667,6 +1667,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             key = list(t.rows.keys())[1]
             # the real routing handler, same message a click posts
             shown = str(t.get_cell_at(t.cursor_coordinate))
+            full = key.value.partition("\t")[2]
             app.on_data_table_row_selected(
                 tui.DataTable.RowSelected(t, t.cursor_row, key))
             await pilot.pause()
@@ -1674,9 +1675,16 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             top = app.screen_stack[-1]
             self.assertIsInstance(top, tui.ModelResponsesScreen,
                                   f"a cut table cannot open its detail screen ({top!r})")
-            self.assertEqual(top.model, shown,
+            self.assertEqual(top.model, full,
                              "the rebuilt rows lost the key that names their model")
-            self.assertIn(shown, long_names, "the cell is not one of the two models")
+            # The cell and the key are deliberately different objects now: the cell
+            # is the capped rendering, the route is the whole name. Asserting only
+            # `top.model == shown` would have passed either way.
+            self.assertEqual(shown, tui.WideTableMixin._cap_cell(full))
+            if len(full) > tui.WideTableMixin.NAME_CAP:
+                self.assertNotEqual(shown, full, "a long name was not capped at all")
+            self.assertIn(shown, [tui.WideTableMixin._cap_cell(n) for n in long_names],
+                          "the cell is not one of the two models' renderings")
 
     # 62. the plan is a rule for every table, not two of them
     async def test_no_table_shows_a_half_column_at_any_width(self):
@@ -1728,8 +1736,26 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                             note = app.query_one(f"#{app.WIDE_TABLES[t.id][1]}",
                                                  tui.Static)
                             if labels == full:
-                                self.assertFalse(note.display,
-                                                 f"{t.id} hides nothing and still warns")
+                                # No column is hidden, so the note has exactly one
+                                # thing it may say: that characters were cut. And when
+                                # something was cut it must say it — a silent cap is
+                                # the same lie as a silent column drop.
+                                rows = app._wide_rows[t.id][0]
+                                over = any(c is not None and len(str(c)) > app.NAME_CAP
+                                           for r in rows for c in r)
+                                flat = " ".join(" ".join(
+                                    "".join(s.text for s in note.render_line(y))
+                                    for y in range(note.region.height)).split())
+                                self.assertEqual(note.display, over,
+                                                 f"{t.id}: note visible={note.display} "
+                                                 f"but a cell needs capping={over}")
+                                if over:
+                                    self.assertEqual(
+                                        flat, f"cells capped at {app.NAME_CAP}",
+                                        f"{t.id} capped characters and the note says "
+                                        f"{flat!r}")
+                                else:
+                                    self.assertEqual(flat, "")
                                 continue
                             dropped.append(t.id)
                             # what remains is a prefix of the registry, every name
@@ -1865,7 +1891,127 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(scr.entity, f"{LONG}-tool-1",
                              "the rebuilt rows lost the key that names their tool")
 
-    # 67. every table the source can build has a plan
+    # 67. a long project path costs a column, not the whole table
+    async def test_a_long_path_is_capped_so_the_columns_come_back(self):
+        """The real-data reason for a cap: history rows all share one long prefix.
+
+        Measured on this machine's database: 162 of 482 project paths exceed 24
+        cells and the longest is 74 — while every entity name column tops out at
+        28. So the column that was eating the History screen is the one whose
+        beginning says nothing (`/home/…/Public/`) and whose end says everything.
+        """
+        now = int(time.time() * 1000)
+        BASE = "/home/user/very-long/shared-prefix-that-says-nothing"
+        insert_tool_calls(self.db_path, [
+            (f"c{i}", f"s{i}", f"{BASE}/project-{i}", "Bash", "builtin",
+             now - i * 60_000, 10, "completed") for i in range(3)])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.push_screen(tui.HistoryScreen("tool", "Bash"))
+            await pilot.pause()
+            scr = app.screen_stack[-1]
+            t = scr.query_one("#hist-table", tui.DataTable)
+            cap = tui.WideTableMixin.NAME_CAP
+            labels = [str(c.label) for c in t.columns.values()]
+            self.assertEqual(labels, list(tui.HISTORY_COLUMNS),
+                             f"a 74-cell path still pushed columns off the screen: {labels}")
+            paths = [t.get_row_at(r)[1] for r in range(t.row_count)]
+            for p in paths:
+                self.assertLessEqual(len(p), cap, f"uncapped cell: {p!r}")
+                self.assertTrue(p.startswith("…"),
+                                f"a path capped from the head keeps only the shared prefix: {p!r}")
+            self.assertEqual(sorted(p.split("/")[-1] for p in paths),
+                             ["project-0", "project-1", "project-2"],
+                             "the tails that distinguish the rows were cut away")
+
+    # 68. a plain name keeps its beginning; only paths keep their end
+    async def test_a_name_capped_from_the_left_would_say_nothing(self):
+        now = int(time.time() * 1000)
+        LONG_TOOL = "an_entity_name_without_any_slash_that_is_far_too_long_for_a_column"
+        insert_tool_calls(self.db_path, [
+            (f"c{i}", f"s{i}", "/p", LONG_TOOL, "builtin", now - i * 60_000,
+             10, "completed") for i in range(2)])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            t = app.query_one("#t-tools", tui.DataTable)
+            cap = tui.WideTableMixin.NAME_CAP
+            cell = t.get_row_at(0)[0]
+            self.assertLessEqual(len(cell), cap)
+            self.assertTrue(cell.startswith(LONG_TOOL[:cap - 1]),
+                            f"a name must keep its head, got {cell!r}")
+            self.assertTrue(cell.endswith("…"), f"the cut is silent: {cell!r}")
+            self.assertNotIn("/", cell)
+
+    # 69. capping must not merge two entities into one route
+    async def test_two_names_sharing_a_prefix_longer_than_the_cap_still_route_apart(self):
+        """The failure a cap would ship: identical cells, and a key built from them.
+
+        Both rows render as the same 28 cells. Selection decodes the entity from
+        the ROW KEY, so the key has to come from the uncapped value — otherwise
+        picking the second tool shows the first tool's history and every test
+        about "the row still routes" stays green on a table of one name.
+        """
+        now = int(time.time() * 1000)
+        SHARED = "tool-name-sharing-its-whole-visible-prefix-with"
+        insert_tool_calls(self.db_path, [
+            ("c0", "s0", "/p", f"{SHARED}-first", "builtin", now, 10, "completed"),
+            ("c1", "s1", "/p", f"{SHARED}-second", "builtin", now - 1, 10, "completed"),
+            ("c2", "s2", "/p", f"{SHARED}-third", "builtin", now - 2, 10, "completed"),
+        ])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            t = app.query_one("#t-tools", tui.DataTable)
+            cells = [t.get_row_at(r)[0] for r in range(3)]
+            self.assertEqual(len(set(cells)), 1,
+                             f"the cap did not even engage: {cells}")
+            keys = list(t.rows.keys())
+            second = [i for i, k in enumerate(keys)
+                      if k.value.endswith(f"-second")][0]
+            t.move_cursor(row=second)
+            await pilot.pause()
+            key = keys[second]
+            app.on_data_table_row_selected(
+                tui.DataTable.RowSelected(t, t.cursor_row, key))
+            await pilot.pause()
+            await pilot.pause()
+            scr = app.screen_stack[-1]
+            self.assertIsInstance(scr, tui.HistoryScreen)
+            self.assertEqual(scr.entity, f"{SHARED}-second",
+                             "the capped cell was used as the key — both rows route to one tool")
+
+    # 70. the note says when it cut characters rather than columns
+    async def test_the_note_announces_that_cells_were_capped(self):
+        now = int(time.time() * 1000)
+        BASE = "/home/user/a-project-path-long-enough-to-need-capping-here-ok"
+        insert_tool_calls(self.db_path, [
+            ("c0", "s0", BASE, "Bash", "builtin", now, 10, "completed")])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.push_screen(tui.HistoryScreen("tool", "Bash"))
+            await pilot.pause()
+            scr = app.screen_stack[-1]
+            t = scr.query_one("#hist-table", tui.DataTable)
+            self.assertEqual(len(t.columns), len(tui.HISTORY_COLUMNS),
+                             "no column is hidden, so the note should be describing characters")
+            cap = tui.WideTableMixin.NAME_CAP
+            flat = " ".join(" ".join("".join(s.text for s in
+                                             scr.query_one("#colnote-hist", tui.Static)
+                                             .render_line(y))
+                                     for y in range(scr.query_one("#colnote-hist",
+                                                                  tui.Static).region.height)
+                                     ).split())
+            self.assertIn(f"cells capped at {cap}", flat,
+                          f"a silent character cut: {flat!r}")
+
+    # 71. every table the source can build has a plan
     def test_every_datatable_in_the_source_is_registered(self):
         """`The plan covers every table` is a claim about the source, so check it there.
 

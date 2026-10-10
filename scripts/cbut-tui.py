@@ -165,8 +165,28 @@ if HAVE_TEXTUAL:
 
         CELL_COST = 2
         MIN_SHOWN = 2      # never narrow a table down to a single unnamed column
+        # Measured on this machine's database, not guessed: every entity name fits
+        # 28 cells (tool 22, model 24, agent 20, plugin 19, mcp tool 23, skill 28,
+        # command 31 once) — the only column that runs past it is the project path,
+        # where 162 of 482 rows exceed 24 and the longest is 74. So a cap at 28
+        # costs no name and buys back the 46 cells a path was spending.
+        NAME_CAP = 28
 
-        def _fill(self, table, rows, key_index=0, key_kind=None):
+        @classmethod
+        def _cap_cell(cls, text: str) -> str:
+            """Fit one cell to ``NAME_CAP``, keeping the half that carries meaning.
+
+            A path's beginning is the shared prefix (`/home/user/…` repeated down
+            the column) and its end is what distinguishes the rows, so paths are
+            capped from the left. Everything else — a tool, a model, a skill — is
+            read from the start, so it is capped from the right.
+            """
+            if len(text) <= cls.NAME_CAP:
+                return text
+            keep = cls.NAME_CAP - 1
+            return ("…" + text[-keep:]) if "/" in text else (text[:keep] + "…")
+
+        def _fill(self, table, rows, key_index=0, key_kind=None, key_rows=None):
             # Remember the highlighted row by its ROW KEY, not by index: a
             # re-sort between refreshes must not move the highlight onto a
             # different entity (index-based restore would).
@@ -180,16 +200,20 @@ if HAVE_TEXTUAL:
                     cur_key = None
             table.clear()
             n = 0
-            for r in rows:
+            for i, r in enumerate(rows):
                 # NULL renders as "-", matching fmt_n (never a blank cell).
                 cells = [("-" if c is None else str(c)) for c in r]
                 key = None
                 if key_kind:
                     # key_index may be a single index or a tuple of indices for
                     # a composite (unique) key, e.g. mcp -> (server, tool).
+                    # ``key_rows`` carries the UNCAPTED values: two entities whose
+                    # names share the visible prefix render identically and must
+                    # still route apart, so the key cannot come from the cell.
                     idx = (key_index if isinstance(key_index, (tuple, list))
                            else (key_index,))
-                    key = "\t".join([key_kind] + [str(r[i]) for i in idx])
+                    src = key_rows[i] if key_rows is not None else r
+                    key = "\t".join([key_kind] + [str(src[j]) for j in idx])
                 table.add_row(*cells, key=key)
                 n += 1
             if cur_key is not None and cur_key in table.rows:
@@ -200,14 +224,15 @@ if HAVE_TEXTUAL:
                 table.move_cursor(row=cur)
 
         def _fill_or_empty(self, table, rows, empty_msg, key_index=0,
-                           key_kind=None):
+                           key_kind=None, key_rows=None):
             """Fill a table, or show an explicit empty-state row.
 
             Mirrors ``_fill_tokens``: an empty tab must never render a blank
             region. The empty row carries no key, so selecting it is a no-op.
             """
             if rows:
-                self._fill(table, rows, key_index=key_index, key_kind=key_kind)
+                self._fill(table, rows, key_index=key_index, key_kind=key_kind,
+                           key_rows=key_rows)
             else:
                 table.clear()
                 table.add_row(empty_msg, *(["-"] * (len(table.columns) - 1)))
@@ -250,23 +275,41 @@ if HAVE_TEXTUAL:
                 if not width:
                     self.call_after_refresh(self._plan_wide_tables)
                 return
-            widths = self._column_widths(labels, rows)
+            raw = [[("-" if c is None else str(c)) for c in r] for r in rows]
+            shown = [[self._cap_cell(c) for c in rr] for rr in raw]
+            capped = any(a != b for rr, ss in zip(raw, shown) for a, b in zip(rr, ss))
+            full = self._column_widths(labels, raw)
             budget = width - chrome
+            if sum(full) + self.CELL_COST * len(labels) <= budget:
+                # Everything fits at its real length, so the cap stays out: a wide
+                # terminal has no reason to lose characters, and "widen to N" would
+                # otherwise promise a number that buys nothing.
+                self._set_columns(table, labels)
+                self._fill_or_empty(table, raw, empty_msg, key_index, key_kind)
+                note.update("")
+                note.display = False
+                return
+            widths = self._column_widths(labels, shown)
             keep = len(labels)
             while keep > self.MIN_SHOWN and sum(widths[:keep]) + self.CELL_COST * keep > budget:
                 keep -= 1
             self._set_columns(table, labels[:keep])
-            self._fill_or_empty(table, [r[:keep] for r in rows],
-                                empty_msg, key_index, key_kind)
+            self._fill_or_empty(table, [r[:keep] for r in shown],
+                                empty_msg, key_index, key_kind, key_rows=rows)
+            cap_note = f" · cells capped at {self.NAME_CAP}" if capped else ""
             if keep >= len(labels):
-                note.update("")
-                note.display = False
+                # Nothing is hidden, so the only thing worth saying is that
+                # characters were cut — and the full value only comes back at the
+                # width named below, which is why it has to be said out loud.
+                note.update(f"cells capped at {self.NAME_CAP}" if capped else "")
+                note.display = capped
                 return
             cuts = sum(widths[:keep]) + self.CELL_COST * keep > budget
             note.update(f"{keep} of {len(labels)} columns · hidden: "
                         f"{', '.join(labels[keep:])} · widen to "
-                        f"{sum(widths) + self.CELL_COST * len(labels) + chrome}"
-                        + (" · even these are cut" if cuts else ""))
+                        f"{sum(full) + self.CELL_COST * len(labels) + chrome}"
+                        + (" · even these are cut" if cuts else "")
+                        + cap_note)
             note.display = True
 
         def _plan_wide_tables(self, width=None) -> None:

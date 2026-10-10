@@ -157,6 +157,16 @@ the transcripts on disk:
   a column off the screen therefore costs columns, not legibility. Two columns is the floor: when
   even a name and its first number do not fit an 80-cell terminal, the note says
   `even these are cut` rather than implying the table fits.
+- **A cell that is far longer than it earns gets capped, at 28 characters** — measured on this
+  machine's data, where every entity name fits (tool 22, model 24, agent 20, plugin 19, skill 28)
+  and the one column that runs past it is the project path (162 of 482 rows over 24, longest 74).
+  A path is capped from the **left** (`…/work/backend-service`) because its beginning is
+  the prefix every row shares and its end is what distinguishes them; anything else is capped from
+  the right, keeping the readable head. Nothing is silently shortened: the note says
+  `cells capped at 28`, and it only ever engages when a column would otherwise be dropped — a wide
+  terminal shows the whole value. Two rows whose names share the visible prefix still open their
+  own detail screen, because a row is keyed by the uncapped value. On this machine the cap buys
+  back three columns on the History screen at 80×24 (2 of 5 became 5 of 5) and changes nothing else.
 
 ## 📋 Requirements
 
@@ -259,7 +269,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 304 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 308 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -270,7 +280,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | Suite | Tests | Covers |
 |---|---:|---|
 | `test_sync.py` | 82 | transcript parsing, tool classification, incremental vs `--full` re-sync, crash recovery, unparsed-record accounting |
-| `test_tui.py` | 80 | tab wiring and report shapes through Textual's own `run_test` harness, narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, status-line truthfulness |
+| `test_tui.py` | 84 | tab wiring and report shapes through Textual's own `run_test` harness, narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, status-line truthfulness |
 | `test_usage.py` | 61 | the calendar-day windows (Today / 2 / 3 / 7 / 30 days / all), the token totals, the Dashboard queries, the schema gate, and which indexes earn their keep |
 | `test_config.py` | 18 | the settings layer: defaults unchanged, file, env precedence, a broken file that stops `main()` before the TUI starts, and the keys the app actually reads |
 | `test_dispatcher.py` | 12 | `bin/cbut`: subcommand routing, venv resolution, help without a resolvable install |
@@ -295,7 +305,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 304 tests above |
+| `scripts/tests/` | the 308 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, and the size & performance baseline with the commands that produced it |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

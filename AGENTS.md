@@ -141,6 +141,15 @@ tool runs from a checkout, so the version only needs to move when a documented c
   already registered, so an unplanned table would clip in silence). Chrome and the 2-cell per-column
   cost are measured, not derived; `MIN_SHOWN = 2` is the floor, and a table that cannot fit even those
   two says `even these are cut` on its note instead of pretending it fits.
+- **Long cells are capped at `NAME_CAP = 28`, and only when a column would otherwise be dropped.** The
+  cap value is a measurement, not a preference: on this machine's data every entity name fits (tool 22,
+  model 24, agent 20, plugin 19, skill 28) and the only column that runs past it is the project path
+  (162 of 482 rows over 24, longest 74). `_cap_cell` keeps the **end** of anything containing `/` — a
+  path's head is the prefix every row shares — and the **head** of everything else. If a table fits at
+  its real widths the cap stays out, so a wide terminal never loses characters; when it engages the
+  note says `cells capped at 28`, because a silent character cut is the same lie as a silent column
+  drop. A row is therefore keyed from the **uncapped** value (`key_rows` in `_fill`): two entities that
+  render identically must still route to their own detail screen. Do not cap by truncating the key.
 - **Keep `context tokens` and per-model token totals apart.** They are different measurements
   (turn-metrics `tokenDelta` vs per-response model tokens from transcripts) and summing them is
   wrong.

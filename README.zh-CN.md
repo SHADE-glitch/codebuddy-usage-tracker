@@ -115,6 +115,13 @@ Usage tab 仿照会话用量面板的样式，但每个数字都来自磁盘上�
   而且只要有一张表没进登记表就会有用例失败。所以名字长到会把列挤出屏幕时，代价是少几列，而不是少可读性。
   下限是 2 列：连「名字 + 第一个数字」都放不进 80 格时，提示行会写 `even these are cut`
   （这些也仍然被切），而不是假装表格放得下。
+- **远超该占宽度的单元格会被截到 28 个字符** —— 这是本机数据量出来的：实体名全部放得下
+  （tool 22、model 24、agent 20、plugin 19、skill 28），唯一超出的是项目路径
+  （482 行里 162 行超过 24，最长 74）。路径**从左边截**（`…/work/backend-service`），
+  因为它的开头是每行都相同的前缀、能区分彼此的在结尾；其它值**从右边截**，保住可读的头部。
+  截了就会说：提示行写 `cells capped at 28`，而且它只在「不截就要丢列」时才生效——宽终端照样显示完整值。
+  两个名字共享可见前缀的行仍各自进自己的详情页，因为行键用的是未截断的值。
+  本机实际收益：History 页在 80×24 从 5 列里的 2 列回到 **5 列全显**，其它页读数不变。
 
 ## 📋 环境要求
 
@@ -211,7 +218,7 @@ sync_secs = 30       # TUI 自动同步定时器
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 304 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 308 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -221,7 +228,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 304 tests ... OK
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
 | `test_sync.py` | 82 | 转录解析、工具归类、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
-| `test_tui.py` | 80 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、状态栏诚实性 |
+| `test_tui.py` | 84 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、状态栏诚实性 |
 | `test_usage.py` | 61 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）、token 汇总、Dashboard 查询、结构版本门禁、索引值不值得留 |
 | `test_config.py` | 18 | 设置层：默认值没变、文件、env 优先级、坏文件会让 `main()` 在启动 TUI 前就退出，以及 app 真的读了哪些键 |
 | `test_dispatcher.py` | 12 | `bin/cbut`：子命令转发、venv 解析、装不上时 help 仍然能跑 |
@@ -245,7 +252,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 304 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 304 个用例 |
+| `scripts/tests/` | 上面那 308 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、以及体积与性能的固定度量法和基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
