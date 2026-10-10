@@ -269,7 +269,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 308 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 310 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -285,7 +285,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `test_config.py` | 18 | the settings layer: defaults unchanged, file, env precedence, a broken file that stops `main()` before the TUI starts, and the keys the app actually reads |
 | `test_dispatcher.py` | 12 | `bin/cbut`: subcommand routing, venv resolution, help without a resolvable install |
 | `test_format_registry.py` | 10 | the CodeBuddy format registry and the parser agree, both directions |
-| `test_privacy.py` | 9 | import allowlist, no free-text value in any column, CodeBuddy's own files untouched |
+| `test_privacy.py` | 11 | import allowlist **plus the calls that bypass it** (`__import__`/`eval`/`import_module`), no free-text value in any column, CodeBuddy's own files untouched |
 | `test_snapshots.py` | 9 | automatic snapshots before destructive steps, listing, restore, pruning |
 | `test_maintenance_docs.py` | 9 | the generated format doc cannot drift from the code |
 | `test_readme_counts.py` | 4 | the suite table above is the suite table the runner would print |
@@ -305,7 +305,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 308 tests above |
+| `scripts/tests/` | the 310 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, and the size & performance baseline with the commands that produced it |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

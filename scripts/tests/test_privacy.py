@@ -43,6 +43,27 @@ _spec.loader.exec_module(sync)
 
 PRODUCTION_SCRIPTS = ["cbut_db.py", "cbut-sync.py", "cbut-stats.py", "cbut-tui.py"]
 
+# Reached by NAME rather than by an import statement, so the allowlist above never
+# sees them: `__import__("socket")`, `importlib.import_module(user_string)`, `exec`.
+# Bare-name only on purpose — `re.compile(...)` is an attribute call and is not code
+# generation, and flagging it would make this check cry wolf on the first regex.
+DYNAMIC_NAME_CALLS = {"__import__", "eval", "exec", "compile"}
+DYNAMIC_ATTR_CALLS = {"import_module", "load_module", "__import__"}
+
+
+def dynamic_module_calls(src, filename="<src>"):
+    """(call name, line) for anything that reaches a module or runs code by name."""
+    hits = []
+    for node in ast.walk(ast.parse(src, filename)):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in DYNAMIC_NAME_CALLS:
+            hits.append((f.id, node.lineno))
+        elif isinstance(f, ast.Attribute) and f.attr in DYNAMIC_ATTR_CALLS:
+            hits.append((f.attr, node.lineno))
+    return hits
+
 # Anything a usage index has no business importing. Deliberately broader than
 # "modules we currently use": HTTP client libraries, mail, FTP, raw sockets and
 # process spawning are all named so that adding one is a test failure rather
@@ -284,14 +305,58 @@ class ImportSurfaceTest(unittest.TestCase):
                             "it is stdlib and cannot reach the network")
 
     def test_our_scripts_do_not_call_the_network_functions_directly(self):
-        # Covers `socket.socket(...)` style use reached through a module we do
-        # allow, and any dynamic import built from a string.
+        # A text scan over seven fixed literals: it catches `socket.socket(...)`
+        # style use reached through a module we do allow. It does NOT catch an
+        # import built at runtime — that is the next case, which exists because
+        # this one's comment used to claim it did.
         needles = ("urlopen", "create_connection", "socket.socket", "Popen",
                    "system(", "popen(", "getaddrinfo")
         for name in PRODUCTION_SCRIPTS:
             text = (SCRIPTS / name).read_text(encoding="utf-8")
             for needle in needles:
                 self.assertNotIn(needle, text, f"{name} calls {needle}")
+
+    def test_no_script_reaches_a_module_by_name(self):
+        """The import allowlist only covers import *statements* — this covers the calls.
+
+        `__import__("socket")` never appears as an import, so
+        `test_production_scripts_import_nothing_forbidden` would stay green while a
+        network module came in by string.
+
+        What it deliberately does not flag: `cbut_db.load_sync()`'s
+        `importlib.util.spec_from_file_location(...)` of `cbut-sync.py`. That is the
+        documented way this project loads its own sibling file (a hyphenated name
+        cannot be imported normally), it takes a path built from `__file__` rather
+        than a name, and treating it as a violation would point the check at code
+        that has already been reviewed here.
+        """
+        for name in PRODUCTION_SCRIPTS:
+            hits = dynamic_module_calls((SCRIPTS / name).read_text(encoding="utf-8"),
+                                        name)
+            self.assertFalse(hits, f"{name} reaches a module or runs code by name: "
+                                   f"{hits} — the privacy invariant is pure-local, and "
+                                   f"an import statement is not the only way to get one")
+
+    def test_the_dynamic_import_detector_actually_detects(self):
+        """A guard nobody has seen fail is a rumour. Fed the shapes it claims to catch.
+
+        Written as a case rather than by editing a production script: the product
+        files stay untouched, and the detector still has to prove it fires.
+        """
+        samples = [
+            ('x = __import__("socket")', "__import__"),
+            ('m = importlib.import_module(name)', "import_module"),
+            ('exec(source)', "exec"),
+            ('eval("os.system(1)")', "eval"),
+        ]
+        for src, expected in samples:
+            with self.subTest(src=src):
+                hits = dynamic_module_calls(src)
+                self.assertIn(expected, [h[0] for h in hits],
+                              f"the detector misses {expected} — the case above is "
+                              f"vacuous, not green")
+        # and the shape it must NOT flag, or it would cry wolf on every regex
+        self.assertEqual(dynamic_module_calls('R = re.compile("a+")'), [])
 
 
 def tree_fingerprint(root: Path):
