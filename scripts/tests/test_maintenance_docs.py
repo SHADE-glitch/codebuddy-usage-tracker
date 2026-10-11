@@ -16,6 +16,7 @@ Standard library only. Nothing in the repository is written by these tests.
 import contextlib
 import importlib.util
 import io
+import re
 import sys
 import tempfile
 import unittest
@@ -133,6 +134,88 @@ class DocTreeTest(unittest.TestCase):
         for name in ("README.md", "README.zh-CN.md"):
             text = (REPO / name).read_text(encoding="utf-8")
             self.assertIn("docs/", text, f"{name} never mentions docs/")
+
+
+class CiMatrixIsDocumentedAsItRuns(unittest.TestCase):
+    """What CI runs is stated in three files, and one of them had silently stopped
+    being true.
+
+    `docs/maintenance/compatibility.md` exists to be the version matrix; it even carries
+    a row declaring that the AGENTS.md CI section "must keep matching the workflow above".
+    On 2026-10-11 the workflow became a `3.11` + `3.14` matrix and AGENTS.md was updated in
+    the same change, while the maintenance document went on announcing **3.12** and "the
+    only interpreter CI runs" — in four places, with all 330 cases green and CI reporting
+    success. A description of a check that no longer describes the check is the same failure
+    as `schema_version`: it was true once and nobody re-read it. This class makes re-reading
+    mandatory.
+    """
+
+    WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
+    DOCS = ("AGENTS.md", "docs/maintenance/compatibility.md")
+
+    MATRIX_RE = re.compile(r'^\s*python-version:\s*\[([^\]]*)\]', re.M)
+    VERSION_RE = re.compile(r'\b3\.\d+\b')
+    # A line only makes a claim about CI when it names the workflow file or says what CI
+    # runs / is / holds / documents. Prose about the local venv (3.13 here, 3.14 there) is
+    # somebody else's fact and must not be swept into this comparison.
+    CLAIM_RE = re.compile(r'ci\.yml|CI (runs|is|matrix|section)')
+
+    def setUp(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        lists = self.MATRIX_RE.findall(text)
+        self.assertTrue(lists, f"{self.WORKFLOW} has no python-version list to compare against")
+        self.matrix = {v.strip().strip("\"'") for chunk in lists for v in chunk.split(",")}
+
+    def offending(self, text):
+        """Lines that state a CI version, with the versions they state."""
+        out = []
+        for number, line in enumerate(text.splitlines(), 1):
+            if not self.CLAIM_RE.search(line):
+                continue
+            versions = set(self.VERSION_RE.findall(line))
+            if versions and versions != self.matrix:
+                out.append((number, sorted(versions), line.strip()[:72]))
+        return out
+
+    def test_the_workflow_states_the_versions_it_runs(self):
+        self.assertTrue(self.matrix, "empty matrix: the guard would pass every document")
+        for version in self.matrix:
+            self.assertRegex(version, r"^3\.\d+$",
+                             f"unexpected token in the CI matrix: {version!r}")
+
+    def test_every_ci_claim_in_the_docs_states_the_real_matrix(self):
+        wrong = {}
+        for name in self.DOCS:
+            found = self.offending((REPO / name).read_text(encoding="utf-8"))
+            if found:
+                wrong[name] = found
+        self.assertEqual(
+            wrong, {},
+            f"CI runs {sorted(self.matrix)}, but these lines say otherwise: {wrong}")
+
+    def test_the_docs_really_do_make_ci_claims(self):
+        """Positive control. Both checks above would pass on documents that never
+        mention CI at all — the same emptiness that makes a scan over no fields a
+        free pass. So the scan's coverage is asserted, not assumed."""
+        for name in self.DOCS:
+            lines = [(number, line) for number, line
+                     in enumerate((REPO / name).read_text(encoding="utf-8").splitlines(), 1)
+                     if self.CLAIM_RE.search(line) and self.VERSION_RE.search(line)]
+            self.assertGreaterEqual(len(lines), 1,
+                                    f"{name} no longer states a CI version anywhere the "
+                                    "check can see it, so it is unguarded")
+
+    def test_a_stale_version_next_to_a_ci_claim_is_detected(self):
+        """The failure mode being guarded against, reproduced on a synthetic document:
+        the workflow moved on and the prose did not."""
+        fake = ("| `.github/workflows/ci.yml` | 3.12 | the only interpreter CI runs |\n"
+                "| `pyproject.toml` `requires-python` | `>=3.11` | the floor |\n")
+        found = self.offending(fake)
+        self.assertEqual(len(found), 1,
+                         f"a document that still says 3.12 must be caught, got {found}")
+        self.assertEqual(found[0][1], ["3.12"])
+        # The second line states 3.11 but makes no CI claim: it is the packaging floor.
+        self.assertNotIn(2, [hit[0] for hit in found])
 
 
 if __name__ == "__main__":
