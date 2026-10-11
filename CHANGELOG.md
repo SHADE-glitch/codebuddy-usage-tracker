@@ -638,3 +638,38 @@ Cost     Suite 316 → 326 (test_hermetic.py: new, 10 cases). What it does not b
          module docstring
 Commit   e6e25ef
 
+
+### D-033 · 2026-10-11 · fix
+Symptom  A model response's cache hit lives in two spellings of one number:
+         `rawUsage.prompt_cache_hit_tokens` and `rawUsage.prompt_tokens_details.cached_tokens`.
+         Built-in routes write both, holding the identical value in each; a custom endpoint writes
+         only the nested one. The parser read the top level alone, so every response served through a
+         custom endpoint persisted `NULL` — and `NULL` is what the interface then showed as no cache
+         usage. The number existed in the source the whole time. The miss was the instrument, not the
+         data: the first probe over real transcripts counted the *top-level keys* of `rawUsage` and
+         concluded the provider sent no cache fields at all, which was written up as a hard limit
+         before anything had descended one level
+Change   `_nested_cache_hit()` reads `prompt_tokens_details` → `cached_tokens`, and
+         `_record_model_response` substitutes it only where the top-level field is absent. Never added:
+         across built-in records the two spellings sum to the same figure, so a sum would have doubled
+         every cache number the tool has ever reported. An explicit `0` also stays `0`, because `0` is a
+         measurement and absence is not — which is why the case is three tests rather than one, each red
+         under a different wrong implementation (sum, falsy test, no read at all). The nested path is
+         registered as `NESTED_USAGE_FIELDS` and printed by `cbut format`, so the generated format
+         document carries it; `test_no_registered_field_is_dead` exempts it as a dynamic read, and its
+         proof is behavioural rather than static
+Evidence L1 A/B on identical input, same indexer, nested read disabled then enabled into two throwaway
+         databases: the custom endpoint's rows go `NULL → 38,634,240` (425 rows) and `NULL → 29,030,400`
+         (288 rows), recovered `67,664,640` cache-hit tokens — 96% of that route's prompt tokens. All
+         five built-in models' sums and NULL counts unchanged (`deepseek-v4.1-flash` stayed
+         `2,536,817,403`), and `model_responses` row count unchanged at 20,119. L0 `Ran 330, OK`.
+         `prompt_cache_miss_tokens` and `prompt_cache_write_tokens` stay `NULL` for this route: it
+         genuinely sends neither, and an empty cell is the honest answer where no number exists
+Cost     Suite 327 → 330 (test_sync.py: 82 → 85). No schema change — the column has existed since v3 and
+         was simply never filled for this route. No backfill without a rebuild: incremental sync follows
+         file offsets and does not re-read rows it already stored, so existing custom rows keep their
+         `NULL` until an L2 `cbut sync --full`. One figure in commit f3e5b3f conflates the two
+         quantities: the equal pair was measured at `2,614,796,037` over transcript records, and the
+         stored built-in total is `2,536,817,403` after `messageId` dedup — the claim (equal, therefore
+         never summed) holds; the single number quoted for it was the wrong one of the two
+Commit   f3e5b3f
