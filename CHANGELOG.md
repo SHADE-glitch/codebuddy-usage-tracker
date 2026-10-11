@@ -673,3 +673,32 @@ Cost     Suite 327 → 330 (test_sync.py: 82 → 85). No schema change — the c
          stored built-in total is `2,536,817,403` after `messageId` dedup — the claim (equal, therefore
          never summed) holds; the single number quoted for it was the wrong one of the two
 Commit   f3e5b3f
+
+### D-034 · 2026-10-11 · guard
+Symptom  `docs/maintenance/compatibility.md` is the document whose job is the version matrix, and it
+         carried a row saying the AGENTS.md CI section "must keep matching the workflow above". The
+         workflow then became a `3.11` + `3.14` matrix and AGENTS.md was updated in the same change,
+         while the maintenance document went on stating **3.12** and "the only interpreter CI runs" in
+         four places. All 330 cases stayed green and CI reported success throughout, so nothing in the
+         repository could tell a reader that a description of a check had stopped describing the check —
+         the `schema_version` failure mode again: true once, never re-read
+Change   `CiMatrixIsDocumentedAsItRuns` in `test_maintenance_docs.py` reads `python-version` out of
+         `.github/workflows/ci.yml` and compares it, per line, against every line of AGENTS.md and
+         compatibility.md that makes a CI claim (`ci.yml`, or CI runs/is/matrix/section). A set
+         comparison over the lines that claim, not a list of lines to inspect: the next stale sentence is
+         caught without editing the check. Scoping is by claim rather than by file, so prose about the
+         local venv (3.13, which CI does not run and which the TUI uses) is out of scope by construction.
+         The document's other CI sentences were rewritten to match, including the note that CI now covers
+         the two bounds and therefore still misses 3.13, and the reproduce commands were replaced with
+         the ones actually run
+Evidence Red against the document as it stood, naming line 11 and the rest. Provoked from the workflow
+         side on a copy of the file: matrix widened to three, narrowed to one, and the version list
+         removed — each turned the check red, so it reads the workflow rather than reciting today's
+         answer. A synthetic page still saying 3.12 is caught while a `requires-python >=3.11` line on
+         the same page is left alone, which is the scoping claim being tested rather than asserted.
+         L0 `Ran 334, OK`
+Cost     Suite 330 → 334 (test_maintenance_docs.py: 9 → 13). What it does not buy: it compares version
+         tokens on claim lines, so a document can still misdescribe CI in prose that carries no version
+         number, and it cannot say whether the matrix is the right choice — only that the documents agree
+         with it
+Commit   39b608d
