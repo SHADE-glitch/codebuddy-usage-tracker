@@ -435,6 +435,48 @@ class IndexerTest(unittest.TestCase):
         self.assertIsNone(row["prompt_cache_miss_tokens"])
         self.assertIsNone(row["prompt_cache_write_tokens"])
 
+    # -- the nested cache copy a custom endpoint is the only one sending -----
+    # Real transcripts write the cache number two ways: built-in routes put it in
+    # ``prompt_cache_hit_tokens`` *and* repeat the identical value in
+    # ``prompt_tokens_details.cached_tokens``; a ``custom-local`` route sends only
+    # the nested one. Measured 2026-10-11: built-in 19,358 records, both spellings
+    # summing to exactly 2,614,796,037; custom 712 records with no top-level field
+    # at all and 67,664,640 in the nested one — which is why every custom row in
+    # the database read as NULL while the number existed the whole time.
+
+    def test_a_nested_cache_hit_is_recorded_when_the_top_level_is_absent(self):
+        raw = {"prompt_tokens": 10, "completion_tokens": 2,
+               "prompt_tokens_details": {"cached_tokens": 6, "audio_tokens": 0}}
+        write_records(self.tr, [model_rec("c3n", raw=raw)])
+        self.index()
+        row = self.model_row("c3n")
+        self.assertEqual(row["prompt_cache_hit_tokens"], 6)
+        # The boundary, stated in the data rather than in prose: miss and write
+        # really are not sent by this route, so they must stay NULL.
+        self.assertIsNone(row["prompt_cache_miss_tokens"])
+        self.assertIsNone(row["prompt_cache_write_tokens"])
+
+    def test_the_two_spellings_of_one_cache_number_are_not_added(self):
+        """Built-in transcripts carry the same value twice, so the nested copy is a
+        fallback and never a second source: summing them would report twice the
+        cache every built-in model actually used.
+        """
+        raw = {"prompt_tokens": 100, "completion_tokens": 20,
+               "prompt_cache_hit_tokens": 80,
+               "prompt_tokens_details": {"cached_tokens": 80}}
+        write_records(self.tr, [model_rec("c3d", raw=raw)])
+        self.index()
+        self.assertEqual(self.model_row("c3d")["prompt_cache_hit_tokens"], 80)
+
+    def test_an_explicit_zero_cache_hit_survives_a_nested_value(self):
+        """``0`` is a measurement, not a gap — the top level still outranks it."""
+        raw = {"prompt_tokens": 10, "completion_tokens": 2,
+               "prompt_cache_hit_tokens": 0,
+               "prompt_tokens_details": {"cached_tokens": 5}}
+        write_records(self.tr, [model_rec("c3z", raw=raw)])
+        self.index()
+        self.assertEqual(self.model_row("c3z")["prompt_cache_hit_tokens"], 0)
+
     def test_total_tokens_is_prompt_plus_completion(self):
         raw = {"prompt_tokens": 10, "completion_tokens": 3,
                "prompt_cache_hit_tokens": 7, "prompt_cache_miss_tokens": 3}

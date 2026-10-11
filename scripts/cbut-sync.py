@@ -160,6 +160,20 @@ CACHE_USAGE_FIELDS = (
     "prompt_cache_write_tokens",
 )
 
+# One cache number, two spellings. A built-in route writes
+# ``rawUsage.prompt_cache_hit_tokens`` *and* repeats the identical value nested at
+# ``rawUsage.prompt_tokens_details.cached_tokens``; a ``custom-local`` endpoint sends
+# only the nested one. Measured on real transcripts 2026-10-11: built-in 19,358
+# records, both spellings summing to exactly 2,614,796,037 tokens each; custom 712
+# records, top-level absent, nested 67,664,640.
+#
+# So the nested copy is a **fallback, never a second source** — adding the two would
+# double every built-in cache number, which is the kind of inflation this record has
+# already been promised against. Reading only the top level is what left 588 custom
+# rows NULL while their number existed the whole time.
+NESTED_CACHE_HIT = ("prompt_tokens_details", "cached_tokens")
+NESTED_USAGE_FIELDS = frozenset(NESTED_CACHE_HIT)
+
 # --- field mirrors: the record shape we read, by object --------------------
 # Read dynamically in ``_record_model_response`` (``raw.get(k)``), so they never
 # appear as a literal ``.get()`` key; each must still land in a column.
@@ -191,7 +205,8 @@ INVENTORY_JSON_FIELDS = frozenset({"mcpServers", "plugins", "installPath", "vers
 
 CODEBUDDY_FIELDS = (RECORD_FIELDS | PROVIDER_FIELDS | BAGGAGE_FIELDS
                     | CONTENT_BLOCK_FIELDS | TOOL_ARG_FIELDS
-                    | INVENTORY_JSON_FIELDS | RAW_USAGE_FIELDS)
+                    | INVENTORY_JSON_FIELDS | RAW_USAGE_FIELDS
+                    | NESTED_USAGE_FIELDS)
 
 # cbut's own vocabulary in the ``unparsed`` table — NOT CodeBuddy fields.
 # ``cbut health`` and the TUI status line print these verbatim: "type:<name>"
@@ -441,6 +456,22 @@ def index_file(conn: sqlite3.Connection, path: Path, offset: int,
     return consumed
 
 
+def _nested_cache_hit(raw):
+    """``rawUsage.prompt_tokens_details.cached_tokens``, when this record carries it.
+
+    The only cache number a custom endpoint sends. ``None`` means "not reported",
+    which is a different fact from an explicit ``0`` — so the caller substitutes this
+    only where the top-level field is absent, never where it is zero.
+    """
+    details = raw.get(NESTED_CACHE_HIT[0])
+    if not isinstance(details, dict):
+        return None
+    value = details.get(NESTED_CACHE_HIT[1])
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 def _record_model_response(conn, rec, sid, project, ts) -> None:
     """Persist one model response's token usage, deduped by messageId.
 
@@ -453,7 +484,9 @@ def _record_model_response(conn, rec, sid, project, ts) -> None:
       is not known yet (``INSERT OR IGNORE``), never fabricating tokens.
 
     Missing token fields are stored as NULL and named in ``missing``. ``credit``
-    and ``turn-metrics.tokenDelta`` are never read here.
+    and ``turn-metrics.tokenDelta`` are never read here. The cache hit is the one
+    field with two spellings: the nested copy is read only when the top level is
+    absent, so a record carrying both is counted once (see ``NESTED_CACHE_HIT``).
     """
     if rec.get("type") not in MODEL_RESPONSE_TYPES:
         return
@@ -468,6 +501,8 @@ def _record_model_response(conn, rec, sid, project, ts) -> None:
     if isinstance(raw, dict):
         vals = {k: raw.get(k) for k in USAGE_FIELDS}
         cache = {k: raw.get(k) for k in CACHE_USAGE_FIELDS}
+        if cache["prompt_cache_hit_tokens"] is None:
+            cache["prompt_cache_hit_tokens"] = _nested_cache_hit(raw)
         missing = [k for k in USAGE_FIELDS if raw.get(k) is None]
         if model is None:
             missing.append("model")
@@ -782,6 +817,8 @@ def format_doc() -> str:
         row("Transcript record fields", RECORD_FIELDS),
         row("`providerData` fields", PROVIDER_FIELDS),
         row("`providerData.rawUsage` fields", RAW_USAGE_FIELDS),
+        row("`rawUsage` nested cache path (fallback for the hit above)",
+            NESTED_USAGE_FIELDS),
         row("`_meta` fields", BAGGAGE_FIELDS),
         row("message content-block fields", CONTENT_BLOCK_FIELDS),
         row("tool argument names", TOOL_ARG_FIELDS),

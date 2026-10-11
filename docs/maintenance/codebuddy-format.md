@@ -17,6 +17,7 @@ cbut format --write      # refresh the block in this file after changing the reg
 - **Transcript record fields**: `_meta`, `arguments`, `callId`, `content`, `cwd`, `durationMs`, `id`, `name`, `providerData`, `sessionId`, `status`, `timestamp`, `tokenDelta`, `type`
 - **`providerData` fields**: `conversationRequestId`, `messageId`, `model`, `rawUsage`
 - **`providerData.rawUsage` fields**: `cache_creation_input_tokens`, `cache_read_input_tokens`, `completion_tokens`, `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, `prompt_cache_write_tokens`, `prompt_tokens`, `total_tokens`
+- **`rawUsage` nested cache path (fallback for the hit above)**: `cached_tokens`, `prompt_tokens_details`
 - **`_meta` fields**: `baggage`
 - **message content-block fields**: `text`
 - **tool argument names**: `agent_type`, `args`, `command`, `skill`, `subagent_type`, `toolName`, `tool_name`

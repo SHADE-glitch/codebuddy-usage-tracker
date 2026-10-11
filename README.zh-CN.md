@@ -221,7 +221,7 @@ sync_secs = 30       # TUI 自动同步定时器
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 327 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 330 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -230,7 +230,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 327 tests ... OK
 
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
-| `test_sync.py` | 82 | 转录解析、工具归类、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
+| `test_sync.py` | 85 | 转录解析、工具归类、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
 | `test_tui.py` | 86 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、单元格上限与它背后的设置项、状态栏诚实性 |
 | `test_usage.py` | 61 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）、token 汇总、Dashboard 查询、结构版本门禁、索引值不值得留 |
 | `test_config.py` | 21 | 设置层：默认值没变、文件、env 优先级与取值边界、坏文件会让 `main()` 在启动 TUI 前就退出、app 真的读了哪些键，以及 `cbut health` 把每个键都报出来——环境变量会被藏起来，所以一台配置过的机器也不会把这些用例变成假失败 |
@@ -256,7 +256,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 327 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 327 个用例 |
+| `scripts/tests/` | 上面那 330 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、以及体积与性能的固定度量法和基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |

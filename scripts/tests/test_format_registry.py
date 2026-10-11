@@ -159,11 +159,16 @@ class FieldsAreRegisteredTest(unittest.TestCase):
 
     def test_no_registered_field_is_dead(self):
         """A registered field nobody reads is the schema_version failure mode:
-        a declaration that stopped being true. The two token tuples are read
-        dynamically (``raw.get(k)``) so they are exempted *by construction* —
-        RAW_USAGE_FIELDS is derived from them, not typed out again."""
+        a declaration that stopped being true. The two token tuples and the nested
+        cache path are read dynamically (``raw.get(k)``, ``raw.get(TUPLE[0])``) so
+        they are exempted *by construction* — RAW_USAGE_FIELDS is derived from them,
+        not typed out again. The nested path is the one exemption with no column to
+        check it against, so its proof is behavioural:
+        ``test_a_nested_cache_hit_is_recorded_when_the_top_level_is_absent``.
+        """
         reads = set(get_literal_keys(TREE))
-        dynamic = frozenset(sync.USAGE_FIELDS) | frozenset(sync.CACHE_USAGE_FIELDS)
+        dynamic = (frozenset(sync.USAGE_FIELDS) | frozenset(sync.CACHE_USAGE_FIELDS)
+                   | sync.NESTED_USAGE_FIELDS)
         dead = sync.CODEBUDDY_FIELDS - reads - dynamic
         self.assertEqual(dead, frozenset(),
                          f"registered but never read: {sorted(dead)}")
