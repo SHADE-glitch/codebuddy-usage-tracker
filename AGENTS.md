@@ -335,3 +335,20 @@ When upstream changes: follow the checklist in
 then change the registry and the handler **in the same commit**, and re-index at L1 before touching
 a real database. `AGENTS.md` does not list the fields — the registry does, and the test keeps it
 true.
+
+## Listed on the GitHub profile
+
+This repo is listed on the owner's profile front page (`SHADE-glitch/SHADE-glitch`). That page lives
+in a **separate repository and never updates itself** — when a fact it states about this repo
+changes, update the profile README in the same round. The profile's own `AGENTS.md` is the
+authoritative rulebook; its guard `scripts/check-profile.mjs` must keep passing.
+
+- **Rename / transfer / delete** — the profile link dies; fix the row.
+- **Purpose drift** — the profile's one-line description must still be true. The claims it copies —
+  *"no network, no message bodies"*, "dev tooling" — are **promises**: if one stops holding, change
+  the profile line that makes it.
+- **LICENSE change** — the profile's license badge must equal this repo's `LICENSE`.
+- **Version / runtime declaration change** — the matching badge must equal this repo's declaration.
+- **Freeze / archive / upstream-frozen** — say so on the profile; never leave a stale "maintained".
+- **Public ↔ private** — a repo that goes private must be **delisted** (only the two whitelisted
+  private apps may stay, and they are not this one).
