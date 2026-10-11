@@ -38,13 +38,14 @@ different Python could parse differently:
 
 | Interpreter | Suite on this machine | Notes |
 |---|---|---|
-| `.venv` 3.13.14 | **Ran 330, OK** (170.7 s) | what the TUI runs on, sqlite 3.53.1 — the interpreter **no CI job covers** |
-| 3.14.4 (system build, sqlite 3.46.1) | **Ran 330, OK** (164.9 s) | throwaway venv on the system interpreter, and one of CI's two jobs — a different SQLite build, same green |
-| 3.12.14 | **Ran 330, OK** (168.3 s) | throwaway `uv venv` on 3.12 + `textual>=8.2,<9`. CI does not run this any more since the matrix moved to the two bounds; it is still the version `install.sh`-era users land on, so it is measured rather than assumed |
-| 3.11.15 (the promised floor) | **Ran 330, OK** (173.2 s) | throwaway `uv venv` on 3.11 in `/tmp`, `textual>=8.2,<9`, sqlite 3.53.1 — CI's lower job, and the row that would fail first if `tomllib` were not available at the floor. Not a project venv, delete it and nothing is lost |
+| `.venv` 3.13.14 | **Ran 334, OK** (163.6 s) | what the TUI runs on, sqlite 3.53.1 — the interpreter **no CI job covers** |
+| 3.14.4 (system build, sqlite 3.46.1) | **Ran 334, OK** (147.6 s) | throwaway venv on the system interpreter, and one of CI's two jobs — a different SQLite build, same green |
+| 3.12.14 | **Ran 334, OK** (169.0 s) | throwaway `uv venv` on 3.12 + `textual>=8.2,<9`. CI does not run this any more since the matrix moved to the two bounds; it is still the version `install.sh`-era users land on, so it is measured rather than assumed |
+| 3.11.15 (the promised floor) | **Ran 334, OK** (180.7 s) | throwaway `uv venv` on 3.11 in `/tmp`, `textual>=8.2,<9`, sqlite 3.53.1 — CI's lower job, and the row that would fail first if `tomllib` were not available at the floor. Not a project venv, delete it and nothing is lost |
 
-One serial pass on the tree D-033 lands in (code `f3e5b3f` + the record `1175ab6`), and the same pass
-re-run once the CI-matrix guard was added, four interpreters, four `OK`s. Each interpreter into its
+One serial pass on the tree D-033 lands in (code `f3e5b3f` + the record `1175ab6`) printed **Ran 330**,
+and the table above is the same pass re-run once the CI-matrix guard had shipped — four interpreters,
+four `OK`s, on `fd4136f`. Each interpreter into its
 **own** log, and each log's mtime read back before its number was believed: the previous day's pass used
 the same `/tmp/mx-<interpreter>.log` names, so a stale `Ran 313, OK` was sitting in two of the files
 looking exactly like evidence from today — a re-run that overwrites names one interpreter at a time

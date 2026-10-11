@@ -52,6 +52,23 @@ this repository is public and exact counts are a picture of one person's activit
 `quick_check` and `integrity_check` are both `ok`, `schema_version` is 6, and
 journal / synchronous / `auto_vacuum` / `user_version` have not moved.
 
+**Re-measured 2026-10-11 on the same read-only connection, after the first `--full` rebuild since the
+baseline.** The file has not moved — 14.7 MiB, 3,765 pages of 4 KiB, `quick_check` `ok` — but the
+freelist has: **215 free pages against 566**. Dropping an index only *parks* pages; a full rebuild
+rewrites them, so the space that the v6 index drop left inside the file was finally reclaimed without
+running `VACUUM`. Rows across all tables are now **≈ 50k** (`tool_calls` ≈ 28k · `model_responses` ≈ 20k
+· `sessions` ≈ 510 · `sync_state` ≈ 525) and the source is **≈ 525 transcripts**. The `≈ 44k` above is
+left as the reading of its own date: these rows record what a command printed on a day, not a number
+someone maintains.
+
+What the re-measurement also makes visible is that **the store is live**. Two reads fifteen minutes apart
+printed 49,470 and then 49,828 rows, and the file's mtime advanced between them — with `usage.db-wal` at
+**0 bytes** and **no new file in `backups/`**. Those two details are what say it was an ordinary
+incremental sync (whatever is driving it — the TUI's 30-second worker or a `cbut sync`) rather than a
+rebuild or a migration: both of those take a snapshot first, and a snapshot would still be sitting in
+`backups/`. Nothing in this document should therefore be read as a fixed property of the data; the
+one-significant-digit rounding is the defence, and `PRAGMA page_count` is the field that moves first.
+
 ## Where the bytes go, and which indexes earn their keep
 
 ```bash
