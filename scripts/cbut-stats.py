@@ -80,6 +80,17 @@ def table(headers, rows, aligns=None):
     return "\n".join(out)
 
 
+def table_or(headers, rows, aligns=None, empty="(none)"):
+    """``table(...)`` when there is data, else the ``empty`` notice.
+
+    ``table`` always returns at least a header and a separator line, so the
+    ``table(...) or "(none)"`` idiom this replaces never reached its right-hand
+    side: an empty report printed a bare header with nothing under it. Branch on
+    the rows, which is what the fallback was always trying to say.
+    """
+    return table(headers, rows, aligns) if rows else empty
+
+
 def _rows(cur, keys):
     return [[r[k] for k in keys] for r in cur]
 
@@ -121,14 +132,14 @@ def cmd_stats(conn, args):
 
     print("Skills")
     rows = _rows(db.q_skills(conn), ["skill", "calls", "last_used"])
-    print(table(["skill", "calls", "last used"],
-                [[r[0], r[1], ts(r[2])] for r in rows]) or "  (none)")
+    print(table_or(["skill", "calls", "last used"],
+                   [[r[0], r[1], ts(r[2])] for r in rows], empty="  (none)"))
     print()
 
     print("Agents")
     rows = _rows(db.q_agents(conn), ["agent_type", "calls", "last_used"])
-    print(table(["agent", "calls", "last used"],
-                [[r[0], r[1], ts(r[2])] for r in rows]) or "  (none)")
+    print(table_or(["agent", "calls", "last used"],
+                   [[r[0], r[1], ts(r[2])] for r in rows], empty="  (none)"))
     print()
 
     print("Plugins (installed ∪ used, by attributed usage)")
@@ -156,22 +167,22 @@ def cmd_tools(conn, args):
 def cmd_skills(conn, args):
     rows = _rows(db.q_skills(conn, args.limit),
                  ["skill", "calls", "completed", "last_used", "projects"])
-    print(table(["skill", "calls", "ok", "last used", "proj"],
-                [[r[0], r[1], r[2], ts(r[3]), r[4]] for r in rows]) or "(none)")
+    print(table_or(["skill", "calls", "ok", "last used", "proj"],
+                   [[r[0], r[1], r[2], ts(r[3]), r[4]] for r in rows]))
 
 
 def cmd_agents(conn, args):
     rows = _rows(db.q_agents(conn, args.limit),
                  ["agent_type", "calls", "last_used", "projects"])
-    print(table(["agent", "calls", "last used", "proj"],
-                [[r[0], r[1], ts(r[2]), r[3]] for r in rows]) or "(none)")
+    print(table_or(["agent", "calls", "last used", "proj"],
+                   [[r[0], r[1], ts(r[2]), r[3]] for r in rows]))
 
 
 def cmd_mcp(conn, args):
     rows = _rows(db.q_mcp(conn, args.limit),
                  ["server", "tool", "calls", "completed", "last_used"])
-    print(table(["server", "tool", "calls", "ok", "last used"],
-                [[r[0], r[1], r[2], r[3], ts(r[4])] for r in rows]) or "(none)")
+    print(table_or(["server", "tool", "calls", "ok", "last used"],
+                   [[r[0], r[1], r[2], r[3], ts(r[4])] for r in rows]))
 
 
 # Per-model table: (header, q_model_tokens key). Order matters — the trailing
@@ -230,7 +241,7 @@ def cmd_models(conn, args):
     print()
     print("Recent model responses")
     recent = db.q_model_responses(conn, args.limit)
-    print(table(
+    print(table_or(
         ["when", "model", "in", "out", "total", "cache hit", "cache miss",
          "cache write", "usage", "session"],
         [[ts(r["ts"]), r["model"] or "?", fmt_n(r["prompt_tokens"]),
@@ -239,7 +250,7 @@ def cmd_models(conn, args):
           fmt_n(r["prompt_cache_miss_tokens"]),
           fmt_n(r["prompt_cache_write_tokens"]),
           "yes" if r["usage_available"] else "no",
-          (r["session_id"] or "")[:8]] for r in recent]) or "  (none)")
+          (r["session_id"] or "")[:8]] for r in recent], empty="  (none)"))
 
 
 def cmd_plugins(conn, args):
