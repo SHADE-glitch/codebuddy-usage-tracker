@@ -468,7 +468,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(month(), "December 2026")
             # the cells before the 1st are greyed days of the previous month
             self.assertIn("-other",
-                          modal.query_one("#dr-day-0", tui.Button).classes)
+                          modal.query_one("#dr-day-0", tui.Static).classes)
 
     # 5l. today is marked, and the highlight follows the active card's date
     async def test_date_picker_marks_today_and_the_active_selection(self):
@@ -484,19 +484,19 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             cells = {modal._day_at(i): i for i in range(modal.CELLS)}
             today = cells[date(2026, 10, 12)]
             self.assertIn("-today",
-                          modal.query_one(f"#dr-day-{today}", tui.Button).classes)
+                          modal.query_one(f"#dr-day-{today}", tui.Static).classes)
             # the START card opens on the 7d window's first day, and that cell
             # is the marked one
             start = modal.query_one("#dr-start-date", tui.Input).value
             self.assertEqual(start, "10/06/2026")
             self.assertIn("-selected",
                           modal.query_one(f"#dr-day-{cells[date(2026, 10, 6)]}",
-                                          tui.Button).classes)
+                                          tui.Static).classes)
             # aiming at END re-marks the end date instead
             modal._set_active("end")
             marked = [i for i in range(modal.CELLS)
                       if "-selected" in modal.query_one(f"#dr-day-{i}",
-                                                        tui.Button).classes]
+                                                        tui.Static).classes]
             self.assertEqual([modal._day_at(i) for i in marked],
                              [date(2026, 10, 12)])
 
@@ -536,7 +536,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             modal = app.screen_stack[-1]
             for i in range(modal.CELLS):
-                cell = modal.query_one(f"#dr-day-{i}", tui.Button)
+                cell = modal.query_one(f"#dr-day-{i}", tui.Static)
                 with self.subTest(cell=i, day=modal._day_at(i)):
                     self.assertEqual(cell.render_line(0).text.strip(),
                                      str(modal._day_at(i).day))
@@ -648,6 +648,60 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             win = app.tab_range["tab-tools"]
             self.assertIsNone(win.start_ms)
             self.assertTrue(win.follow_now)
+
+    # 5p. the six shortcut chips fit their column, whole
+    async def test_date_picker_chips_fit_their_column(self):
+        # The six chips span x=2..53 (52 cells) and the column was 47 wide, so
+        # "All time" ran 6 cells past its edge. It is 53 now, one cell spare.
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            row = modal.query_one("#dr-presets")
+            self.assertEqual([str(c.label) for c in row.children],
+                             ["Today", "1d", "7d", "14d", "30d", "All time"])
+            for chip in row.children:
+                with self.subTest(chip=str(chip.label)):
+                    self.assertLessEqual(chip.region.right, row.region.right,
+                                         "the chip runs past its column")
+                    drawn = "".join(chip.render_line(y).text
+                                    for y in range(chip.size.height))
+                    self.assertIn(str(chip.label), drawn)
+
+    # 5q. the 📅 span survives a tab switch at its full width
+    async def test_the_date_label_keeps_the_whole_span_after_a_tab_switch(self):
+        # A Button does not re-lay-out when its label grows, so the control kept
+        # the 10 cells it was built with and drew "📅 10-06" until the next full
+        # relayout — which a tab switch is. Check the width after one.
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            modal.query_one("#dr-follow", tui.Checkbox).value = False
+            modal.query_one("#dr-start-date", tui.Input).value = "10/01/2026"
+            modal.query_one("#dr-end-date", tui.Input).value = "10/03/2026"
+            # pin the end time too, or it stays on the prefill's "now"
+            modal.query_one("#dr-end-time", tui.Input).value = "12:00 AM"
+            modal.query_one("#dr-ok", tui.Button).press()
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-skills"
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            btn = app.query_one("#date-range", tui.Button)
+            drawn = "".join(btn.render_line(y).text
+                            for y in range(btn.size.height))
+            self.assertIn("10-01 00:00 → 10-03 00:00", drawn)
 
 
     # 6. Tab cycling wraps around, no AttributeError (the old crash)

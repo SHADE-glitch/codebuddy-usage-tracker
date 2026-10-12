@@ -136,7 +136,8 @@ if HAVE_TEXTUAL:
         """
         DEFAULT_CSS = """
         TopBar { dock: top; width: 100%; height: 1; background: $panel; color: $foreground; }
-        TopBar > #topbar-title { width: 1fr; padding: 0 1; content-align: left middle; }
+        TopBar > #topbar-title { width: 1fr; padding: 0 1; content-align: left middle;
+                                 text-wrap: nowrap; text-overflow: ellipsis; }
         TopBar > #date-range { width: auto; min-width: 0; height: 1; border: none;
                                padding: 0 1; background: $panel; color: $foreground; }
         TopBar > #date-range:hover { background: $boost; }
@@ -168,6 +169,10 @@ if HAVE_TEXTUAL:
                 return
             btn.label = f"📅 {text}" if text else "📅"
             btn.display = bool(text)
+            # A Button does not re-lay-out when its label grows, so the control
+            # kept the width it was built with ("📅 Today" = 10 cells) and cut
+            # the longer span down to "📅 10-06" until the next full relayout.
+            btn.refresh(layout=True)
 
     class TimeInput(Input):
         """A clock field you can scrub as well as type.
@@ -240,10 +245,15 @@ if HAVE_TEXTUAL:
         )
 
         DEFAULT_CSS = """
-        DateRangeModal { align: center middle; overflow-y: auto; }
+        DateRangeModal { align: center middle; overflow: auto; }
+        /* Width budget, so the whole picker fits an 80-column terminal:
+           1 border + 1 padding + 53 (left column, of which the six chips use
+           52) + 1 margin + 21 (7 day cells of 3) + 1 padding + 1 border = 79.
+           The day cells are Statics, not Buttons: a Button renders a
+           two-digit label as one digit at width 3. */
         #dr-box { width: auto; height: auto; border: round $primary;
-                  background: $surface; padding: 1 2; }
-        #dr-left { width: 44; height: auto; }
+                  background: $surface; padding: 1 1; }
+        #dr-left { width: 53; height: auto; }
         #dr-presets { height: auto; }
         .dr-card { border: round $panel; height: auto; padding: 0 1; margin-top: 1; }
         .dr-card.-active { border: round $accent; background: $boost; }
@@ -255,7 +265,7 @@ if HAVE_TEXTUAL:
         #dr-start-time, #dr-end-time { width: 16; }
         #dr-follow { height: auto; }
         #dr-actions { height: auto; align-horizontal: right; }
-        #dr-cal { width: 28; height: auto; margin-left: 2; }
+        #dr-cal { width: 21; height: auto; margin-left: 1; }
         #dr-cal-head { height: auto; align: center middle; }
         #dr-cal-month { width: 1fr; text-align: center; text-style: bold; }
         #dr-cal-grid { grid-size: 7; grid-gutter: 0; height: auto; }
@@ -270,10 +280,10 @@ if HAVE_TEXTUAL:
         #dr-cal-head Button { width: auto; min-width: 0; border: none;
                               background: $surface; color: $foreground; }
         #dr-cal-grid .dr-dow { text-align: center; color: $text-muted; }
-        /* 4, not 3: a Button renders a two-digit label as one digit at width 3
-           ("30" -> " 3 "), which is why the calendar looked like nonsense. */
-        #dr-cal-grid Button { width: 4; height: 1; min-width: 0; border: none;
-                              padding: 0; background: $surface; color: $foreground; }
+        /* 3, not 4: a Static renders "30" at width 3, where a Button shows " 3 ".
+           The clicks are read from the cell id in on_click. */
+        #dr-cal-grid .dr-day { width: 3; height: 1; text-align: center;
+                               background: $surface; color: $foreground; }
         #dr-cal-grid .dr-day.-other { color: $text-disabled; }
         #dr-cal-grid .dr-day.-today { color: $accent; text-style: bold; }
         #dr-cal-grid .dr-day.-selected { background: $accent; color: $text;
@@ -319,7 +329,12 @@ if HAVE_TEXTUAL:
                         for dow in self.DOW:
                             yield Static(dow, classes="dr-dow")
                         for i in range(self.CELLS):
-                            yield Button("", id=f"dr-day-{i}", classes="dr-day")
+                            # A Static, not a Button: a Button renders the
+                            # two-digit label "30" as " 3 " at a 3-cell width,
+                            # and widening every cell to 4 would not fit the
+                            # calendar beside the cards. The day is read from
+                            # the cell id in on_click instead.
+                            yield Static("", id=f"dr-day-{i}", classes="dr-day")
 
         def on_mount(self) -> None:
             self._prefill()
@@ -383,11 +398,11 @@ if HAVE_TEXTUAL:
                 self._view.strftime("%B %Y"))
             for i in range(self.CELLS):
                 day = self._day_at(i)
-                btn = self.query_one(f"#dr-day-{i}", Button)
-                btn.label = str(day.day)
-                btn.set_class(day.month != self._view.month, "-other")
-                btn.set_class(day == today, "-today")
-                btn.set_class(day == chosen, "-selected")
+                cell = self.query_one(f"#dr-day-{i}", Static)
+                cell.update(str(day.day))
+                cell.set_class(day.month != self._view.month, "-other")
+                cell.set_class(day == today, "-today")
+                cell.set_class(day == chosen, "-selected")
 
         def _step_month(self, delta: int) -> None:
             month = self._view.month + delta
@@ -467,6 +482,12 @@ if HAVE_TEXTUAL:
             self.query_one("#dr-follow", Checkbox).value = False
 
         def on_click(self, event) -> None:
+            # A calendar day is a Static, so its click arrives here rather than
+            # as a Button.Pressed — read the day index from the cell's id.
+            wid = getattr(event.widget, "id", "") or ""
+            if wid.startswith("dr-day-"):
+                self._pick_day(int(wid.rsplit("-", 1)[1]))
+                return
             # Clicking anywhere on a card makes it the calendar's target.
             node = event.widget
             while node is not None:
@@ -492,8 +513,6 @@ if HAVE_TEXTUAL:
                 self._step_month(-1)
             elif bid == "dr-next":
                 self._step_month(1)
-            elif bid.startswith("dr-day-"):
-                self._pick_day(int(bid.rsplit("-", 1)[1]))
             elif bid == "dr-cancel":
                 self.dismiss(None)
             elif bid == "dr-ok":
