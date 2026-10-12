@@ -920,30 +920,47 @@ def q_recent(conn, limit=30):
     ).fetchall()
 
 
-def q_history(conn, kind, name, limit=50):
-    """Recent calls for one entity. kind in tool|skill|agent|mcp."""
-    where = {
-        "tool": ("tool_calls", "tool_name"),
-        "skill": ("skill_usage", "skill"),
-        "agent": ("agent_usage", "agent_type"),
-        "mcp": ("mcp_usage", "tool"),
-    }[kind]
-    table, col = where
+# entity -> (table, name column). The drill-downs share it: the history list, the
+# windowed summary, and (via the primary key) the single-call detail. ``mcp`` is
+# keyed by the TOOL alone here; the MCP tab's own row key carries the server too.
+_HISTORY_TABLE = {
+    "tool": ("tool_calls", "tool_name"),
+    "skill": ("skill_usage", "skill"),
+    "agent": ("agent_usage", "agent_type"),
+    "mcp": ("mcp_usage", "tool"),
+}
+
+
+def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None):
+    """Recent calls for one entity in a window, newest first. kind in tool|skill|agent|mcp.
+
+    ``call_id`` rides along so a row can open the single-call detail screen; it
+    is not one of the columns the list shows. The window is half-open
+    (``ts >= start AND ts < end``); both bounds ``None`` is all-time.
+    """
+    table, col = _HISTORY_TABLE[kind]
+    conds = [(f"{col} = ?", name)] + _time_conds(start_ts, end_ts, col="ts")
+    where = " WHERE " + " AND ".join(c for c, _ in conds)
     return conn.execute(
-        f"SELECT ts, project, session_id, status, duration_ms"
-        f" FROM {table} WHERE {col} = ? ORDER BY ts DESC LIMIT ?",
-        (name, int(limit)),
+        "SELECT ts, project, session_id, status, duration_ms, call_id"
+        f" FROM {table}{where} ORDER BY ts DESC LIMIT ?",
+        [p for _, p in conds] + [int(limit)],
     ).fetchall()
 
 
-def q_model_responses(conn, limit=50, model=None):
+def q_model_responses(conn, limit=50, model=None, start_ts=None, end_ts=None):
     """Recent per-response model usage rows (newest first).
 
     Token columns are the raw providerData.rawUsage values; NULL means the field
     was absent. ``total_tokens`` prefers the provider's own total and falls back
     to ``prompt + completion``; ``total_tokens_source`` says which was used
-    ('provider' | 'derived' | NULL).
+    ('provider' | 'derived' | NULL). The window is half-open; both bounds ``None``
+    is all-time.
     """
+    conds: list = []
+    if model:
+        conds.append(("model = ?", model))
+    conds += _time_conds(start_ts, end_ts, col="ts")
     sql = (
         "SELECT message_id, session_id, conversation_request_id, model, provider,"
         " prompt_tokens, completion_tokens, cache_read_input_tokens,"
@@ -955,13 +972,159 @@ def q_model_responses(conn, limit=50, model=None):
         " ts, project, source, usage_available, missing"
         " FROM model_responses"
     )
-    params: list = []
-    if model:
-        sql += " WHERE model = ?"
-        params.append(model)
+    params = [p for _, p in conds]
+    if conds:
+        sql += " WHERE " + " AND ".join(c for c, _ in conds)
     sql += " ORDER BY ts DESC LIMIT ?"
     params.append(int(limit))
     return conn.execute(sql, params).fetchall()
+
+
+def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None):
+    """Windowed aggregates for one entity — the numbers the drill-down header shows.
+
+    Every entity table carries ``status`` and ``duration_ms``, so one shape fits
+    all four. The completed/failed/pending counts COALESCE to 0 because "0 of 0
+    calls completed" is true, not unknown; ``avg_ms`` and the first/last stamps
+    stay NULL over an empty window (never a fabricated 0 or epoch).
+    """
+    table, col = _HISTORY_TABLE[kind]
+    conds = [(f"{col} = ?", name)] + _time_conds(start_ts, end_ts, col="ts")
+    where = " WHERE " + " AND ".join(c for c, _ in conds)
+    return conn.execute(
+        "SELECT COUNT(*) AS calls,"
+        " COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END), 0)"
+        "   AS completed,"
+        " COALESCE(SUM(CASE WHEN status='incomplete' THEN 1 ELSE 0 END), 0)"
+        "   AS failed,"
+        " COALESCE(SUM(CASE WHEN status IS NULL THEN 1 ELSE 0 END), 0)"
+        "   AS pending,"
+        " CAST(AVG(duration_ms) AS INTEGER) AS avg_ms,"
+        " MIN(ts) AS first_used, MAX(ts) AS last_used,"
+        " COUNT(DISTINCT project) AS projects,"
+        " COUNT(DISTINCT session_id) AS sessions"
+        f" FROM {table}{where}",
+        [p for _, p in conds],
+    ).fetchone()
+
+
+def q_plugin_history(conn, plugin, limit=50, start_ts=None, end_ts=None):
+    """Recent attributed uses of one plugin, newest first.
+
+    A separate query from q_history because ``plugin_usage`` has no
+    status/duration_ms — the columns differ. ``id`` rides along as the row key
+    for the detail screen; it is not a shown column.
+    """
+    conds = [("plugin = ?", plugin)] + _time_conds(start_ts, end_ts, col="ts")
+    where = " WHERE " + " AND ".join(c for c, _ in conds)
+    return conn.execute(
+        "SELECT id, ts, kind, target, marketplace, session_id, project"
+        f" FROM plugin_usage{where} ORDER BY ts DESC LIMIT ?",
+        [p for _, p in conds] + [int(limit)],
+    ).fetchall()
+
+
+def q_plugin_summary(conn, plugin, start_ts=None, end_ts=None):
+    """Windowed usage counts for one plugin.
+
+    The static inventory counts (skills/agents/commands the plugin ships) are
+    not here — they have no timestamp and come from ``q_plugins``.
+    """
+    conds = [("plugin = ?", plugin)] + _time_conds(start_ts, end_ts, col="ts")
+    where = " WHERE " + " AND ".join(c for c, _ in conds)
+    return conn.execute(
+        "SELECT COUNT(*) AS uses,"
+        " COUNT(DISTINCT kind) AS kinds,"
+        " COUNT(DISTINCT target) AS targets,"
+        " COUNT(DISTINCT project) AS projects,"
+        " COUNT(DISTINCT session_id) AS sessions,"
+        " MIN(ts) AS first_used, MAX(ts) AS last_used"
+        f" FROM plugin_usage{where}",
+        [p for _, p in conds],
+    ).fetchone()
+
+
+def q_model_summary(conn, model, start_ts=None, end_ts=None):
+    """Windowed token rollup for one model — the drill-down's header numbers.
+
+    Same expressions the Tokens tab and the Usage page use, so the header can
+    never disagree with the row it was opened from. ``total_tokens`` is the API
+    total; ``usage_total_tokens`` is the display-only cache-hit re-add.
+    """
+    conds = [("model = ?", model)] + _time_conds(start_ts, end_ts, col="ts")
+    where = " WHERE " + " AND ".join(c for c, _ in conds)
+    return conn.execute(
+        "SELECT COUNT(*) AS responses,"
+        " COALESCE(SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END), 0)"
+        "   AS with_usage,"
+        " SUM(prompt_tokens) AS prompt_tokens,"
+        " SUM(completion_tokens) AS completion_tokens,"
+        f" {_AGG_TOTAL_EXPR} AS total_tokens,"
+        f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
+        f" {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,"
+        " SUM(prompt_cache_hit_tokens) AS cache_hit,"
+        " SUM(prompt_cache_miss_tokens) AS cache_miss,"
+        " SUM(prompt_cache_write_tokens) AS cache_write,"
+        " MIN(ts) AS first_used, MAX(ts) AS last_used"
+        f" FROM model_responses{where}",
+        [p for _, p in conds],
+    ).fetchone()
+
+
+# Single-call detail: table, primary key, and the explicit column order the detail
+# screen renders. Explicit, not SELECT *, so a renamed column fails the query
+# loudly instead of quietly changing what the screen shows.
+_CALL_DETAIL = {
+    "tool": ("tool_calls", "call_id",
+             ("call_id", "tool_name", "category", "model", "status",
+              "ts", "duration_ms", "session_id", "project")),
+    "skill": ("skill_usage", "call_id",
+              ("call_id", "skill", "plugin", "has_args", "status",
+               "ts", "duration_ms", "session_id", "project")),
+    "agent": ("agent_usage", "call_id",
+              ("call_id", "agent_type", "kind", "source", "status",
+               "ts", "duration_ms", "session_id", "project")),
+    "mcp": ("mcp_usage", "call_id",
+            ("call_id", "server", "tool", "status",
+             "ts", "duration_ms", "session_id", "project")),
+    "plugin": ("plugin_usage", "id",
+               ("id", "plugin", "marketplace", "kind", "target",
+                "ts", "session_id", "project")),
+}
+# Model responses need the derived total, so they get their own query (the same
+# expressions the list uses) rather than the plain table map above.
+_MODEL_DETAIL_COLS = (
+    "message_id", "model", "provider", "conversation_request_id",
+    "prompt_tokens", "completion_tokens",
+    "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
+    "prompt_cache_write_tokens",
+    "cache_read_input_tokens", "cache_creation_input_tokens",
+    "provider_total_tokens",
+)
+
+
+def q_call_detail(conn, kind, key):
+    """Every field of one call as an ordered dict, or ``None`` if the key is unknown.
+
+    ``kind`` selects the table from a whitelist (never user SQL); ``key`` is the
+    table's primary key and is always parameterised. No window: a call is a point.
+    """
+    if kind == "model":
+        row = conn.execute(
+            "SELECT " + ", ".join(_MODEL_DETAIL_COLS)
+            + f", {_TOTAL_EXPR} AS total_tokens,"
+            f" {_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
+            " ts, project, source, usage_available, missing"
+            " FROM model_responses WHERE message_id = ?",
+            (key,),
+        ).fetchone()
+        return dict(row) if row else None
+    table, pk, cols = _CALL_DETAIL[kind]
+    row = conn.execute(
+        f"SELECT {', '.join(cols)} FROM {table} WHERE {pk} = ?",
+        (key,),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def q_model_tokens(conn, start_ts=None, end_ts=None):

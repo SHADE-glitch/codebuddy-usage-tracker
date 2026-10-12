@@ -1196,5 +1196,123 @@ class ProviderGroupingTest(unittest.TestCase):
         self.assertEqual(row["provider"], "Volcano Ark")
 
 
+class DrilldownQueryTest(unittest.TestCase):
+    """The windowed drill-down queries: q_history (+call_id), the per-entity
+    summaries, and q_call_detail (one call's full row)."""
+
+    NOW = 1_000_000_000_000
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.p = Path(self.tmp.name) / "d.db"
+        self.conn = db.open_db(self.p)
+        db.ensure_schema(self.conn)
+        # Two Bash calls inside a 24h window, one 100h back, one Read call.
+        self._tool("c1", "Bash", "completed", self.NOW - 3 * HOUR, 120, "s1", "/p/a")
+        self._tool("c2", "Bash", None, self.NOW - 2 * HOUR, 80, "s2", "/p/b")
+        self._tool("c3", "Bash", "completed", self.NOW - 100 * HOUR, 999, "s1", "/p/a")
+        self._tool("c4", "Read", "incomplete", self.NOW - 1 * HOUR, 10, "s1", "/p/a")
+        self.conn.execute(
+            "INSERT INTO plugin_usage(plugin, marketplace, kind, target,"
+            " session_id, project, ts) VALUES(?,?,?,?,?,?,?)",
+            ("myplug", "mp", "skill", "s/t", "s1", "/p/a", self.NOW - HOUR))
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _tool(self, cid, name, status, ts, dur, sess, proj):
+        self.conn.execute(
+            "INSERT INTO tool_calls(call_id, session_id, project, tool_name,"
+            " category, ts, duration_ms, status, model)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (cid, sess, proj, name, "builtin", ts, dur, status, "m"))
+
+    def _model(self, mid, model, pt, ct, ts, ua=1):
+        self.conn.execute(
+            "INSERT INTO model_responses(message_id, model, prompt_tokens,"
+            " completion_tokens, ts, usage_available) VALUES(?,?,?,?,?,?)",
+            (mid, model, pt, ct, ts, ua))
+
+    def _window(self):
+        return self.NOW - 24 * HOUR, self.NOW
+
+    def test_q_history_carries_the_call_id(self):
+        rows = db.q_history(self.conn, "tool", "Bash")
+        self.assertEqual([r["call_id"] for r in rows], ["c2", "c1", "c3"])
+
+    def test_q_history_window_excludes_older_calls(self):
+        start, end = self._window()
+        rows = db.q_history(self.conn, "tool", "Bash", start_ts=start, end_ts=end)
+        self.assertEqual([r["call_id"] for r in rows], ["c2", "c1"])
+
+    def test_q_entity_summary_counts_and_window(self):
+        alltime = dict(db.q_entity_summary(self.conn, "tool", "Bash"))
+        self.assertEqual(alltime["calls"], 3)
+        self.assertEqual(alltime["completed"], 2)
+        self.assertEqual(alltime["pending"], 1)
+        self.assertEqual(alltime["projects"], 2)
+        start, end = self._window()
+        win = dict(db.q_entity_summary(self.conn, "tool", "Bash",
+                                       start_ts=start, end_ts=end))
+        self.assertEqual(win["calls"], 2)
+        self.assertEqual(win["avg_ms"], 100)
+        self.assertEqual(win["first_used"], self.NOW - 3 * HOUR)
+
+    def test_q_entity_summary_of_an_unused_name_is_zero_not_null(self):
+        # "0 of 0 calls completed" is a fact; the average and stamps stay NULL.
+        s = dict(db.q_entity_summary(self.conn, "tool", "NeverUsed"))
+        self.assertEqual((s["calls"], s["completed"], s["failed"]), (0, 0, 0))
+        self.assertIsNone(s["avg_ms"])
+        self.assertIsNone(s["last_used"])
+
+    def test_q_plugin_summary_and_history(self):
+        s = dict(db.q_plugin_summary(self.conn, "myplug"))
+        self.assertEqual((s["uses"], s["kinds"], s["targets"]), (1, 1, 1))
+        rows = db.q_plugin_history(self.conn, "myplug")
+        self.assertEqual([r["id"] for r in rows], [1])
+        self.assertEqual(rows[0]["marketplace"], "mp")
+        self.assertEqual(rows[0]["kind"], "skill")
+
+    def test_q_model_summary_windows_and_uses_the_api_total(self):
+        self._model("in", "m", 10, 2, self.NOW - HOUR)
+        self._model("out", "m", 20, 4, self.NOW - 100 * HOUR)
+        self.conn.commit()
+        start, end = self._window()
+        s = dict(db.q_model_summary(self.conn, "m", start_ts=start, end_ts=end))
+        self.assertEqual(s["responses"], 1)
+        self.assertEqual(s["total_tokens"], 12)      # prompt + completion
+
+    def test_q_model_responses_window_excludes_older_rows(self):
+        self._model("in", "m", 10, 2, self.NOW - HOUR)
+        self._model("out", "m", 20, 4, self.NOW - 100 * HOUR)
+        self.conn.commit()
+        start, end = self._window()
+        rows = db.q_model_responses(self.conn, model="m",
+                                    start_ts=start, end_ts=end)
+        self.assertEqual([r["message_id"] for r in rows], ["in"])
+
+    def test_q_call_detail_returns_every_field(self):
+        row = db.q_call_detail(self.conn, "tool", "c1")
+        self.assertEqual(row["call_id"], "c1")
+        self.assertEqual(row["tool_name"], "Bash")
+        self.assertEqual(row["category"], "builtin")
+        self.assertEqual(row["model"], "m")
+        self.assertEqual(row["duration_ms"], 120)
+
+    def test_q_call_detail_unknown_key_is_none(self):
+        self.assertIsNone(db.q_call_detail(self.conn, "tool", "nope"))
+        self.assertIsNone(db.q_call_detail(self.conn, "model", "nope"))
+        self.assertIsNone(db.q_call_detail(self.conn, "plugin", 999))
+
+    def test_q_call_detail_model_carries_the_derived_total(self):
+        self._model("mid1", "m", 10, 2, self.NOW)
+        self.conn.commit()
+        row = db.q_call_detail(self.conn, "model", "mid1")
+        self.assertEqual(row["total_tokens"], 12)
+        self.assertEqual(row["total_tokens_source"], "derived")
+
+
 if __name__ == "__main__":
     unittest.main()
