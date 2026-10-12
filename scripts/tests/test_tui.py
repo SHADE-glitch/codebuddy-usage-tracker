@@ -522,6 +522,74 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.press("up")
             self.assertEqual(field.value, "12:00 AM")
 
+    # 5m2. every calendar cell shows its whole day number
+    async def test_every_calendar_day_renders_its_number(self):
+        # A regression guard: at a 3-cell width Textual renders "30" as " 3 ",
+        # so the calendar read as garbage while the clicks were still right.
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            for i in range(modal.CELLS):
+                cell = modal.query_one(f"#dr-day-{i}", tui.Button)
+                with self.subTest(cell=i, day=modal._day_at(i)):
+                    self.assertEqual(cell.render_line(0).text.strip(),
+                                     str(modal._day_at(i).day))
+
+    # 5m3. the end fields are never disabled, so a click can always aim END
+    async def test_clicking_an_end_field_switches_the_target(self):
+        # Disabling the end fields while "follows now" was on made them swallow
+        # the click, so the calendar could not be aimed at END at all.
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            self.assertTrue(modal.query_one("#dr-follow", tui.Checkbox).value)
+            for wid in ("#dr-end-date", "#dr-end-time"):
+                self.assertFalse(modal.query_one(wid, tui.Input).disabled,
+                                 f"{wid} must stay clickable")
+            await pilot.click("#dr-end-date")
+            await pilot.pause()
+            self.assertEqual(modal._active, "end")
+            # and the day click now lands in END
+            idx = (date(2026, 10, 9) - modal._grid_start()).days
+            await pilot.click(f"#dr-day-{idx}")
+            await pilot.pause()
+            self.assertEqual(modal.query_one("#dr-end-date", tui.Input).value,
+                             "10/09/2026")
+
+    # 5m4. editing an end field turns "follows now" off by itself
+    async def test_editing_an_end_field_drops_follow_now(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            follow = modal.query_one("#dr-follow", tui.Checkbox)
+            self.assertTrue(follow.value)
+            # the prefill's own write must not count as an edit
+            modal._set_field("#dr-end", FIXED_MS)
+            await pilot.pause()
+            self.assertTrue(follow.value, "a programmatic write dropped follow")
+            # a typed time does
+            modal.query_one("#dr-end-time", tui.TimeInput).value = "7:15 PM"
+            await pilot.pause()
+            self.assertFalse(follow.value)
+
     # 5n. a loose date and time are understood, not rejected
     async def test_date_picker_accepts_loose_dates_and_times(self):
         make_db(self.db_path, [])

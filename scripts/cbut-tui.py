@@ -243,14 +243,16 @@ if HAVE_TEXTUAL:
         DateRangeModal { align: center middle; overflow-y: auto; }
         #dr-box { width: auto; height: auto; border: round $primary;
                   background: $surface; padding: 1 2; }
-        #dr-left { width: 42; height: auto; }
+        #dr-left { width: 44; height: auto; }
         #dr-presets { height: auto; }
         .dr-card { border: round $panel; height: auto; padding: 0 1; margin-top: 1; }
         .dr-card.-active { border: round $accent; background: $boost; }
         .dr-card-title { color: $text-muted; text-style: bold; }
         .dr-fields { height: auto; }
         #dr-start-date, #dr-end-date { width: 1fr; margin: 0 1 0 0; }
-        #dr-start-time, #dr-end-time { width: 13; }
+        /* An Input spends 6 cells on its border and its 0-2 padding, so 16 is
+           what a 10-cell "12:00 PM" needs to render whole. */
+        #dr-start-time, #dr-end-time { width: 16; }
         #dr-follow { height: auto; }
         #dr-actions { height: auto; align-horizontal: right; }
         #dr-cal { width: 28; height: auto; margin-left: 2; }
@@ -268,7 +270,9 @@ if HAVE_TEXTUAL:
         #dr-cal-head Button { width: auto; min-width: 0; border: none;
                               background: $surface; color: $foreground; }
         #dr-cal-grid .dr-dow { text-align: center; color: $text-muted; }
-        #dr-cal-grid Button { width: 3; height: 1; min-width: 0; border: none;
+        /* 4, not 3: a Button renders a two-digit label as one digit at width 3
+           ("30" -> " 3 "), which is why the calendar looked like nonsense. */
+        #dr-cal-grid Button { width: 4; height: 1; min-width: 0; border: none;
                               padding: 0; background: $surface; color: $foreground; }
         #dr-cal-grid .dr-day.-other { color: $text-disabled; }
         #dr-cal-grid .dr-day.-today { color: $accent; text-style: bold; }
@@ -282,6 +286,9 @@ if HAVE_TEXTUAL:
             self._now = now_ms
             self._active = "start"       # which card the calendar writes into
             self._view = datetime.fromtimestamp(now_ms / 1000).date().replace(day=1)
+            # What we last wrote into each field, so a *user* edit can be told
+            # from our own prefill/preset write (both post Input.Changed).
+            self._written = {}
 
         def compose(self) -> ComposeResult:
             with Horizontal(id="dr-box"):
@@ -333,7 +340,6 @@ if HAVE_TEXTUAL:
             # A following end shows *now*; a fixed one shows the stored bound.
             self._set_field("#dr-end", self._now if follow else end)
             self.query_one("#dr-follow", Checkbox).value = follow
-            self._sync_follow()
             anchor = start if start is not None else self._now
             self._view = datetime.fromtimestamp(anchor / 1000).date().replace(day=1)
 
@@ -342,15 +348,15 @@ if HAVE_TEXTUAL:
             time_in = self.query_one(f"{prefix}-time", Input)
             if ms is None:
                 date_in.value = time_in.value = ""
-                return
-            dt = datetime.fromtimestamp(ms / 1000)
-            date_in.value = db.format_date(dt)
-            time_in.value = db.format_time(dt.hour, dt.minute)
+            else:
+                dt = datetime.fromtimestamp(ms / 1000)
+                date_in.value = db.format_date(dt)
+                time_in.value = db.format_time(dt.hour, dt.minute)
+            self._written[date_in.id] = date_in.value
+            self._written[time_in.id] = time_in.value
 
-        def _sync_follow(self) -> None:
-            follow = self.query_one("#dr-follow", Checkbox).value
-            for wid in ("#dr-end-date", "#dr-end-time"):
-                self.query_one(wid, Input).disabled = follow
+        def _follows_now(self) -> bool:
+            return self.query_one("#dr-follow", Checkbox).value
 
         # -- the calendar ----------------------------------------------------
         def _grid_start(self) -> date:
@@ -395,8 +401,8 @@ if HAVE_TEXTUAL:
             if self._active == "end":
                 # Choosing an end date means a fixed end, not "now".
                 self.query_one("#dr-follow", Checkbox).value = False
-                self._sync_follow()
             self.query_one(f"#dr-{self._active}-date", Input).value = db.format_date(day)
+            self._written[f"dr-{self._active}-date"] = db.format_date(day)
             if (day.year, day.month) != (self._view.year, self._view.month):
                 self._view = day.replace(day=1)
             self._render_calendar()
@@ -412,14 +418,13 @@ if HAVE_TEXTUAL:
             start, _ = db.window_bounds(key, self._now)
             self._set_field("#dr-start", start)
             self.query_one("#dr-follow", Checkbox).value = True
-            self._sync_follow()
             if start is not None:
                 self._view = datetime.fromtimestamp(start / 1000).date().replace(day=1)
             self._render_calendar()
 
         # -- confirm ---------------------------------------------------------
         def _confirm(self) -> None:
-            follow = self.query_one("#dr-follow", Checkbox).value
+            follow = self._follows_now()
             year = self._view.year
             try:
                 start = db.parse_datetime(
@@ -446,8 +451,20 @@ if HAVE_TEXTUAL:
 
         # -- events ----------------------------------------------------------
         def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-            if event.checkbox.id == "dr-follow":
-                self._sync_follow()
+            if event.checkbox.id == "dr-follow" and event.value:
+                # Ticking "follows current time" puts the end back on now.
+                self._set_field("#dr-end", self._now)
+
+        def on_input_changed(self, event: Input.Changed) -> None:
+            # A *user* edit of an end field means a fixed end, so drop the
+            # follow switch. Our own prefill/preset writes are ignored by
+            # matching the value we recorded.
+            wid = event.input.id or ""
+            if not wid.startswith("dr-end") or not self._follows_now():
+                return
+            if self._written.get(wid) == event.value:
+                return
+            self.query_one("#dr-follow", Checkbox).value = False
 
         def on_click(self, event) -> None:
             # Clicking anywhere on a card makes it the calendar's target.
