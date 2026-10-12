@@ -702,3 +702,29 @@ Cost     Suite 330 → 334 (test_maintenance_docs.py: 9 → 13). What it does no
          number, and it cannot say whether the matrix is the right choice — only that the documents agree
          with it
 Commit   39b608d
+
+### D-035 · 2026-10-12 · fix
+Symptom  The date picker's calendar drew one digit per cell — October 2026 read "3 3 1 2 3 4 5 / 6 7 8 9 1 1 1
+         …" — and the two time fields cut their value ("12:12 P"), while clicking a card to aim the calendar at
+         START or END often did nothing. All three looked like one bug and were three: the numbers were correct
+         and the day clicks landed on the right date throughout, so nothing in the suite could see it. Textual
+         renders a Button's two-digit label as a single digit at width 3 ("30" -> " 3 "); an Input spends 6 cells
+         on its border plus its 0-2 padding, so a 13-cell field holds 7 — one short of "12:12 PM"; and while
+         "End follows current time" was ticked the end inputs were `disabled`, and a disabled Input swallows the
+         click, so neither the click handler nor focus could switch the target and the calendar was unusable for
+         END
+Change   Day cells are 4 wide; the time fields are 16 (10 cells of content) and the date fields take the slack
+         (`#dr-left` 44, box 80). The end inputs are never disabled; editing one drops the follow switch by itself,
+         told apart from a prefill/preset write by matching the value last written into that field (`_written`).
+         Three cases: every cell renders its whole number, clicking an end field switches the target, and an edit
+         drops follow while a programmatic write does not
+Evidence Reproduced before the change and re-measured after on a copy of the live store: all 42 cells render their
+         full number (was 11 of 42 clipped), "10/12/2026" and "12:19 PM" fit whole (content 17 and 10), and clicking
+         the END date field moves `_active` to "end" so the next day click lands in END. A click on a disabled end
+         input was measured to post no event at all, which is why the switch had been unreliable rather than wrong.
+         L0 `Ran 376, OK`
+Cost     Suite 373 → 376 (test_tui.py: 97 → 100). What it does not buy: the cell width is asserted through the
+         rendered text, not through Textual's layout rules, so a future Textual that renders two digits at width 3
+         would leave the guard green while a wider cell stayed — harmless, but the number is pinned by observation
+         rather than by contract
+Commit   dfb1e17
