@@ -749,3 +749,22 @@ Cost     Suite 376 → 378 (test_tui.py: 100 → 102). What it does not buy: the
          picker (it is centred and does not scroll horizontally); and the relayout guard proves the label is
          whole after a tab switch, not that a label change repaints without one.
 Commit   7442b59
+
+### D-037 · 2026-10-12 · fix
+Symptom  `cbut mcp`, `cbut skills` and `cbut agents` — and the Skills/Agents sections of `cbut stats`,
+         and the recent-responses table of `cbut models` — printed a table header with nothing under
+         it whenever the database held no rows for that section, instead of the `(none)` notice each
+         line was written to show. A reader saw a bare header and no way to tell "none recorded" from
+         "the report broke".
+Change   The cause was the idiom, not a missing branch: `table(...) or "(none)"` could never reach its
+         right-hand side, because `table()` always returns at least a header line and a separator line,
+         so the string is always truthy. A `table_or(headers, rows, empty=…)` helper now branches on
+         the rows. Fallback text is unchanged per call site (`cbut stats` keeps its indented
+         `"  (none)"`). The new `test_stats.py` suite drives the real CLI and pins the empty case.
+Evidence L0 2026-10-12: `python3 -m unittest discover -s scripts/tests` → `Ran 432 tests ... OK`;
+         `test_stats.py::test_empty_reports_say_none_not_a_bare_header` runs `cbut mcp/skills/agents`
+         against an empty temp database and finds `(none)` and no `---` separator.
+Cost     None. The `(none)` string was already the stated intent; the helper only makes it reachable.
+         What it does not buy: the notice is a fixed string per call site, so a future section added
+         with `print(table(...))` (no helper) would go back to printing a bare header with no guard.
+Commit   6788a70
