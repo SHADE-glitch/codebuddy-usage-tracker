@@ -330,6 +330,104 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             labels = [str(c.label) for c in t.columns.values()]
             self.assertEqual(labels[:3], ["Time", "Model", "Provider"])
 
+    # 5g. the date picker: "Custom…" opens it, Confirm sets a custom window
+    async def test_date_picker_sets_a_custom_window(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            self.assertIsInstance(modal, tui.DateRangeModal)
+            modal.query_one("#dr-follow", tui.Checkbox).value = False
+            modal.query_one("#dr-start-date", tui.Input).value = "2026-10-01"
+            modal.query_one("#dr-start-time", tui.Input).value = "08:00"
+            modal.query_one("#dr-end-date", tui.Input).value = "2026-10-03"
+            modal.query_one("#dr-end-time", tui.Input).value = "18:30"
+            modal.query_one("#dr-ok", tui.Button).press()
+            await pilot.pause()
+            win = app.tab_range["tab-tools"]
+            self.assertIsInstance(win, db.CustomWindow)
+            self.assertFalse(win.follow_now)
+            start, end = app._bounds_for("tab-tools")
+            fmt = lambda ms: datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M")
+            self.assertEqual(fmt(start), "2026-10-01 08:00")
+            self.assertEqual(fmt(end), "2026-10-03 18:30")
+            # the Select reads "Custom…", and the 📅 control carries the span
+            self.assertEqual(app.query_one("#range", tui.Select).value, "custom")
+            # the 📅 control carries the chosen span (month-day, no year)
+            self.assertIn("10-01 08:00 → 10-03 18:30",
+                          str(app.query_one("#date-range", tui.Button).label))
+
+    # 5h. a custom window is kept per tab, and "follow now" pins the end
+    async def test_custom_window_is_per_tab_and_can_follow_now(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            modal.query_one("#dr-start-date", tui.Input).value = "2026-10-01"
+            modal.query_one("#dr-ok", tui.Button).press()   # follow stays on
+            await pilot.pause()
+            self.assertTrue(app.tab_range["tab-tools"].follow_now)
+            start, end = app._bounds_for("tab-tools")
+            self.assertEqual(
+                datetime.fromtimestamp(start / 1000).strftime("%Y-%m-%d"),
+                "2026-10-01")
+            self.assertLess(abs(end - app._now_ms()), 5000)   # end ≈ now
+            # another tab is untouched
+            self.assertEqual(app.tab_range["tab-skills"], "7d")
+
+    # 5i. Cancel and a bad date both leave the window alone
+    async def test_date_picker_cancel_and_invalid_input(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            modal.query_one("#dr-follow", tui.Checkbox).value = False
+            modal.query_one("#dr-start-date", tui.Input).value = "not-a-date"
+            modal.query_one("#dr-end-date", tui.Input).value = "2026-10-03"
+            modal.query_one("#dr-ok", tui.Button).press()
+            await pilot.pause()
+            self.assertIsInstance(app.screen_stack[-1], tui.DateRangeModal,
+                                  "invalid input must not close the picker")
+            modal.query_one("#dr-cancel", tui.Button).press()
+            await pilot.pause()
+            self.assertEqual(app.tab_range["tab-tools"], "7d")   # unchanged
+            self.assertEqual(app.query_one("#range", tui.Select).value, "7d")
+
+    # 5j. "Whole day" makes the end that day at 23:59 and stops following now
+    async def test_date_picker_whole_day(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            modal.query_one("#dr-start-date", tui.Input).value = "2026-10-05"
+            modal.query_one("#dr-wholeday", tui.Button).press()
+            await pilot.pause()
+            self.assertEqual(modal.query_one("#dr-end-date", tui.Input).value,
+                             "2026-10-05")
+            self.assertEqual(modal.query_one("#dr-end-time", tui.Input).value,
+                             "23:59")
+            self.assertFalse(modal.query_one("#dr-follow", tui.Checkbox).value)
+
     # 6. Tab cycling wraps around, no AttributeError (the old crash)
     async def test_tab_cycle_wraps(self):
         make_db(self.db_path, [])

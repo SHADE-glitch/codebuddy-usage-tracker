@@ -1055,6 +1055,27 @@ class OldDatabaseOnAReadOnlyCliTest(unittest.TestCase):
             tmp.cleanup()
 
 
+class WindowLabelTest(unittest.TestCase):
+    """A window value renders as a preset's name or a custom span."""
+
+    def test_preset_uses_its_label(self):
+        self.assertEqual(db.window_label("7d"), "7 days")
+        self.assertEqual(db.window_label("all"), "All time")
+
+    def test_custom_follow_now_reads_as_now(self):
+        start = int(datetime(2026, 10, 5, 9, 0).timestamp() * 1000)
+        self.assertEqual(db.window_label(db.CustomWindow(start, None, True)),
+                         "10-05 09:00 → now")
+        self.assertEqual(db.window_label(db.CustomWindow(None, None, True)),
+                         "all → now")
+
+    def test_custom_fixed_span_shows_both_ends(self):
+        start = int(datetime(2026, 10, 5, 9, 0).timestamp() * 1000)
+        end = int(datetime(2026, 10, 6, 18, 30).timestamp() * 1000)
+        self.assertEqual(db.window_label(db.CustomWindow(start, end, False)),
+                         "10-05 09:00 → 10-06 18:30")
+
+
 class ProviderGroupingTest(unittest.TestCase):
     """The provider column is returned and joins the grouping key."""
 

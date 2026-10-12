@@ -19,6 +19,7 @@ import sys
 import tomllib
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 SCHEMA_VERSION = 7
 
@@ -1088,6 +1089,42 @@ _USAGE_TOTAL_EXPR = (
     " + COALESCE(prompt_cache_hit_tokens, 0) ELSE NULL END"
 )
 _AGG_USAGE_TOTAL_EXPR = f"SUM({_USAGE_TOTAL_EXPR})"
+
+
+class CustomWindow(NamedTuple):
+    """An absolute window chosen in the date picker (as opposed to a preset).
+
+    ``start_ms`` of ``None`` means no lower bound (all time). ``follow_now``
+    keeps the end pinned to the current time on every refresh; otherwise the
+    window is the fixed ``[start_ms, end_ms]`` span. Times are epoch
+    milliseconds, the same unit as every other bound in this module.
+    """
+
+    start_ms: int | None
+    end_ms: int | None
+    follow_now: bool = False
+
+
+def _short_time(ms) -> str:
+    return datetime.fromtimestamp(ms / 1000).strftime("%m-%d %H:%M")
+
+
+def window_label(value) -> str:
+    """A short label for a window value: a preset's name, or a custom span.
+
+    A ``follow_now`` end reads as ``now`` rather than a timestamp, so the label
+    does not go stale between refreshes. Kept free of a clock argument on
+    purpose: the label depends only on what was chosen, never on the time it is
+    read.
+    """
+    if not isinstance(value, CustomWindow):
+        return USAGE_RANGE_LABELS.get(value, str(value))
+    if value.start_ms is None:
+        return "all → now" if value.follow_now else f"all → {_short_time(value.end_ms)}"
+    start = _short_time(value.start_ms)
+    if value.follow_now:
+        return f"{start} → now"
+    return f"{start} → {_short_time(value.end_ms)}"
 
 
 def window_bounds(range_key: str, now_ms: int):

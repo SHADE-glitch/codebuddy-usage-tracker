@@ -26,9 +26,10 @@ try:
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import Horizontal, Vertical
-    from textual.screen import Screen
+    from textual.screen import ModalScreen, Screen
     from textual.widgets import (
-        DataTable, Footer, Select, Static, TabbedContent, TabPane,
+        Button, Checkbox, DataTable, Footer, Input, Select, Static,
+        TabbedContent, TabPane,
     )
 
     HAVE_TEXTUAL = True
@@ -87,8 +88,12 @@ def local_time(ms):
 
 # Usage-page option list (values mirror cbut_db so the two stay in sync).
 # Windows are whole local calendar days ending now ("Today", "2 days", …).
+# "Custom…" is the escape hatch to the date picker; it is never stored as a
+# tab's range (a picked range is a db.CustomWindow instead).
 RANGE_OPTIONS = [(db.USAGE_RANGE_LABELS[k], k)
-                 for k in ("1d", "2d", "3d", "7d", "30d", "all")]
+                 for k in ("1d", "2d", "3d", "7d", "30d", "all")] + [
+    ("Custom…", "custom")]
+CUSTOM_RANGE = "custom"
 # The Usage page is a single Request Logs list. Column order: time · model ·
 # provider · usage total · input · output · API total · cache hit/miss/write ·
 # cache hit rate. cc-switch's cost / duration / HTTP-status columns have no
@@ -132,6 +137,9 @@ if HAVE_TEXTUAL:
         DEFAULT_CSS = """
         TopBar { dock: top; width: 100%; height: 1; background: $panel; color: $foreground; }
         TopBar > #topbar-title { width: 1fr; padding: 0 1; content-align: left middle; }
+        TopBar > #date-range { width: auto; min-width: 0; height: 1; border: none;
+                               padding: 0 1; background: $panel; color: $foreground; }
+        TopBar > #date-range:hover { background: $boost; }
         TopBar > #range { width: 30; }
         TopBar > #range SelectCurrent { border: none; padding: 0 1; background: $panel; }
         """
@@ -146,8 +154,176 @@ if HAVE_TEXTUAL:
         def compose(self) -> ComposeResult:
             yield Static(self._title, id="topbar-title")
             if self._with_range:
+                # A compact 📅 control showing the active tab's window; pressing it
+                # opens the date picker (same as picking "Custom…" in the Select).
+                yield Button("📅", id="date-range")
                 yield Select(RANGE_OPTIONS, value=self._range_value,
                              allow_blank=False, id="range")
+
+        def set_range_label(self, text: str) -> None:
+            """Show the active tab's window on the 📅 control ('' hides it)."""
+            try:
+                btn = self.query_one("#date-range", Button)
+            except Exception:
+                return
+            btn.label = f"📅 {text}" if text else "📅"
+            btn.display = bool(text)
+
+    class DateRangeModal(ModalScreen):
+        """A date/time range picker: presets, a start, an end, "end follows now".
+
+        Opened from the top bar's 📅 control or the Select's "Custom…". Confirm
+        dismisses with a ``db.CustomWindow``; Cancel or Esc dismisses with
+        ``None``. A single day is the start date plus "Whole day" (end = that
+        day 23:59). Blank start means all time.
+        """
+
+        BINDINGS = [Binding("escape", "cancel", "Cancel")]
+        DATE_FMT = "%Y-%m-%d"
+        TIME_FMT = "%H:%M"
+
+        DEFAULT_CSS = """
+        DateRangeModal { align: center middle; }
+        #dr-box { width: 58; height: auto; border: round $primary;
+                  background: $surface; padding: 1 2; }
+        #dr-title { padding: 0 0 1 0; text-style: bold; }
+        #dr-presets { height: auto; }
+        #dr-presets Button { width: auto; min-width: 0; margin: 0 1 0 0; }
+        .dr-row { height: auto; }
+        .dr-label { width: 6; padding: 1 0 0 0; }
+        .dr-row Input { width: 14; margin: 0 1 0 0; }
+        #dr-follow { height: auto; margin-top: 1; }
+        #dr-actions { height: auto; margin-top: 1; align-horizontal: right; }
+        #dr-actions Button { width: auto; min-width: 0; margin-left: 1; }
+        """
+
+        def __init__(self, current, now_ms: int, id: str | None = None):
+            super().__init__(id=id)
+            self._current = current
+            self._now = now_ms
+
+        def compose(self) -> ComposeResult:
+            with Vertical(id="dr-box"):
+                yield Static("Date range", id="dr-title")
+                with Horizontal(id="dr-presets"):
+                    yield Button("Today", id="dr-today")
+                    yield Button("7 days", id="dr-7d")
+                    yield Button("30 days", id="dr-30d")
+                    yield Button("All time", id="dr-all")
+                with Horizontal(classes="dr-row"):
+                    yield Static("Start", classes="dr-label")
+                    yield Input(placeholder="YYYY-MM-DD", id="dr-start-date")
+                    yield Input(placeholder="HH:MM", id="dr-start-time")
+                with Horizontal(classes="dr-row"):
+                    yield Static("End", classes="dr-label")
+                    yield Input(placeholder="YYYY-MM-DD", id="dr-end-date")
+                    yield Input(placeholder="HH:MM", id="dr-end-time")
+                yield Checkbox("End follows current time", True, id="dr-follow")
+                with Horizontal(id="dr-actions"):
+                    yield Button("Whole day", id="dr-wholeday")
+                    yield Button("Cancel", id="dr-cancel")
+                    yield Button("Confirm", variant="primary", id="dr-ok")
+
+        def on_mount(self) -> None:
+            self._prefill()
+
+        # -- prefill from the tab's current window --------------------------
+        def _prefill(self) -> None:
+            cur = self._current
+            follow = True
+            if isinstance(cur, db.CustomWindow):
+                start, end, follow = cur.start_ms, cur.end_ms, cur.follow_now
+            else:
+                start, end = db.window_bounds(cur, self._now)
+            self._set_start(start)
+            self._set_end(end)
+            self.query_one("#dr-follow", Checkbox).value = follow
+            self._sync_follow()
+
+        def _set_start(self, ms) -> None:
+            self._set_field("#dr-start", ms)
+
+        def _set_end(self, ms) -> None:
+            self._set_field("#dr-end", ms)
+
+        def _set_field(self, prefix: str, ms) -> None:
+            date_in = self.query_one(f"{prefix}-date", Input)
+            time_in = self.query_one(f"{prefix}-time", Input)
+            if ms is None:
+                date_in.value = time_in.value = ""
+                return
+            dt = datetime.fromtimestamp(ms / 1000)
+            date_in.value = dt.strftime(self.DATE_FMT)
+            time_in.value = dt.strftime(self.TIME_FMT)
+
+        def _sync_follow(self) -> None:
+            follow = self.query_one("#dr-follow", Checkbox).value
+            for wid in ("#dr-end-date", "#dr-end-time"):
+                self.query_one(wid, Input).disabled = follow
+
+        def _apply_preset(self, key: str) -> None:
+            start, _ = db.window_bounds(key, self._now)
+            self._set_start(start)
+            self.query_one("#dr-follow", Checkbox).value = True
+            self._sync_follow()
+
+        def _apply_whole_day(self) -> None:
+            start_date = self.query_one("#dr-start-date", Input).value.strip()
+            if not start_date:
+                self.notify("Set a start date first", severity="warning")
+                return
+            self.query_one("#dr-end-date", Input).value = start_date
+            self.query_one("#dr-end-time", Input).value = "23:59"
+            self.query_one("#dr-follow", Checkbox).value = False
+            self._sync_follow()
+
+        # -- confirm ---------------------------------------------------------
+        def _parse(self, prefix: str):
+            date_s = self.query_one(f"{prefix}-date", Input).value.strip()
+            time_s = self.query_one(f"{prefix}-time", Input).value.strip()
+            if not date_s:
+                return None
+            dt = datetime.strptime(f"{date_s} {time_s or '00:00'}",
+                                   f"{self.DATE_FMT} {self.TIME_FMT}")
+            return int(dt.timestamp() * 1000)
+
+        def _confirm(self) -> None:
+            follow = self.query_one("#dr-follow", Checkbox).value
+            try:
+                start = self._parse("#dr-start")
+                end = None if follow else self._parse("#dr-end")
+            except ValueError:
+                self.notify("Dates are YYYY-MM-DD, times HH:MM", severity="error")
+                return
+            if not follow and end is None:
+                self.notify("Set an end date, or tick 'End follows current time'",
+                            severity="error")
+                return
+            if start is not None and end is not None and end < start:
+                self.notify("End is before start", severity="error")
+                return
+            self.dismiss(db.CustomWindow(start, end, follow))
+
+        def action_cancel(self) -> None:
+            self.dismiss(None)
+
+        def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+            if event.checkbox.id == "dr-follow":
+                self._sync_follow()
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            handlers = {
+                "dr-today": lambda: self._apply_preset("1d"),
+                "dr-7d": lambda: self._apply_preset("7d"),
+                "dr-30d": lambda: self._apply_preset("30d"),
+                "dr-all": lambda: self._apply_preset("all"),
+                "dr-wholeday": self._apply_whole_day,
+                "dr-cancel": lambda: self.dismiss(None),
+                "dr-ok": self._confirm,
+            }
+            handler = handlers.get(event.button.id)
+            if handler:
+                handler()
 
     class WideTableMixin:
         """The narrow-terminal column plan, shared by every host that owns a table.
@@ -814,6 +990,7 @@ if HAVE_TEXTUAL:
                     self._report_query_error(exc)
                     return
             try:
+                self._sync_range_widget()      # initial 📅 label + Select value
                 # Each tab is filled with its own window, so one tab's range
                 # never moves another's.
                 self._fill_dashboard(conn, *self._bounds_for("tab-dashboard"))
@@ -1014,6 +1191,8 @@ if HAVE_TEXTUAL:
             now = self._now_ms()
             if rng is None:
                 return None, now
+            if isinstance(rng, db.CustomWindow):
+                return rng.start_ms, (now if rng.follow_now else rng.end_ms)
             return db.window_bounds(rng, now)
 
         def _sync_range_widget(self) -> None:
@@ -1036,26 +1215,44 @@ if HAVE_TEXTUAL:
                 return
             sel.display = True
             value = self._range_of(pane)
-            if value is not None and sel.value != value:
-                sel.value = value
+            # A custom window is shown as "Custom…" in the Select, with the span
+            # itself on the 📅 control next to it.
+            target = CUSTOM_RANGE if isinstance(value, db.CustomWindow) else value
+            if target is not None and sel.value != target:
+                sel.value = target
+            self._set_date_label(db.window_label(value))
+
+        def _set_date_label(self, text: str) -> None:
+            try:
+                self.query_one("#topbar", TopBar).set_range_label(text)
+            except Exception:
+                pass
 
         def _render_usage_window(self) -> None:
-            # Dates only: the window is a set of whole local calendar days, so
-            # a clock time here would be noise.
+            value = self.tab_range["tab-usage"]
             start, end = self._bounds_for("tab-usage")
-            label = db.USAGE_RANGE_LABELS[self.tab_range["tab-usage"]]
-            end_date = datetime.fromtimestamp(end / 1000).strftime("%Y-%m-%d")
-            if start is None:
-                self.query_one("#usage-window", Static).update(
-                    f"{label}\n{end_date}")
+            end_dt = datetime.fromtimestamp(end / 1000)
+            if isinstance(value, db.CustomWindow):
+                # A custom window can carry minute precision, so the panel shows
+                # the full span with times.
+                start_s = ("all" if start is None else datetime.fromtimestamp(
+                    start / 1000).strftime("%Y-%m-%d %H:%M"))
+                span = f"{start_s} → {end_dt:%Y-%m-%d %H:%M}"
+                label = "Custom range"
             else:
-                start_date = datetime.fromtimestamp(
-                    start / 1000).strftime("%Y-%m-%d")
-                # "Today" is one calendar day: printing it as a range of the same
-                # date twice read like a bug, and every 1d window hit it.
-                span = (start_date if start_date == end_date
-                        else f"{start_date} — {end_date}")
-                self.query_one("#usage-window", Static).update(f"{label}\n{span}")
+                # Presets are whole local calendar days: a clock time would be
+                # noise. "Today" is one day, so printing the same date twice read
+                # like a bug — every 1d window hit it.
+                label = db.USAGE_RANGE_LABELS[value]
+                end_date = end_dt.strftime("%Y-%m-%d")
+                if start is None:
+                    span = end_date
+                else:
+                    start_date = datetime.fromtimestamp(
+                        start / 1000).strftime("%Y-%m-%d")
+                    span = (start_date if start_date == end_date
+                            else f"{start_date} — {end_date}")
+            self.query_one("#usage-window", Static).update(f"{label}\n{span}")
 
         def _refresh_usage(self, conn=None) -> None:
             # Recompute the window from the CURRENT time on every refresh — never
@@ -1305,12 +1502,43 @@ if HAVE_TEXTUAL:
             pane = self.query_one(TabbedContent).active
             if pane == "tab-plugins":
                 return                    # Plugins has no window
+            if event.value == CUSTOM_RANGE:
+                # "Custom…" opens the picker — unless this is the programmatic
+                # sync that points the Select at an already-custom window.
+                if not isinstance(self._range_of(pane), db.CustomWindow):
+                    self._open_date_range(pane)
+                return
             if event.value == self._range_of(pane):
                 return                    # programmatic sync, not a user change
             self.tab_range[pane] = event.value
+            self._sync_range_widget()     # refresh the 📅 label
             if pane == "tab-usage":
                 self._render_usage_window()   # keep the Usage Window panel live
             self._refresh_active_tab()    # re-query only the visible tab
+
+        def _open_date_range(self, pane) -> None:
+            """Open the date picker for a pane and apply the picked window to it."""
+            modal = DateRangeModal(self._range_of(pane), self._now_ms())
+
+            def done(result) -> None:
+                if result is None:
+                    self._sync_range_widget()   # cancel: revert the Select
+                    return
+                self.tab_range[pane] = result
+                self._sync_range_widget()
+                if pane == "tab-usage":
+                    self._render_usage_window()
+                self._refresh_active_tab()
+
+            self.push_screen(modal, done)
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            # Only the top bar's 📅 control reaches the app; the modal handles its
+            # own buttons (it is the active screen).
+            if event.button.id == "date-range":
+                pane = self.query_one(TabbedContent).active
+                if pane != "tab-plugins":
+                    self._open_date_range(pane)
 
         # --- row select: route to detail screens ---------------------------
 

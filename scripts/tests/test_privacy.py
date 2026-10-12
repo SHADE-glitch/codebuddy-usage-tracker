@@ -88,7 +88,7 @@ FORBIDDEN_ROOTS = {
 # or thread module anywhere in it.
 ALLOWED_ROOTS = {
     "argparse", "datetime", "importlib", "json", "os", "pathlib", "re",
-    "shutil", "sqlite3", "sys", "time", "tomllib", "cbut_db", "__future__",
+    "shutil", "sqlite3", "sys", "time", "tomllib", "typing", "cbut_db", "__future__",
 }
 ALLOWED_BY_FILE = {"cbut-tui.py": ALLOWED_ROOTS | {"textual"}}
 
