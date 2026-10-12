@@ -119,11 +119,74 @@ AGENTS_COLUMNS = ("agent", "calls", "last used")
 PLUGINS_COLUMNS = ("plugin", "uses", "skills", "agents", "cmds")
 MCP_COLUMNS = ("server", "tool", "calls", "ok", "last used")
 HISTORY_COLUMNS = ("when", "project", "session", "status", "duration")
+# A plugin's "calls" are attributed uses (plugin_usage), which carry no
+# status/duration_ms — so the plugin history screen has its own columns instead
+# of reusing HISTORY_COLUMNS.
+PLUGIN_HISTORY_COLUMNS = ("when", "kind", "target", "marketplace", "session",
+                          "project")
 # Twelve columns need 170 cells: on an 80-wide terminal more than half of this table
 # used to sit past the right edge with no key that would bring it back.
 RESPONSE_COLUMNS = ("when", "model", "prompt", "completion", "total",
                     "cache_r", "cache_w", "cache_hit", "cache_miss",
                     "cache_write", "usage", "message_id")
+
+# The single-call detail screen renders every column of the row. Labels live here
+# rather than inline so the DB column name and what the screen calls it stay one
+# mapping, and a column with no entry still shows (it falls back to its name).
+CALL_DETAIL_LABELS = {
+    "call_id": "call id", "id": "id", "tool_name": "tool", "tool": "tool",
+    "agent_type": "agent", "skill": "skill", "plugin": "plugin",
+    "category": "category", "model": "model", "provider": "provider",
+    "status": "status", "kind": "kind", "source": "source",
+    "marketplace": "marketplace", "target": "target", "server": "server",
+    "has_args": "has args", "ts": "when", "duration_ms": "duration",
+    "session_id": "session", "project": "project", "message_id": "message id",
+    "conversation_request_id": "conversation request id",
+    "prompt_tokens": "input tokens", "completion_tokens": "output tokens",
+    "provider_total_tokens": "provider total",
+    "cache_read_input_tokens": "cache read",
+    "cache_creation_input_tokens": "cache creation",
+    "prompt_cache_hit_tokens": "cache hit",
+    "prompt_cache_miss_tokens": "cache miss",
+    "prompt_cache_write_tokens": "cache write",
+    "total_tokens": "api total", "total_tokens_source": "total source",
+    "usage_available": "usage available", "missing": "missing fields",
+}
+_DETAIL_TIME_COLS = {"ts"}
+_DETAIL_DURATION_COLS = {"duration_ms"}
+_DETAIL_BOOL_COLS = {"has_args", "usage_available"}
+_DETAIL_TOKEN_COLS = {
+    "prompt_tokens", "completion_tokens", "provider_total_tokens",
+    "cache_read_input_tokens", "cache_creation_input_tokens",
+    "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
+    "prompt_cache_write_tokens", "total_tokens",
+}
+
+
+def _call_detail_rows(row):
+    """``(label, text)`` for every field of one call row, in row order.
+
+    NULL renders as "-" (never a fabricated 0); a timestamp, a duration and the
+    yes/no flags are formatted, tokens are grouped. An unknown column falls back
+    to its name, so a column added to the query still appears.
+    """
+    out = []
+    for col, value in row.items():
+        label = CALL_DETAIL_LABELS.get(col, col.replace("_", " "))
+        if value is None:
+            text = "-"
+        elif col in _DETAIL_TIME_COLS:
+            text = local_time(value)
+        elif col in _DETAIL_DURATION_COLS:
+            text = ms(value)
+        elif col in _DETAIL_BOOL_COLS:
+            text = "yes" if value else "no"
+        elif col in _DETAIL_TOKEN_COLS:
+            text = fmt_n(value)
+        else:
+            text = str(value)
+        out.append((label, text))
+    return out
 
 
 if HAVE_TEXTUAL:
@@ -633,17 +696,23 @@ if HAVE_TEXTUAL:
             table.add_columns(*cols)
 
         def _fill_wide(self, table_id, rows, empty_msg, key_index=0, key_kind=None,
-                       width=None):
+                       width=None, key_rows=None):
             """Fill a wide table with the longest prefix of columns that fits.
 
             Prefix, not priority re-ordering: both tables are already ordered most
             essential first (name, total, then the cache detail), so dropping the
             tail is the plan. The cells past the right edge used to be cut
             mid-label with no keyboard way to reach them.
+
+            ``key_rows`` carries the un-truncated values a key is built from when
+            the key is not among the visible cells — the drill-down's ``call_id``
+            rides there, so a row can open its own detail without spending a
+            column on it. It defaults to the visible rows.
             """
             table = self.query_one(f"#{table_id}", DataTable)
             labels, note_id, chrome = self.WIDE_TABLES[table_id]
-            self._wide_rows[table_id] = (rows, empty_msg, key_index, key_kind)
+            self._wide_rows[table_id] = (rows, empty_msg, key_index, key_kind,
+                                         key_rows)
             note = self.query_one(f"#{note_id}", Static)
             width = width or self.size.width or table.region.width
             if not width or not rows:
@@ -651,7 +720,8 @@ if HAVE_TEXTUAL:
                 # planning against 0 would drop everything) or there is nothing to
                 # protect: an empty-state row spans the whole label set.
                 self._set_columns(table, labels)
-                self._fill_or_empty(table, rows, empty_msg, key_index, key_kind)
+                self._fill_or_empty(table, rows, empty_msg, key_index, key_kind,
+                                    key_rows=key_rows)
                 note.update("")
                 note.display = False
                 if not width:
@@ -667,7 +737,8 @@ if HAVE_TEXTUAL:
                 # terminal has no reason to lose characters, and "widen to N" would
                 # otherwise promise a number that buys nothing.
                 self._set_columns(table, labels)
-                self._fill_or_empty(table, raw, empty_msg, key_index, key_kind)
+                self._fill_or_empty(table, raw, empty_msg, key_index, key_kind,
+                                    key_rows=key_rows)
                 note.update("")
                 note.display = False
                 return
@@ -677,7 +748,8 @@ if HAVE_TEXTUAL:
                 keep -= 1
             self._set_columns(table, labels[:keep])
             self._fill_or_empty(table, [r[:keep] for r in shown],
-                                empty_msg, key_index, key_kind, key_rows=rows)
+                                empty_msg, key_index, key_kind,
+                                key_rows=key_rows if key_rows is not None else rows)
             cap_note = f" · cells capped at {self.name_cap}" if capped else ""
             if keep >= len(labels):
                 # Nothing is hidden, so the only thing worth saying is that
@@ -696,14 +768,18 @@ if HAVE_TEXTUAL:
 
         def _plan_wide_tables(self, width=None) -> None:
             """Re-plan from the cached rows — a resize must not re-query."""
-            for table_id, (rows, empty_msg, key_index, key_kind) in list(
-                    self._wide_rows.items()):
+            for table_id, (rows, empty_msg, key_index, key_kind,
+                           key_rows) in list(self._wide_rows.items()):
                 self._fill_wide(table_id, rows, empty_msg,
                                 key_index=key_index, key_kind=key_kind,
-                                width=width)
+                                width=width, key_rows=key_rows)
 
     class HistoryScreen(WideTableMixin, Screen):
-        """Recent calls for one entity, pushed on row select."""
+        """Recent calls for one entity in a window, pushed on row select.
+
+        The header summarises the entity (its counts in the same window); the
+        table lists the calls. Selecting a call pushes its full detail.
+        """
 
         BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
         # A pushed screen spans the terminal, so its table loses no cells to its
@@ -714,17 +790,29 @@ if HAVE_TEXTUAL:
         def name_cap(self) -> int:
             return self.app.name_cap
 
-        def __init__(self, kind: str, name: str, display: str | None = None):
+        def __init__(self, kind: str, name: str, display: str | None = None,
+                     start_ts=None, end_ts=None, window_label: str = "all time"):
             super().__init__()
             self.kind = kind
             self.entity = name              # the value queried against the DB
             self.heading = display or name  # what the title shows
+            self.start_ts = start_ts        # the tab's window; None = all-time
+            self.end_ts = end_ts
+            self.window_label = window_label
+            # Plugin uses carry no status/duration, so they get their own columns.
+            self._columns = (PLUGIN_HISTORY_COLUMNS if kind == "plugin"
+                             else HISTORY_COLUMNS)
             self._wide_rows = {}
+            # Instance registry: the mixin reads ``self.WIDE_TABLES``, so a
+            # per-kind column set overrides the class default. The class attribute
+            # stays put for the "every table is registered" guard.
+            self.WIDE_TABLES = {"hist-table": (self._columns, "colnote-hist", 0)}
 
         def compose(self) -> ComposeResult:
             yield TopBar(f"{self.kind} · {self.heading}")
             yield Vertical(
                 Static(f"[b]{self.kind}[/b] · {self.heading}", id="hist-title"),
+                Static(id="hist-summary", classes="entity-summary"),
                 Static(id="colnote-hist", classes="col-note"),
                 DataTable(id="hist-table", zebra_stripes=True),
             )
@@ -735,17 +823,60 @@ if HAVE_TEXTUAL:
             self.query_one("#hist-table", DataTable).cursor_type = "row"
             conn = db.open_db(self.app.db_path, readonly=True)
             try:
-                rows = [[ts(r["ts"]), r["project"] or "-",
-                         (r["session_id"] or "")[:8], r["status"] or "-",
-                         ms(r["duration_ms"])]
-                        for r in db.q_history(conn, self.kind, self.entity,
-                                              self.app.DETAIL_LIMIT)]
+                if self.kind == "plugin":
+                    found = db.q_plugin_history(
+                        conn, self.entity, self.app.DETAIL_LIMIT,
+                        start_ts=self.start_ts, end_ts=self.end_ts)
+                    rows = [[ts(r["ts"]), r["kind"] or "-", r["target"] or "-",
+                             r["marketplace"] or "-",
+                             (r["session_id"] or "")[:8], r["project"] or "-"]
+                            for r in found]
+                    keys = [[self.kind, r["id"]] for r in found]
+                    summary = db.q_plugin_summary(
+                        conn, self.entity, start_ts=self.start_ts,
+                        end_ts=self.end_ts)
+                else:
+                    found = db.q_history(
+                        conn, self.kind, self.entity, self.app.DETAIL_LIMIT,
+                        start_ts=self.start_ts, end_ts=self.end_ts)
+                    rows = [[ts(r["ts"]), r["project"] or "-",
+                             (r["session_id"] or "")[:8], r["status"] or "-",
+                             ms(r["duration_ms"])]
+                            for r in found]
+                    keys = [[self.kind, r["call_id"]] for r in found]
+                    summary = db.q_entity_summary(
+                        conn, self.kind, self.entity, start_ts=self.start_ts,
+                        end_ts=self.end_ts)
             finally:
                 conn.close()
-            self._fill_wide("hist-table", rows, "No calls recorded for this name")
+            self.query_one("#hist-summary", Static).update(
+                self._summary_line(summary))
+            # The call key rides as the row key (index 1), not as a column, so a
+            # selected call can open its own detail.
+            self._fill_wide("hist-table", rows, "No calls recorded for this name",
+                            key_index=(0, 1), key_kind="call", key_rows=keys)
+
+        def _summary_line(self, s) -> str:
+            """One line of the entity's windowed counts, for the header."""
+            if self.kind == "plugin":
+                if not s["uses"]:
+                    return f"no uses · {self.window_label}"
+                return (f"{count_n(s['uses'], 'use')} · {s['kinds']} kinds · "
+                        f"{s['targets']} targets · {s['projects']} projects · "
+                        f"{s['sessions']} sessions · "
+                        f"{ts(s['first_used'])} → {ts(s['last_used'])} · "
+                        f"{self.window_label}")
+            if not s["calls"]:
+                return f"no calls · {self.window_label}"
+            return (f"{count_n(s['calls'], 'call')} · {s['completed']} ok · "
+                    f"{s['failed']} fail · {s['pending']} pending · "
+                    f"avg {ms(s['avg_ms'])} · {s['projects']} projects · "
+                    f"{s['sessions']} sessions · "
+                    f"{ts(s['first_used'])} → {ts(s['last_used'])} · "
+                    f"{self.window_label}")
 
     class ModelResponsesScreen(WideTableMixin, Screen):
-        """Per-model recent responses, pushed on a Tokens-tab row select."""
+        """Per-model recent responses in a window, pushed on a Tokens row select."""
 
         BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
         WIDE_TABLES = {"resp-table": (RESPONSE_COLUMNS, "colnote-resp", 0)}
@@ -754,15 +885,20 @@ if HAVE_TEXTUAL:
         def name_cap(self) -> int:
             return self.app.name_cap
 
-        def __init__(self, model: str):
+        def __init__(self, model: str, start_ts=None, end_ts=None,
+                     window_label: str = "all time"):
             super().__init__()
             self.model = model
+            self.start_ts = start_ts
+            self.end_ts = end_ts
+            self.window_label = window_label
             self._wide_rows = {}
 
         def compose(self) -> ComposeResult:
             yield TopBar(f"Model responses · {self.model}")
             yield Vertical(
                 Static(f"[b]Model responses[/b] · {self.model}", id="resp-title"),
+                Static(id="resp-summary", classes="entity-summary"),
                 Static(id="colnote-resp", classes="col-note"),
                 DataTable(id="resp-table", zebra_stripes=True),
             )
@@ -773,9 +909,12 @@ if HAVE_TEXTUAL:
             self.query_one("#resp-table", DataTable).cursor_type = "row"
             conn = db.open_db(self.app.db_path, readonly=True)
             try:
+                found = db.q_model_responses(conn, model=self.model,
+                                             limit=self.app.DETAIL_LIMIT,
+                                             start_ts=self.start_ts,
+                                             end_ts=self.end_ts)
                 rows = []
-                for r in db.q_model_responses(conn, model=self.model,
-                                              limit=self.app.DETAIL_LIMIT):
+                for r in found:
                     mid = r["message_id"] or ""
                     masked = (mid[:8] + "…" + mid[-8:]) if len(mid) > 16 else mid
                     rows.append([
@@ -790,16 +929,79 @@ if HAVE_TEXTUAL:
                         "yes" if r["usage_available"] else "not counted",
                         masked,
                     ])
+                summary = db.q_model_summary(conn, self.model,
+                                             start_ts=self.start_ts,
+                                             end_ts=self.end_ts)
             finally:
                 conn.close()
+            self.query_one("#resp-summary", Static).update(
+                self._summary_line(summary))
             self._fill_wide("resp-table", rows,
-                           "No responses recorded for this model")
+                            "No responses recorded for this model",
+                            key_index=(0, 1), key_kind="call",
+                            key_rows=[["model", r["message_id"]] for r in found])
+
+        def _summary_line(self, s) -> str:
+            if not s["responses"]:
+                return f"no responses · {self.window_label}"
+            return (f"{count_n(s['responses'], 'response')} · "
+                    f"{s['with_usage']} with usage · "
+                    f"in {fmt_n(s['prompt_tokens'])} · "
+                    f"out {fmt_n(s['completion_tokens'])} · "
+                    f"api total {fmt_n(s['total_tokens'])} · cache "
+                    f"{fmt_n(s['cache_hit'])}/{fmt_n(s['cache_miss'])}/"
+                    f"{fmt_n(s['cache_write'])} · {self.window_label}")
+
+    class CallDetailScreen(Screen):
+        """Every field of one call, pushed from a drill-down row.
+
+        A plain ``Screen``, not the ``WideTableMixin``: the detail is a
+        label/value list, not a wide table, so it needs neither the column plan
+        nor a registered ``DataTable``.
+        """
+
+        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
+
+        def __init__(self, kind: str, key):
+            super().__init__()
+            self.kind = kind
+            self.key = str(key)
+
+        def compose(self) -> ComposeResult:
+            yield TopBar(f"{self.kind} call")
+            with Vertical(id="call-body"):
+                yield Static(f"[b]{self.kind} call[/b] · {self.key}",
+                             id="call-title")
+            yield Footer()
+
+        def on_mount(self) -> None:
+            self.title = f"{self.kind} call: {self.key}"
+            conn = db.open_db(self.app.db_path, readonly=True)
+            try:
+                row = db.q_call_detail(conn, self.kind, self.key)
+            finally:
+                conn.close()
+            body = self.query_one("#call-body")
+            if row is None:
+                body.mount(Static("record not found", classes="call-value"))
+                return
+            body.mount_all(
+                Horizontal(Static(label, classes="call-label"),
+                           Static(value, classes="call-value"))
+                for label, value in _call_detail_rows(row))
 
     class TrackerApp(WideTableMixin, App):
         CSS = """
-        #hist-title, #resp-title { padding: 1 2; }
+        #hist-title, #resp-title, #call-title { padding: 1 2; }
         DataTable { height: 1fr; }
         #status { padding: 0 2; color: $text-muted; }
+        /* The drill-down header (counts) and the single-call detail. The summary
+           is one auto-height line; the detail body takes the rest of the screen
+           and scrolls, its label column fixed so long values wrap in 1fr. */
+        .entity-summary { padding: 0 2; color: $text-muted; height: auto; }
+        #call-body { height: 1fr; overflow-y: auto; padding: 0 1; }
+        .call-label { width: 18; color: $text-muted; }
+        .call-value { width: 1fr; }
         /* Summary pages (Dashboard + Usage). Both share .usage-panel /
            .panel-title. The Usage page has one .summary-panels row (height
            capped, scrolls internally so its table below keeps its rows). The
@@ -1127,13 +1329,14 @@ if HAVE_TEXTUAL:
         def _fill_plugins(self, conn, start=None, end=None) -> None:
             # No time window: the plugin list is all-time (the inventory carries
             # no timestamps), so start/end are accepted for the shared fill
-            # signature but ignored. Name is the key; version is not shown.
+            # signature but ignored. Name is the row key, so Enter/double-click
+            # opens the plugin's own drill-down; version is not shown.
             self._fill_wide(
                 "t-plugins",
                 [[r["plugin"], f"{r['uses']:,}", f"{r['skills']:,}",
                   f"{r['agents']:,}", f"{r['commands']:,}"]
                  for r in db.q_plugins(conn)],
-                "No plugins installed")
+                "No plugins installed", key_kind="plugin")
 
         def _fill_mcp(self, conn, start=None, end=None) -> None:
             # Row key is unique per (server, tool): v_mcp groups by both, so two
@@ -1741,17 +1944,35 @@ if HAVE_TEXTUAL:
             if not key or "\t" not in key:
                 return
             kind, _, rest = key.partition("\t")
+            if kind == "call":
+                # A drill-down row: call\t<kind>\t<key> opens that call's detail.
+                call_kind, _, call_key = rest.partition("\t")
+                self.push_screen(CallDetailScreen(call_kind, call_key))
+                return
+            # The entity tabs' drill-downs follow the tab's own window, so the
+            # summary and the list agree with the row that was opened. The
+            # Plugins tab has no window (its range is None) — all-time.
+            pane = self.query_one(TabbedContent).active
+            rng = self._range_of(pane)
+            if rng is None:
+                start = end = None
+                label = "all time"
+            else:
+                start, end = self._bounds_for(pane)
+                label = db.window_label(rng)
             if kind == "model":
-                self.push_screen(ModelResponsesScreen(rest))
+                self.push_screen(ModelResponsesScreen(rest, start, end, label))
             elif kind == "mcp":
                 # Key is mcp\t<server>\t<tool>. q_history maps "mcp" to the
                 # mcp_usage.tool column, so query by the TOOL and show
                 # "server · tool" as the title.
                 server, _, tool = rest.partition("\t")
-                self.push_screen(
-                    HistoryScreen("mcp", tool, display=f"{server} · {tool}"))
+                self.push_screen(HistoryScreen(
+                    "mcp", tool, display=f"{server} · {tool}",
+                    start_ts=start, end_ts=end, window_label=label))
             else:
-                self.push_screen(HistoryScreen(kind, rest))
+                self.push_screen(HistoryScreen(kind, rest, start_ts=start,
+                                               end_ts=end, window_label=label))
 
         # --- R / S shortcuts ------------------------------------------------
 

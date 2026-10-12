@@ -148,6 +148,17 @@ def insert_mcp_usage(path, rows):
     conn.close()
 
 
+def insert_plugin_usage(path, rows):
+    """rows: (plugin, marketplace, kind, target, session_id, project, ts)."""
+    conn = db.open_db(path)
+    db.ensure_schema(conn)
+    conn.executemany(
+        "INSERT INTO plugin_usage(plugin, marketplace, kind, target,"
+        " session_id, project, ts) VALUES(?,?,?,?,?,?,?)", rows)
+    conn.commit()
+    conn.close()
+
+
 # --- tests ------------------------------------------------------------------
 
 class TuiTest(unittest.IsolatedAsyncioTestCase):
@@ -2514,6 +2525,167 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(registered - built,
                          f"a registry names a table the source never builds: "
                          f"{sorted(registered - built)}")
+
+
+    # 74. the drill-down header summarises the entity's windowed counts
+    async def test_the_drilldown_header_summarises_the_window(self):
+        now = self._noon_ms()
+        insert_tool_calls(self.db_path, [
+            ("c1", "s1", "/p/a", "Bash", "builtin", now - 60_000, 120, "completed"),
+            ("c2", "s2", "/p/b", "Bash", "builtin", now - 30_000, 80, "incomplete")])
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.push_screen(tui.HistoryScreen("tool", "Bash"))
+            await pilot.pause()
+            scr = app.screen_stack[-1]
+            text = " ".join(
+                str(scr.query_one("#hist-summary", tui.Static).render()).split())
+            for piece in ("2 calls", "1 ok", "1 fail", "0 pending", "avg 100ms"):
+                with self.subTest(piece=piece):
+                    self.assertIn(piece, text)
+
+    # 75. selecting a call on the drill-down opens its own detail
+    async def test_enter_on_a_drilldown_row_opens_the_call_detail(self):
+        now = self._noon_ms()
+        insert_tool_calls(self.db_path, [
+            ("c1", "s1", "/p/a", "Bash", "builtin", now, 120, "completed")])
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.push_screen(tui.HistoryScreen("tool", "Bash"))
+            await pilot.pause()
+            hist = app.screen_stack[-1]
+            t = hist.query_one("#hist-table", tui.DataTable)
+            key = list(t.rows.keys())[0]
+            self.assertEqual(key.value, "call\ttool\tc1")
+            app.on_data_table_row_selected(tui.DataTable.RowSelected(t, 0, key))
+            await pilot.pause()
+            top = app.screen_stack[-1]
+            self.assertIsInstance(top, tui.CallDetailScreen)
+            self.assertEqual((top.kind, top.key), ("tool", "c1"))
+
+    # 76. the call detail shows every field, NULL rendered as "-"
+    async def test_the_call_detail_shows_every_field(self):
+        now = self._noon_ms()
+        insert_tool_calls(self.db_path, [
+            ("c1", "s1", "/p/a", "Bash", "builtin", now, 120, "completed")])
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.push_screen(tui.CallDetailScreen("tool", "c1"))
+            await pilot.pause()
+            scr = app.screen_stack[-1]
+            labels = [str(w.render()).strip() for w in scr.query(".call-label")]
+            values = [str(w.render()).strip() for w in scr.query(".call-value")]
+            self.assertEqual(labels, ["call id", "tool", "category", "model",
+                                      "status", "when", "duration", "session",
+                                      "project"])
+            self.assertEqual(values[0], "c1")
+            self.assertEqual(values[1], "Bash")
+            self.assertEqual(values[2], "builtin")
+            self.assertEqual(values[3], "-", "a NULL field must read as '-'")
+            self.assertEqual(values[4], "completed")
+            self.assertEqual(values[6], "120ms")
+
+    # 77. a long unbreakable value folds rather than clipping
+    async def test_a_long_call_value_folds_instead_of_clipping(self):
+        now = self._noon_ms()
+        long_path = "/home/user/" + "x" * 70
+        insert_tool_calls(self.db_path, [
+            ("c1", "s1", long_path, "Bash", "builtin", now, 10, "completed")])
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=(60, 24)) as pilot:
+            await pilot.pause()
+            app.push_screen(tui.CallDetailScreen("tool", "c1"))
+            await pilot.pause()
+            scr = app.screen_stack[-1]
+            proj = [w for w in scr.query(".call-value")
+                    if str(w.render()).strip() == long_path]
+            self.assertEqual(len(proj), 1)
+            self.assertGreaterEqual(proj[0].region.height, 2,
+                                    "a long value was clipped, not folded")
+
+    # 78. a model-response row opens the single-response detail
+    async def test_a_model_response_row_opens_the_call_detail(self):
+        now = self._noon_ms()
+        make_db(self.db_path, [("mid1", "s1", "m", 10, 2, 0, 0, now, 1)])
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.push_screen(tui.ModelResponsesScreen("m"))
+            await pilot.pause()
+            scr = app.screen_stack[-1]
+            t = scr.query_one("#resp-table", tui.DataTable)
+            key = list(t.rows.keys())[0]
+            self.assertEqual(key.value, "call\tmodel\tmid1")
+            app.on_data_table_row_selected(tui.DataTable.RowSelected(t, 0, key))
+            await pilot.pause()
+            det = app.screen_stack[-1]
+            self.assertIsInstance(det, tui.CallDetailScreen)
+            labels = [str(w.render()).strip() for w in det.query(".call-label")]
+            self.assertIn("message id", labels)
+            self.assertIn("api total", labels)
+
+    # 79. Plugins drills down too — two levels, its own columns
+    async def test_the_plugin_tab_drills_down_two_levels(self):
+        now = self._noon_ms()
+        insert_plugin_usage(self.db_path, [
+            ("myplug", "mp", "skill", "s/t", "s1", "/p/a", now)])
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-plugins"
+            await pilot.pause()
+            t = app.query_one("#t-plugins", tui.DataTable)
+            self.assertEqual(list(t.rows.keys())[0].value, "plugin\tmyplug")
+            app.on_data_table_row_selected(
+                tui.DataTable.RowSelected(t, 0, list(t.rows.keys())[0]))
+            await pilot.pause()
+            hist = app.screen_stack[-1]
+            self.assertIsInstance(hist, tui.HistoryScreen)
+            self.assertEqual(hist.kind, "plugin")
+            ht = hist.query_one("#hist-table", tui.DataTable)
+            self.assertEqual([str(c.label) for c in ht.columns.values()],
+                             list(tui.PLUGIN_HISTORY_COLUMNS))
+            hkey = list(ht.rows.keys())[0]
+            self.assertTrue(hkey.value.startswith("call\tplugin\t"))
+            app.on_data_table_row_selected(
+                tui.DataTable.RowSelected(ht, 0, hkey))
+            await pilot.pause()
+            det = app.screen_stack[-1]
+            self.assertIsInstance(det, tui.CallDetailScreen)
+            values = [str(w.render()).strip() for w in det.query(".call-value")]
+            for piece in ("myplug", "skill", "s/t", "mp"):
+                with self.subTest(piece=piece):
+                    self.assertIn(piece, values)
+
+    # 80. the drill-down follows the tab's own window
+    async def test_the_drilldown_follows_the_tab_window(self):
+        now = self._noon_ms()
+        insert_tool_calls(self.db_path, [
+            ("in", "s1", "/p/a", "Bash", "builtin", now - 60_000, 10, "completed"),
+            ("old", "s1", "/p/a", "Bash", "builtin",
+             now - 10 * 24 * 3600 * 1000, 10, "completed")])
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            self.assertEqual(app.tab_range["tab-tools"], "7d")
+            t = app.query_one("#t-tools", tui.DataTable)
+            key = list(t.rows.keys())[0]
+            app.on_data_table_row_selected(tui.DataTable.RowSelected(t, 0, key))
+            await pilot.pause()
+            hist = app.screen_stack[-1]
+            self.assertIsInstance(hist, tui.HistoryScreen)
+            self.assertEqual(hist.window_label, "7 days")
+            self.assertIsNotNone(hist.start_ts, "the drill-down ignored the window")
+            # the 10-day-old call is outside the Tools tab's 7-day window
+            self.assertEqual(hist.query_one("#hist-table", tui.DataTable).row_count, 1)
+            text = " ".join(
+                str(hist.query_one("#hist-summary", tui.Static).render()).split())
+            self.assertIn("1 call", text)
 
 
 if __name__ == "__main__":
