@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sqlite3
 import sys
 import tomllib
@@ -1012,10 +1013,11 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
 # Window sizes in CALENDAR days; None = All time (no lower bound). A window is
 # whole local days ending *now*: "1d" starts at today's local 00:00, "2d" at
 # yesterday's 00:00, and so on — never "now minus N hours".
-USAGE_RANGES = {"1d": 1, "2d": 2, "3d": 3, "7d": 7, "30d": 30, "all": None}
+USAGE_RANGES = {"1d": 1, "2d": 2, "3d": 3, "7d": 7, "14d": 14, "30d": 30,
+                "all": None}
 USAGE_RANGE_LABELS = {
     "1d": "Today", "2d": "2 days", "3d": "3 days",
-    "7d": "7 days", "30d": "30 days", "all": "All time",
+    "7d": "7 days", "14d": "14 days", "30d": "30 days", "all": "All time",
 }
 
 # The route origin lives in model_responses.provider (schema v7): 'builtin' for a
@@ -1125,6 +1127,93 @@ def window_label(value) -> str:
     if value.follow_now:
         return f"{start} → now"
     return f"{start} → {_short_time(value.end_ms)}"
+
+
+# --- typed date / time entry (the date picker) ------------------------------
+# The picker lets a date and a time be *typed* as well as clicked, so the two
+# strings a person types are normalised before anything compares them: "10-01"
+# and "10-1" are the same day, "9:5 AM" and "09:05 AM" the same minute. That is
+# the whole point — the display format is a suggestion, not a syntax to match.
+#
+# Month-first is assumed for the ambiguous two-field date form (the picker shows
+# MM/DD/YYYY), and a leading four-digit field is read as the year. A time with an
+# am/pm marker is 12-hour ("12:00 AM" is midnight); without one it is 24-hour.
+DATE_DISPLAY_FMT = "%m/%d/%Y"
+TIME_DISPLAY_FMT = "%I:%M %p"
+# The date is split by hand rather than through a table of strptime formats:
+# a yearless "%m-%d" parse is deprecated in 3.14 (the default year is ambiguous
+# and leap day cannot resolve), so the missing year is filled in explicitly.
+_DATE_SPLIT = re.compile(r"[-/.]")
+_TIME_FORMATS = ("%I:%M %p", "%I:%M%p", "%I %p", "%I%p", "%H:%M", "%H:%M:%S")
+
+
+def parse_date(text: str, default_year: int) -> datetime:
+    """A typed date -> ``datetime`` at local midnight. Raises ``ValueError``.
+
+    ``10-01``, ``10/1`` and ``10.01`` all mean the same day once ``default_year``
+    fills in the missing year; a four-digit leading field is the year
+    (``2026-10-01``). The month comes first in the ambiguous two-field form, and
+    a two-digit trailing year uses the same 69/70 pivot as ``%y``.
+    """
+    s = (text or "").strip()
+    fields = _DATE_SPLIT.split(s)
+    if len(fields) == 2:
+        year, (month, day) = str(default_year), fields
+    elif len(fields) == 3:
+        first, second, third = fields
+        if len(first) == 4:                       # YYYY-MM-DD
+            year, month, day = first, second, third
+        else:                                     # MM-DD-YYYY / MM-DD-YY
+            month, day, year = first, second, third
+            if len(year) == 2:
+                year = ("19" if int(year) >= 69 else "20") + year
+    else:
+        raise ValueError(f"unrecognised date: {text!r}")
+    try:
+        return datetime(int(year), int(month), int(day))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"unrecognised date: {text!r}") from exc
+
+
+def parse_time(text: str):
+    """A typed time -> ``(hour, minute)`` in 24-hour form. Raises ``ValueError``.
+
+    An am/pm marker makes it 12-hour ("9:5 PM" == "09:05 PM"); without one it is
+    24-hour ("21:05"). ``12:00 AM`` is midnight, ``12:00 PM`` noon.
+    """
+    s = (text or "").strip()
+    if not s:
+        raise ValueError("empty time")
+    for fmt in _TIME_FORMATS:
+        try:
+            dt = datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+        return dt.hour, dt.minute
+    raise ValueError(f"unrecognised time: {text!r}")
+
+
+def format_date(value: datetime) -> str:
+    """A datetime's date as the picker displays it (``MM/DD/YYYY``)."""
+    return value.strftime(DATE_DISPLAY_FMT)
+
+
+def format_time(hour: int, minute: int) -> str:
+    """``(hour, minute)`` in 24-hour form as the picker shows it (``12:00 AM``)."""
+    return datetime(2000, 1, 1, hour, minute).strftime(TIME_DISPLAY_FMT)
+
+
+def parse_datetime(date_text: str, time_text: str, default_year: int):
+    """A typed ``(date, time)`` pair -> epoch ms, or ``None`` for a blank date.
+
+    A blank time means midnight. Raises ``ValueError`` on a bad date or time, so
+    the caller can tell "all time" (``None``) apart from "I mistyped" (an error).
+    """
+    if not (date_text or "").strip():
+        return None
+    day = parse_date(date_text, default_year)
+    hour, minute = parse_time(time_text) if (time_text or "").strip() else (0, 0)
+    return int(day.replace(hour=hour, minute=minute).timestamp() * 1000)
 
 
 def window_bounds(range_key: str, now_ms: int):

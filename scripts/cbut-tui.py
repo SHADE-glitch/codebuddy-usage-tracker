@@ -16,7 +16,7 @@ import importlib.util
 import sqlite3
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -25,7 +25,7 @@ import cbut_db as db  # noqa: E402
 try:
     from textual.app import App, ComposeResult
     from textual.binding import Binding
-    from textual.containers import Horizontal, Vertical
+    from textual.containers import Grid, Horizontal, Vertical
     from textual.screen import ModalScreen, Screen
     from textual.widgets import (
         Button, Checkbox, DataTable, Footer, Input, Select, Static,
@@ -169,63 +169,157 @@ if HAVE_TEXTUAL:
             btn.label = f"📅 {text}" if text else "📅"
             btn.display = bool(text)
 
+    class TimeInput(Input):
+        """A clock field you can scrub as well as type.
+
+        Typing is the fast path (``9:5 PM`` is understood); ↑/↓ and the mouse
+        wheel step the value by one minute so it can be nudged without the
+        keyboard. The value is re-rendered through ``db.format_time``, so what
+        stays in the field is always the canonical ``h:MM AM``.
+        """
+
+        BINDINGS = [
+            Binding("up", "nudge_up", "Later", show=False),
+            Binding("down", "nudge_down", "Earlier", show=False),
+        ]
+        STEP = 1  # minutes per nudge
+
+        def action_nudge_up(self) -> None:
+            self._nudge(self.STEP)
+
+        def action_nudge_down(self) -> None:
+            self._nudge(-self.STEP)
+
+        def on_mouse_scroll_up(self, event) -> None:
+            self._nudge(self.STEP)
+            event.stop()
+
+        def on_mouse_scroll_down(self, event) -> None:
+            self._nudge(-self.STEP)
+            event.stop()
+
+        def _nudge(self, minutes: int) -> None:
+            try:
+                hour, minute = db.parse_time(self.value)
+            except ValueError:
+                # An empty or half-typed field nudges from *now*, so the first
+                # ↑/↓ yields a valid time instead of an error.
+                now = datetime.now()
+                hour, minute = now.hour, now.minute
+            total = (hour * 60 + minute + minutes) % (24 * 60)
+            self.value = db.format_time(total // 60, total % 60)
+            self.cursor_position = len(self.value)
+
     class DateRangeModal(ModalScreen):
-        """A date/time range picker: presets, a start, an end, "end follows now".
+        """The custom date-range picker: preset chips, two cards, a calendar.
+
+        Left column: the shortcut chips, an editable START TIME and END TIME (a
+        date plus a 12-hour time each) and the "end follows now" switch. Right
+        column: a month calendar whose ‹ › step the month (and, at the year's
+        ends, the year). Clicking a card makes it active; clicking a day then
+        writes that date into the active card — start and end are picked the
+        same way.
 
         Opened from the top bar's 📅 control or the Select's "Custom…". Confirm
         dismisses with a ``db.CustomWindow``; Cancel or Esc dismisses with
-        ``None``. A single day is the start date plus "Whole day" (end = that
-        day 23:59). Blank start means all time.
+        ``None``. A blank start date means all time.
         """
 
         BINDINGS = [Binding("escape", "cancel", "Cancel")]
-        DATE_FMT = "%Y-%m-%d"
-        TIME_FMT = "%H:%M"
+        CELLS = 42                       # 6 rows × 7 columns covers any month
+        DOW = ("S", "M", "T", "W", "T", "F", "S")
+        # (chip label, widget id, preset key). "Today" and "1d" both name the
+        # single whole calendar day that our window model calls "1d".
+        PRESETS = (
+            ("Today", "dr-today", "1d"),
+            ("1d", "dr-1d", "1d"),
+            ("7d", "dr-7d", "7d"),
+            ("14d", "dr-14d", "14d"),
+            ("30d", "dr-30d", "30d"),
+            ("All time", "dr-all", "all"),
+        )
 
         DEFAULT_CSS = """
-        DateRangeModal { align: center middle; }
-        #dr-box { width: 58; height: auto; border: round $primary;
+        DateRangeModal { align: center middle; overflow-y: auto; }
+        #dr-box { width: auto; height: auto; border: round $primary;
                   background: $surface; padding: 1 2; }
-        #dr-title { padding: 0 0 1 0; text-style: bold; }
+        #dr-left { width: 42; height: auto; }
         #dr-presets { height: auto; }
-        #dr-presets Button { width: auto; min-width: 0; margin: 0 1 0 0; }
-        .dr-row { height: auto; }
-        .dr-label { width: 6; padding: 1 0 0 0; }
-        .dr-row Input { width: 14; margin: 0 1 0 0; }
-        #dr-follow { height: auto; margin-top: 1; }
-        #dr-actions { height: auto; margin-top: 1; align-horizontal: right; }
+        .dr-card { border: round $panel; height: auto; padding: 0 1; margin-top: 1; }
+        .dr-card.-active { border: round $accent; background: $boost; }
+        .dr-card-title { color: $text-muted; text-style: bold; }
+        .dr-fields { height: auto; }
+        #dr-start-date, #dr-end-date { width: 1fr; margin: 0 1 0 0; }
+        #dr-start-time, #dr-end-time { width: 13; }
+        #dr-follow { height: auto; }
+        #dr-actions { height: auto; align-horizontal: right; }
+        #dr-cal { width: 28; height: auto; margin-left: 2; }
+        #dr-cal-head { height: auto; align: center middle; }
+        #dr-cal-month { width: 1fr; text-align: center; text-style: bold; }
+        #dr-cal-grid { grid-size: 7; grid-gutter: 0; height: auto; }
+        /* Every rule that touches a Button is scoped by an id: Button's own
+           `Button:ansi.-style-default` selector outranks a bare class, so
+           `.dr-day { border: none }` silently lost and the calendar rendered
+           with tall borders and no room for the number. */
+        #dr-presets Button { width: auto; min-width: 0; height: 3; border: none;
+                             padding: 0 1; margin: 0 1 0 0; background: $boost;
+                             color: $foreground; }
         #dr-actions Button { width: auto; min-width: 0; margin-left: 1; }
+        #dr-cal-head Button { width: auto; min-width: 0; border: none;
+                              background: $surface; color: $foreground; }
+        #dr-cal-grid .dr-dow { text-align: center; color: $text-muted; }
+        #dr-cal-grid Button { width: 3; height: 1; min-width: 0; border: none;
+                              padding: 0; background: $surface; color: $foreground; }
+        #dr-cal-grid .dr-day.-other { color: $text-disabled; }
+        #dr-cal-grid .dr-day.-today { color: $accent; text-style: bold; }
+        #dr-cal-grid .dr-day.-selected { background: $accent; color: $text;
+                                         text-style: bold; }
         """
 
         def __init__(self, current, now_ms: int, id: str | None = None):
             super().__init__(id=id)
             self._current = current
             self._now = now_ms
+            self._active = "start"       # which card the calendar writes into
+            self._view = datetime.fromtimestamp(now_ms / 1000).date().replace(day=1)
 
         def compose(self) -> ComposeResult:
-            with Vertical(id="dr-box"):
-                yield Static("Date range", id="dr-title")
-                with Horizontal(id="dr-presets"):
-                    yield Button("Today", id="dr-today")
-                    yield Button("7 days", id="dr-7d")
-                    yield Button("30 days", id="dr-30d")
-                    yield Button("All time", id="dr-all")
-                with Horizontal(classes="dr-row"):
-                    yield Static("Start", classes="dr-label")
-                    yield Input(placeholder="YYYY-MM-DD", id="dr-start-date")
-                    yield Input(placeholder="HH:MM", id="dr-start-time")
-                with Horizontal(classes="dr-row"):
-                    yield Static("End", classes="dr-label")
-                    yield Input(placeholder="YYYY-MM-DD", id="dr-end-date")
-                    yield Input(placeholder="HH:MM", id="dr-end-time")
-                yield Checkbox("End follows current time", True, id="dr-follow")
-                with Horizontal(id="dr-actions"):
-                    yield Button("Whole day", id="dr-wholeday")
-                    yield Button("Cancel", id="dr-cancel")
-                    yield Button("Confirm", variant="primary", id="dr-ok")
+            with Horizontal(id="dr-box"):
+                with Vertical(id="dr-left"):
+                    with Horizontal(id="dr-presets"):
+                        for label, wid, _key in self.PRESETS:
+                            yield Button(label, id=wid)
+                    with Vertical(id="dr-start-card", classes="dr-card"):
+                        yield Static("START TIME", classes="dr-card-title")
+                        with Horizontal(classes="dr-fields"):
+                            yield Input(placeholder="MM/DD/YYYY", id="dr-start-date")
+                            yield TimeInput(placeholder="12:00 AM", id="dr-start-time")
+                    with Vertical(id="dr-end-card", classes="dr-card"):
+                        yield Static("END TIME", classes="dr-card-title")
+                        with Horizontal(classes="dr-fields"):
+                            yield Input(placeholder="MM/DD/YYYY", id="dr-end-date")
+                            yield TimeInput(placeholder="12:00 AM", id="dr-end-time")
+                    yield Checkbox("End time follows current time", True, id="dr-follow")
+                    with Horizontal(id="dr-actions"):
+                        yield Button("Cancel", id="dr-cancel")
+                        yield Button("Confirm", variant="primary", id="dr-ok")
+                with Vertical(id="dr-cal"):
+                    with Horizontal(id="dr-cal-head"):
+                        yield Button("‹", id="dr-prev")
+                        yield Static("", id="dr-cal-month")
+                        yield Button("›", id="dr-next")
+                    with Grid(id="dr-cal-grid"):
+                        for dow in self.DOW:
+                            yield Static(dow, classes="dr-dow")
+                        for i in range(self.CELLS):
+                            yield Button("", id=f"dr-day-{i}", classes="dr-day")
 
         def on_mount(self) -> None:
             self._prefill()
+            # The reference popup's "Supports both date and time" note, on the
+            # box's bottom border so it costs no extra row.
+            self.query_one("#dr-box").border_subtitle = "Supports both date and time"
+            self._set_active("start")
 
         # -- prefill from the tab's current window --------------------------
         def _prefill(self) -> None:
@@ -235,16 +329,13 @@ if HAVE_TEXTUAL:
                 start, end, follow = cur.start_ms, cur.end_ms, cur.follow_now
             else:
                 start, end = db.window_bounds(cur, self._now)
-            self._set_start(start)
-            self._set_end(end)
+            self._set_field("#dr-start", start)
+            # A following end shows *now*; a fixed one shows the stored bound.
+            self._set_field("#dr-end", self._now if follow else end)
             self.query_one("#dr-follow", Checkbox).value = follow
             self._sync_follow()
-
-        def _set_start(self, ms) -> None:
-            self._set_field("#dr-start", ms)
-
-        def _set_end(self, ms) -> None:
-            self._set_field("#dr-end", ms)
+            anchor = start if start is not None else self._now
+            self._view = datetime.fromtimestamp(anchor / 1000).date().replace(day=1)
 
         def _set_field(self, prefix: str, ms) -> None:
             date_in = self.query_one(f"{prefix}-date", Input)
@@ -253,47 +344,93 @@ if HAVE_TEXTUAL:
                 date_in.value = time_in.value = ""
                 return
             dt = datetime.fromtimestamp(ms / 1000)
-            date_in.value = dt.strftime(self.DATE_FMT)
-            time_in.value = dt.strftime(self.TIME_FMT)
+            date_in.value = db.format_date(dt)
+            time_in.value = db.format_time(dt.hour, dt.minute)
 
         def _sync_follow(self) -> None:
             follow = self.query_one("#dr-follow", Checkbox).value
             for wid in ("#dr-end-date", "#dr-end-time"):
                 self.query_one(wid, Input).disabled = follow
 
+        # -- the calendar ----------------------------------------------------
+        def _grid_start(self) -> date:
+            """The date in cell 0: the first day of the view, back to Sunday."""
+            lead = (self._view.weekday() + 1) % 7      # Sunday-first column
+            return self._view - timedelta(days=lead)
+
+        def _day_at(self, index: int) -> date:
+            return self._grid_start() + timedelta(days=index)
+
+        def _active_date(self):
+            """The active card's typed date, or ``None`` if it is blank/bad."""
+            try:
+                return db.parse_date(
+                    self.query_one(f"#dr-{self._active}-date", Input).value,
+                    self._view.year).date()
+            except ValueError:
+                return None
+
+        def _render_calendar(self) -> None:
+            today = datetime.fromtimestamp(self._now / 1000).date()
+            chosen = self._active_date()
+            self.query_one("#dr-cal-month", Static).update(
+                self._view.strftime("%B %Y"))
+            for i in range(self.CELLS):
+                day = self._day_at(i)
+                btn = self.query_one(f"#dr-day-{i}", Button)
+                btn.label = str(day.day)
+                btn.set_class(day.month != self._view.month, "-other")
+                btn.set_class(day == today, "-today")
+                btn.set_class(day == chosen, "-selected")
+
+        def _step_month(self, delta: int) -> None:
+            month = self._view.month + delta
+            year = self._view.year + (month - 1) // 12
+            self._view = date(year, (month - 1) % 12 + 1, 1)
+            self._render_calendar()
+
+        def _pick_day(self, index: int) -> None:
+            """Write a clicked day into the active card."""
+            day = self._day_at(index)
+            if self._active == "end":
+                # Choosing an end date means a fixed end, not "now".
+                self.query_one("#dr-follow", Checkbox).value = False
+                self._sync_follow()
+            self.query_one(f"#dr-{self._active}-date", Input).value = db.format_date(day)
+            if (day.year, day.month) != (self._view.year, self._view.month):
+                self._view = day.replace(day=1)
+            self._render_calendar()
+
+        def _set_active(self, which: str) -> None:
+            self._active = which
+            self.query_one("#dr-start-card").set_class(which == "start", "-active")
+            self.query_one("#dr-end-card").set_class(which == "end", "-active")
+            self._render_calendar()
+
+        # -- presets ---------------------------------------------------------
         def _apply_preset(self, key: str) -> None:
             start, _ = db.window_bounds(key, self._now)
-            self._set_start(start)
+            self._set_field("#dr-start", start)
             self.query_one("#dr-follow", Checkbox).value = True
             self._sync_follow()
-
-        def _apply_whole_day(self) -> None:
-            start_date = self.query_one("#dr-start-date", Input).value.strip()
-            if not start_date:
-                self.notify("Set a start date first", severity="warning")
-                return
-            self.query_one("#dr-end-date", Input).value = start_date
-            self.query_one("#dr-end-time", Input).value = "23:59"
-            self.query_one("#dr-follow", Checkbox).value = False
-            self._sync_follow()
+            if start is not None:
+                self._view = datetime.fromtimestamp(start / 1000).date().replace(day=1)
+            self._render_calendar()
 
         # -- confirm ---------------------------------------------------------
-        def _parse(self, prefix: str):
-            date_s = self.query_one(f"{prefix}-date", Input).value.strip()
-            time_s = self.query_one(f"{prefix}-time", Input).value.strip()
-            if not date_s:
-                return None
-            dt = datetime.strptime(f"{date_s} {time_s or '00:00'}",
-                                   f"{self.DATE_FMT} {self.TIME_FMT}")
-            return int(dt.timestamp() * 1000)
-
         def _confirm(self) -> None:
             follow = self.query_one("#dr-follow", Checkbox).value
+            year = self._view.year
             try:
-                start = self._parse("#dr-start")
-                end = None if follow else self._parse("#dr-end")
+                start = db.parse_datetime(
+                    self.query_one("#dr-start-date", Input).value,
+                    self.query_one("#dr-start-time", Input).value, year)
+                end = None if follow else db.parse_datetime(
+                    self.query_one("#dr-end-date", Input).value,
+                    self.query_one("#dr-end-time", Input).value, year)
             except ValueError:
-                self.notify("Dates are YYYY-MM-DD, times HH:MM", severity="error")
+                self.notify("Dates are MM/DD/YYYY, times HH:MM AM/PM",
+                            severity="error")
                 return
             if not follow and end is None:
                 self.notify("Set an end date, or tick 'End follows current time'",
@@ -307,23 +444,44 @@ if HAVE_TEXTUAL:
         def action_cancel(self) -> None:
             self.dismiss(None)
 
+        # -- events ----------------------------------------------------------
         def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
             if event.checkbox.id == "dr-follow":
                 self._sync_follow()
 
+        def on_click(self, event) -> None:
+            # Clicking anywhere on a card makes it the calendar's target.
+            node = event.widget
+            while node is not None:
+                if getattr(node, "has_class", None) and node.has_class("dr-card"):
+                    self._set_active(
+                        "start" if node.id == "dr-start-card" else "end")
+                    return
+                node = getattr(node, "parent", None)
+
+        def on_descendant_focus(self, event) -> None:
+            wid = getattr(event.control, "id", "") or ""
+            if wid.startswith("dr-start"):
+                self._set_active("start")
+            elif wid.startswith("dr-end"):
+                self._set_active("end")
+
         def on_button_pressed(self, event: Button.Pressed) -> None:
-            handlers = {
-                "dr-today": lambda: self._apply_preset("1d"),
-                "dr-7d": lambda: self._apply_preset("7d"),
-                "dr-30d": lambda: self._apply_preset("30d"),
-                "dr-all": lambda: self._apply_preset("all"),
-                "dr-wholeday": self._apply_whole_day,
-                "dr-cancel": lambda: self.dismiss(None),
-                "dr-ok": self._confirm,
-            }
-            handler = handlers.get(event.button.id)
-            if handler:
-                handler()
+            bid = event.button.id or ""
+            preset = next((key for _l, wid, key in self.PRESETS if wid == bid), None)
+            if preset is not None:
+                self._apply_preset(preset)
+            elif bid == "dr-prev":
+                self._step_month(-1)
+            elif bid == "dr-next":
+                self._step_month(1)
+            elif bid.startswith("dr-day-"):
+                self._pick_day(int(bid.rsplit("-", 1)[1]))
+            elif bid == "dr-cancel":
+                self.dismiss(None)
+            elif bid == "dr-ok":
+                self._confirm()
+
 
     class WideTableMixin:
         """The narrow-terminal column plan, shared by every host that owns a table.

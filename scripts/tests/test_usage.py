@@ -10,7 +10,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
@@ -1074,6 +1074,82 @@ class WindowLabelTest(unittest.TestCase):
         end = int(datetime(2026, 10, 6, 18, 30).timestamp() * 1000)
         self.assertEqual(db.window_label(db.CustomWindow(start, end, False)),
                          "10-05 09:00 → 10-06 18:30")
+
+    def test_the_14d_preset_exists_for_the_picker(self):
+        self.assertEqual(db.USAGE_RANGES["14d"], 14)
+        self.assertEqual(db.USAGE_RANGE_LABELS["14d"], "14 days")
+
+
+class TypedDateTest(unittest.TestCase):
+    """A typed date is normalised, so "10-01" and "10-1" are one day."""
+
+    def test_leading_zeros_and_separators_do_not_matter(self):
+        for text in ("10-01", "10-1", "10/1", "10.01", "2026-10-01",
+                     "2026/10/1", "10-01-2026", "10/1/26"):
+            with self.subTest(text=text):
+                self.assertEqual(db.parse_date(text, 2026).date(),
+                                 date(2026, 10, 1))
+
+    def test_the_default_year_fills_a_yearless_date(self):
+        self.assertEqual(db.parse_date("3-9", 1999).date(), date(1999, 3, 9))
+
+    def test_a_four_digit_leading_field_is_the_year(self):
+        # 2026 is read as the year, not as a month or a day
+        self.assertEqual(db.parse_date("2026-10-01", 1999).date(),
+                         date(2026, 10, 1))
+
+    def test_an_impossible_or_empty_date_is_an_error(self):
+        for text in ("13-01", "2026-02-30", "not-a-date", "", "   "):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    db.parse_date(text, 2026)
+
+    def test_parse_datetime_pairs_a_date_and_a_time(self):
+        ms = db.parse_datetime("10-1", "9:5 AM", 2026)
+        self.assertEqual(
+            datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M"),
+            "2026-10-01 09:05")
+        # a blank date means "all time", which is not the same as a bad one
+        self.assertIsNone(db.parse_datetime("", "", 2026))
+        # a blank time means midnight
+        self.assertEqual(
+            datetime.fromtimestamp(
+                db.parse_datetime("10-1", "", 2026) / 1000).strftime("%H:%M"),
+            "00:00")
+
+
+class TypedTimeTest(unittest.TestCase):
+    """A typed time is normalised, and 12-hour is told from 24-hour."""
+
+    def test_ampm_forms_are_understood(self):
+        for text in ("9:05 AM", "9:5 AM", "09:05 am", "9:05am"):
+            with self.subTest(text=text):
+                self.assertEqual(db.parse_time(text), (9, 5))
+        self.assertEqual(db.parse_time("9:05 PM"), (21, 5))
+
+    def test_the_midnight_and_noon_edges(self):
+        self.assertEqual(db.parse_time("12:00 AM"), (0, 0))
+        self.assertEqual(db.parse_time("12:00 PM"), (12, 0))
+
+    def test_a_markerless_time_is_24_hour(self):
+        self.assertEqual(db.parse_time("21:05"), (21, 5))
+        self.assertEqual(db.parse_time("00:00"), (0, 0))
+
+    def test_an_impossible_or_empty_time_is_an_error(self):
+        for text in ("24:00", "13:00 PM", "not-a-time", "", "   "):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    db.parse_time(text)
+
+    def test_the_display_round_trips(self):
+        for hour, minute in ((0, 0), (9, 5), (12, 0), (23, 59)):
+            with self.subTest(hour=hour, minute=minute):
+                shown = db.format_time(hour, minute)
+                self.assertEqual(db.parse_time(shown), (hour, minute))
+        self.assertEqual(db.format_time(0, 0), "12:00 AM")
+        self.assertEqual(db.format_time(22, 30), "10:30 PM")
+        self.assertEqual(db.format_date(datetime(2026, 10, 1)), "10/01/2026")
+
 
 
 class ProviderGroupingTest(unittest.TestCase):

@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
@@ -114,6 +114,12 @@ def all_rows(table):
 # cells by position therefore has to ask for a terminal wide enough to show all
 # of them, otherwise it asserts against a table that was never meant to be full.
 WIDE = (160, 40)
+
+# A fixed instant the calendar cases pin the clock to, so "today", the month
+# they open on and the preset spans are all deterministic.
+FIXED = datetime(2026, 10, 12, 10, 33)
+FIXED_TS = FIXED.timestamp()
+FIXED_MS = int(FIXED_TS * 1000)
 
 
 def insert_tool_calls(path, rows):
@@ -408,10 +414,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.tab_range["tab-tools"], "7d")   # unchanged
             self.assertEqual(app.query_one("#range", tui.Select).value, "7d")
 
-    # 5j. "Whole day" makes the end that day at 23:59 and stops following now
-    async def test_date_picker_whole_day(self):
+    # 5j. clicking a card aims the calendar; a day then fills that card in
+    async def test_date_picker_calendar_fills_the_active_card(self):
         make_db(self.db_path, [])
-        app = TrackerApp(str(self.db_path))
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
         async with app.run_test(size=WIDE) as pilot:
             await pilot.pause()
             app.query_one(tui.TabbedContent).active = "tab-tools"
@@ -419,14 +425,162 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             app.query_one("#range", tui.Select).value = "custom"
             await pilot.pause()
             modal = app.screen_stack[-1]
-            modal.query_one("#dr-start-date", tui.Input).value = "2026-10-05"
-            modal.query_one("#dr-wholeday", tui.Button).press()
+            # the START card is the target first; click the 5th
+            self.assertEqual(modal._active, "start")
+            self.assertIn("-active", modal.query_one("#dr-start-card").classes)
+            idx = (date(2026, 10, 5) - modal._grid_start()).days
+            await pilot.click(f"#dr-day-{idx}")
+            await pilot.pause()
+            self.assertEqual(modal.query_one("#dr-start-date", tui.Input).value,
+                             "10/05/2026")
+            # clicking the END card moves the target, and picking a day there
+            # switches "follow now" off (a fixed end was clearly intended)
+            await pilot.click("#dr-end-card .dr-card-title")
+            await pilot.pause()
+            self.assertEqual(modal._active, "end")
+            self.assertIn("-active", modal.query_one("#dr-end-card").classes)
+            idx2 = (date(2026, 10, 8) - modal._grid_start()).days
+            await pilot.click(f"#dr-day-{idx2}")
             await pilot.pause()
             self.assertEqual(modal.query_one("#dr-end-date", tui.Input).value,
-                             "2026-10-05")
-            self.assertEqual(modal.query_one("#dr-end-time", tui.Input).value,
-                             "23:59")
+                             "10/08/2026")
             self.assertFalse(modal.query_one("#dr-follow", tui.Checkbox).value)
+
+    # 5k. the calendar steps a month, and a year at the year's ends
+    async def test_date_picker_steps_months_and_wraps_the_year(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            month = lambda: str(modal.query_one("#dr-cal-month", tui.Static).render())
+            self.assertEqual(month(), "October 2026")
+            for _ in range(3):                       # Oct -> Jan, next year
+                await pilot.click("#dr-next")
+                await pilot.pause()
+            self.assertEqual(month(), "January 2027")
+            await pilot.click("#dr-prev")
+            await pilot.pause()
+            self.assertEqual(month(), "December 2026")
+            # the cells before the 1st are greyed days of the previous month
+            self.assertIn("-other",
+                          modal.query_one("#dr-day-0", tui.Button).classes)
+
+    # 5l. today is marked, and the highlight follows the active card's date
+    async def test_date_picker_marks_today_and_the_active_selection(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            cells = {modal._day_at(i): i for i in range(modal.CELLS)}
+            today = cells[date(2026, 10, 12)]
+            self.assertIn("-today",
+                          modal.query_one(f"#dr-day-{today}", tui.Button).classes)
+            # the START card opens on the 7d window's first day, and that cell
+            # is the marked one
+            start = modal.query_one("#dr-start-date", tui.Input).value
+            self.assertEqual(start, "10/06/2026")
+            self.assertIn("-selected",
+                          modal.query_one(f"#dr-day-{cells[date(2026, 10, 6)]}",
+                                          tui.Button).classes)
+            # aiming at END re-marks the end date instead
+            modal._set_active("end")
+            marked = [i for i in range(modal.CELLS)
+                      if "-selected" in modal.query_one(f"#dr-day-{i}",
+                                                        tui.Button).classes]
+            self.assertEqual([modal._day_at(i) for i in marked],
+                             [date(2026, 10, 12)])
+
+    # 5m. a time field can be nudged a minute, keyboard or wheel
+    async def test_time_field_nudges_by_a_minute(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            field = modal.query_one("#dr-start-time", tui.TimeInput)
+            field.value = "11:59 PM"
+            field.action_nudge_up()
+            self.assertEqual(field.value, "12:00 AM")      # wraps past midnight
+            field.action_nudge_down()
+            self.assertEqual(field.value, "11:59 PM")
+            # the ↑ binding drives the same nudge
+            field.focus()
+            await pilot.press("up")
+            self.assertEqual(field.value, "12:00 AM")
+
+    # 5n. a loose date and time are understood, not rejected
+    async def test_date_picker_accepts_loose_dates_and_times(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            modal.query_one("#dr-follow", tui.Checkbox).value = False
+            modal.query_one("#dr-start-date", tui.Input).value = "10-1"
+            modal.query_one("#dr-start-time", tui.Input).value = "9:5 AM"
+            modal.query_one("#dr-end-date", tui.Input).value = "2026-10-03"
+            modal.query_one("#dr-end-time", tui.Input).value = "6:30 PM"
+            modal.query_one("#dr-ok", tui.Button).press()
+            await pilot.pause()
+            start, end = app._bounds_for("tab-tools")
+            fmt = lambda ms: datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M")
+            self.assertEqual(fmt(start), "2026-10-01 09:05")
+            self.assertEqual(fmt(end), "2026-10-03 18:30")
+
+    # 5o. a preset chip sets the start and turns "follow now" on
+    async def test_date_picker_preset_chip_and_all_time(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            app.query_one("#range", tui.Select).value = "custom"
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            await pilot.click("#dr-14d")
+            await pilot.pause()
+            self.assertTrue(modal.query_one("#dr-follow", tui.Checkbox).value)
+            self.assertEqual(modal.query_one("#dr-start-date", tui.Input).value,
+                             "09/29/2026")
+            modal.query_one("#dr-ok", tui.Button).press()
+            await pilot.pause()
+            start, _ = app._bounds_for("tab-tools")
+            self.assertEqual(start, db.window_bounds("14d", FIXED_MS)[0])
+            # "All time" clears the start; the end keeps following now. Reopen
+            # through the 📅 control — the Select already reads "Custom…", so
+            # re-picking it would post no change.
+            await pilot.click("#date-range")
+            await pilot.pause()
+            modal = app.screen_stack[-1]
+            self.assertIsInstance(modal, tui.DateRangeModal)
+            await pilot.click("#dr-all")
+            await pilot.pause()
+            self.assertEqual(modal.query_one("#dr-start-date", tui.Input).value, "")
+            modal.query_one("#dr-ok", tui.Button).press()
+            await pilot.pause()
+            win = app.tab_range["tab-tools"]
+            self.assertIsNone(win.start_ms)
+            self.assertTrue(win.follow_now)
+
 
     # 6. Tab cycling wraps around, no AttributeError (the old crash)
     async def test_tab_cycle_wraps(self):
