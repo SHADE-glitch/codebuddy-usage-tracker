@@ -1299,10 +1299,13 @@ def window_label(value) -> str:
 # the whole point — the display format is a suggestion, not a syntax to match.
 #
 # Month-first is assumed for the ambiguous two-field date form (the picker shows
-# MM/DD/YYYY), and a leading four-digit field is read as the year. A time with an
-# am/pm marker is 12-hour ("12:00 AM" is midnight); without one it is 24-hour.
+# MM/DD/YYYY), and a leading four-digit field is read as the year. Both the date
+# and the time are displayed in the same form the rest of the app prints them:
+# a 24-hour clock, so midnight reads "00:00" rather than "12:00 AM". An am/pm
+# marker is still *accepted* on input ("12:00 AM" is midnight) — the display
+# format is a suggestion, not a syntax to match.
 DATE_DISPLAY_FMT = "%m/%d/%Y"
-TIME_DISPLAY_FMT = "%I:%M %p"
+TIME_DISPLAY_FMT = "%H:%M"
 # The date is split by hand rather than through a table of strptime formats:
 # a yearless "%m-%d" parse is deprecated in 3.14 (the default year is ambiguous
 # and leap day cannot resolve), so the missing year is filled in explicitly.
@@ -1362,7 +1365,7 @@ def format_date(value: datetime) -> str:
 
 
 def format_time(hour: int, minute: int) -> str:
-    """``(hour, minute)`` in 24-hour form as the picker shows it (``12:00 AM``)."""
+    """``(hour, minute)`` as the picker shows it (24-hour, e.g. ``00:00``)."""
     return datetime(2000, 1, 1, hour, minute).strftime(TIME_DISPLAY_FMT)
 
 

@@ -523,15 +523,15 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             modal = app.screen_stack[-1]
             field = modal.query_one("#dr-start-time", tui.TimeInput)
-            field.value = "11:59 PM"
+            field.value = "23:59"
             field.action_nudge_up()
-            self.assertEqual(field.value, "12:00 AM")      # wraps past midnight
+            self.assertEqual(field.value, "00:00")     # wraps past midnight
             field.action_nudge_down()
-            self.assertEqual(field.value, "11:59 PM")
+            self.assertEqual(field.value, "23:59")
             # the ↑ binding drives the same nudge
             field.focus()
             await pilot.press("up")
-            self.assertEqual(field.value, "12:00 AM")
+            self.assertEqual(field.value, "00:00")
 
     # 5m2. every calendar cell shows its whole day number
     async def test_every_calendar_day_renders_its_number(self):
@@ -660,10 +660,12 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(win.start_ms)
             self.assertTrue(win.follow_now)
 
-    # 5p. the six shortcut chips fit their column, whole
+    # 5p. the shortcut chips fit their column, whole
     async def test_date_picker_chips_fit_their_column(self):
         # The six chips span x=2..53 (52 cells) and the column was 47 wide, so
         # "All time" ran 6 cells past its edge. It is 53 now, one cell spare.
+        # The quick-time rows under the cards share that column, so they are
+        # held to the same budget.
         make_db(self.db_path, [])
         app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
         async with app.run_test(size=(80, 30)) as pilot:
@@ -673,16 +675,21 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             app.query_one("#range", tui.Select).value = "custom"
             await pilot.pause()
             modal = app.screen_stack[-1]
-            row = modal.query_one("#dr-presets")
-            self.assertEqual([str(c.label) for c in row.children],
-                             ["Today", "1d", "7d", "14d", "30d", "All time"])
-            for chip in row.children:
-                with self.subTest(chip=str(chip.label)):
-                    self.assertLessEqual(chip.region.right, row.region.right,
-                                         "the chip runs past its column")
-                    drawn = "".join(chip.render_line(y).text
-                                    for y in range(chip.size.height))
-                    self.assertIn(str(chip.label), drawn)
+            rows = {
+                "#dr-presets": ["Today", "1d", "7d", "14d", "30d", "All time"],
+                "#dr-start-quick": ["00:00", "06:00", "12:00", "18:00", "23:59"],
+                "#dr-end-quick": ["now", "00:00", "12:00", "23:59"],
+            }
+            for wid, labels in rows.items():
+                row = modal.query_one(wid)
+                self.assertEqual([str(c.label) for c in row.children], labels)
+                for chip in row.children:
+                    with self.subTest(row=wid, chip=str(chip.label)):
+                        self.assertLessEqual(chip.region.right, row.region.right,
+                                             "the chip runs past its column")
+                        drawn = "".join(chip.render_line(y).text
+                                        for y in range(chip.size.height))
+                        self.assertIn(str(chip.label), drawn)
 
     # 5q. the 📅 span survives a tab switch at its full width
     async def test_the_date_label_keeps_the_whole_span_after_a_tab_switch(self):
@@ -702,7 +709,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             modal.query_one("#dr-start-date", tui.Input).value = "10/01/2026"
             modal.query_one("#dr-end-date", tui.Input).value = "10/03/2026"
             # pin the end time too, or it stays on the prefill's "now"
-            modal.query_one("#dr-end-time", tui.Input).value = "12:00 AM"
+            modal.query_one("#dr-end-time", tui.Input).value = "00:00"
             modal.query_one("#dr-ok", tui.Button).press()
             await pilot.pause()
             app.query_one(tui.TabbedContent).active = "tab-skills"
@@ -713,6 +720,177 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             drawn = "".join(btn.render_line(y).text
                             for y in range(btn.size.height))
             self.assertIn("10-01 00:00 → 10-03 00:00", drawn)
+
+    # --- 5r..5y: the picker's clock — 24-hour display, grids, quick chips ----
+
+    async def _open_picker(self, app, pilot, pane="tab-tools"):
+        """Open the picker on ``pane`` and return the modal it pushed."""
+        app.query_one(tui.TabbedContent).active = pane
+        await pilot.pause()
+        app.query_one("#range", tui.Select).value = "custom"
+        await pilot.pause()
+        return app.screen_stack[-1]
+
+    # 5r. the fields show a 24-hour clock, so a day's start reads 00:00
+    async def test_the_picker_shows_times_in_24_hour(self):
+        # These fields used to render "%I:%M %p", so midnight read "12:00 AM"
+        # and the obvious way to write it — "00:00 AM" — was rejected outright.
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            modal = await self._open_picker(app, pilot)
+            # the 7d window opens on its first day, at that day's very start
+            self.assertEqual(modal.query_one("#dr-start-date", tui.Input).value,
+                             "10/06/2026")
+            self.assertEqual(modal.query_one("#dr-start-time", tui.Input).value,
+                             "00:00")
+            self.assertEqual(modal.query_one("#dr-end-time", tui.Input).value,
+                             "10:33")            # now, not "10:33 AM"
+
+    # 5s. typing 00:00 is accepted and means midnight
+    async def test_typing_00_00_is_midnight(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            modal = await self._open_picker(app, pilot)
+            modal.query_one("#dr-follow", tui.Checkbox).value = False
+            modal.query_one("#dr-start-date", tui.Input).value = "10/01/2026"
+            modal.query_one("#dr-start-time", tui.Input).value = "00:00"
+            modal.query_one("#dr-end-date", tui.Input).value = "10/03/2026"
+            modal.query_one("#dr-end-time", tui.Input).value = "00:00"
+            modal.query_one("#dr-ok", tui.Button).press()
+            await pilot.pause()
+            self.assertIsInstance(app.tab_range["tab-tools"], db.CustomWindow)
+            start, end = app._bounds_for("tab-tools")
+            self.assertEqual(start, int(datetime(2026, 10, 1).timestamp() * 1000))
+            self.assertEqual(end, int(datetime(2026, 10, 3).timestamp() * 1000))
+
+    # 5t. the hour grid writes the active card, and does not steal the target
+    async def test_the_hour_grid_fills_the_active_card(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            modal = await self._open_picker(app, pilot)
+            self.assertEqual(modal._active, "start")
+            await pilot.click("#dr-hour-9")
+            await pilot.pause()
+            self.assertEqual(modal.query_one("#dr-start-time", tui.Input).value,
+                             "09:00")
+            self.assertEqual(modal._active, "start",
+                             "clicking an hour must not re-aim the calendar")
+            # aim END, then the same grid writes there and fixes the end. The
+            # clicked hour replaces the hour only — the minute rides along.
+            await pilot.click("#dr-end-card .dr-card-title")
+            await pilot.pause()
+            await pilot.click("#dr-hour-23")
+            await pilot.pause()
+            self.assertEqual(modal.query_one("#dr-end-time", tui.Input).value,
+                             "23:33")
+            self.assertFalse(modal.query_one("#dr-follow", tui.Checkbox).value)
+
+    # 5u. the hour grid marks the active card's hour, and follows it
+    async def test_the_hour_grid_marks_the_active_cards_hour(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            modal = await self._open_picker(app, pilot)
+            marked = lambda: [h for h in range(modal.HOURS)
+                              if "-selected" in modal.query_one(
+                                  f"#dr-hour-{h}", tui.Static).classes]
+            self.assertEqual(marked(), [0])          # START opens at 00:00
+            modal._set_active("end")
+            await pilot.pause()
+            self.assertEqual(marked(), [10])         # END follows now (10:33)
+            await pilot.click("#dr-hour-9")
+            await pilot.pause()
+            self.assertEqual(marked(), [9])
+
+    # 5v. the END card's quick buttons offer both ends of the choice
+    async def test_the_end_quick_buttons_offer_now_and_end_of_day(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            modal = await self._open_picker(app, pilot)
+            follow = modal.query_one("#dr-follow", tui.Checkbox)
+            await pilot.click("#dr-end-quick-3")     # "23:59"
+            await pilot.pause()
+            self.assertEqual(modal.query_one("#dr-end-time", tui.Input).value,
+                             "23:59")
+            self.assertFalse(follow.value, "a fixed time must drop follow")
+            await pilot.click("#dr-end-quick-0")     # "now"
+            await pilot.pause()
+            self.assertEqual(modal.query_one("#dr-end-time", tui.Input).value,
+                             "10:33")
+            self.assertTrue(follow.value, "now must put follow back on")
+
+    # 5w. the START card's quick buttons fill the day's beginning
+    async def test_the_start_quick_buttons_fill_the_beginning_of_day(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            modal = await self._open_picker(app, pilot)
+            modal.query_one("#dr-start-time", tui.Input).value = "07:30"
+            await pilot.pause()
+            await pilot.click("#dr-start-quick-0")   # "00:00"
+            await pilot.pause()
+            self.assertEqual(modal.query_one("#dr-start-time", tui.Input).value,
+                             "00:00")
+            # a start chip never touches the end's follow switch
+            self.assertTrue(modal.query_one("#dr-follow", tui.Checkbox).value)
+
+    # 5x. the step selector changes what ↑/↓ and the wheel move by
+    async def test_the_nudge_step_selector_changes_the_step(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            modal = await self._open_picker(app, pilot)
+            field = modal.query_one("#dr-start-time", tui.TimeInput)
+            field.value = "10:00"
+            await pilot.pause()
+            await pilot.click("#dr-step-60")         # an hour
+            await pilot.pause()
+            self.assertEqual(field.step, 60)
+            self.assertIn("-selected",
+                          modal.query_one("#dr-step-60", tui.Button).classes)
+            field.focus()
+            await pilot.press("up")
+            self.assertEqual(field.value, "11:00")
+            await pilot.click("#dr-step-10")         # ten minutes
+            await pilot.pause()
+            self.assertEqual(field.step, 10)
+            self.assertNotIn("-selected",
+                             modal.query_one("#dr-step-60", tui.Button).classes)
+            field.focus()
+            await pilot.press("down")
+            self.assertEqual(field.value, "10:50")
+
+    # 5y. a bad time names the 24-hour form it wants
+    async def test_a_bad_time_message_names_the_24_hour_form(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path), clock=lambda: FIXED_TS)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            modal = await self._open_picker(app, pilot)
+            seen = []
+            modal.notify = lambda message, **kw: seen.append(message)
+            modal.query_one("#dr-follow", tui.Checkbox).value = False
+            modal.query_one("#dr-start-time", tui.Input).value = "half past ten"
+            modal.query_one("#dr-end-date", tui.Input).value = "10/03/2026"
+            modal.query_one("#dr-end-time", tui.Input).value = "00:00"
+            modal.query_one("#dr-ok", tui.Button).press()
+            await pilot.pause()
+            self.assertIsInstance(app.screen_stack[-1], tui.DateRangeModal,
+                                  "a bad time must not close the picker")
+            self.assertTrue(seen, "the refusal must say something")
+            self.assertIn("HH:MM", seen[0])
+            self.assertIn("24-hour", seen[0])
 
 
     # 6. Tab cycling wraps around, no AttributeError (the old crash)

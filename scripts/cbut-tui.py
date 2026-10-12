@@ -240,30 +240,36 @@ if HAVE_TEXTUAL:
     class TimeInput(Input):
         """A clock field you can scrub as well as type.
 
-        Typing is the fast path (``9:5 PM`` is understood); ↑/↓ and the mouse
-        wheel step the value by one minute so it can be nudged without the
-        keyboard. The value is re-rendered through ``db.format_time``, so what
-        stays in the field is always the canonical ``h:MM AM``.
+        Typing is the fast path (``00:00`` and ``9:5 PM`` are both understood);
+        ↑/↓ and the mouse wheel step the value so it can be nudged without the
+        keyboard. The step is a per-instance count of minutes, set by the
+        picker's step selector, so one key press can move a minute, ten, or an
+        hour. The value is re-rendered through ``db.format_time``, so what stays
+        in the field is always the canonical 24-hour ``HH:MM``.
         """
 
         BINDINGS = [
             Binding("up", "nudge_up", "Later", show=False),
             Binding("down", "nudge_down", "Earlier", show=False),
         ]
-        STEP = 1  # minutes per nudge
+        STEP = 1  # minutes per nudge, until the picker's step selector says otherwise
+
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.step = self.STEP
 
         def action_nudge_up(self) -> None:
-            self._nudge(self.STEP)
+            self._nudge(self.step)
 
         def action_nudge_down(self) -> None:
-            self._nudge(-self.STEP)
+            self._nudge(-self.step)
 
         def on_mouse_scroll_up(self, event) -> None:
-            self._nudge(self.STEP)
+            self._nudge(self.step)
             event.stop()
 
         def on_mouse_scroll_down(self, event) -> None:
-            self._nudge(-self.STEP)
+            self._nudge(-self.step)
             event.stop()
 
         def _nudge(self, minutes: int) -> None:
@@ -279,14 +285,16 @@ if HAVE_TEXTUAL:
             self.cursor_position = len(self.value)
 
     class DateRangeModal(ModalScreen):
-        """The custom date-range picker: preset chips, two cards, a calendar.
+        """The custom date-range picker: preset chips, two cards, two grids.
 
         Left column: the shortcut chips, an editable START TIME and END TIME (a
-        date plus a 12-hour time each) and the "end follows now" switch. Right
-        column: a month calendar whose ‹ › step the month (and, at the year's
-        ends, the year). Clicking a card makes it active; clicking a day then
-        writes that date into the active card — start and end are picked the
-        same way.
+        date plus a 24-hour time each), a quick-time row under each card, a
+        nudge-step selector and the "end follows now" switch. Right column: a
+        month calendar whose ‹ › step the month (and, at the year's ends, the
+        year), with a 24-cell hour grid below it. Clicking a card makes it
+        active; a day or an hour then writes into the active card — start and
+        end are picked the same way, and the calendar and the grid are the two
+        halves of one clock.
 
         Opened from the top bar's 📅 control or the Select's "Custom…". Confirm
         dismisses with a ``db.CustomWindow``; Cancel or Esc dismisses with
@@ -306,14 +314,24 @@ if HAVE_TEXTUAL:
             ("30d", "dr-30d", "30d"),
             ("All time", "dr-all", "all"),
         )
+        # The quick-time row under each card. The start card offers the day's
+        # edges and the common halves; the end card also offers ``now``, which
+        # is the same thing as ticking "follows current time" — the two ends of
+        # the same choice, one click each.
+        QUICK_START = ("00:00", "06:00", "12:00", "18:00", "23:59")
+        QUICK_END = ("now", "00:00", "12:00", "23:59")
+        # The nudge selector: (label, minutes). ↑/↓ and the wheel move by the
+        # selected step, so a day's edge is reachable without typing.
+        STEPS = (("1m", 1), ("10m", 10), ("1h", 60))
+        HOURS = 24
 
         DEFAULT_CSS = """
         DateRangeModal { align: center middle; overflow: auto; }
         /* Width budget, so the whole picker fits an 80-column terminal:
-           1 border + 1 padding + 53 (left column, of which the six chips use
-           52) + 1 margin + 21 (7 day cells of 3) + 1 padding + 1 border = 79.
-           The day cells are Statics, not Buttons: a Button renders a
-           two-digit label as one digit at width 3. */
+           1 border + 1 padding + 53 (left column, of which the six preset chips
+           use 52) + 1 margin + 21 (7 day cells of 3, and 6 hour cells of 3) +
+           1 padding + 1 border = 79. The day and hour cells are Statics, not
+           Buttons: a Button renders a two-digit label as one digit at width 3. */
         #dr-box { width: auto; height: auto; border: round $primary;
                   background: $surface; padding: 1 1; }
         #dr-left { width: 53; height: auto; }
@@ -324,14 +342,25 @@ if HAVE_TEXTUAL:
         .dr-fields { height: auto; }
         #dr-start-date, #dr-end-date { width: 1fr; margin: 0 1 0 0; }
         /* An Input spends 6 cells on its border and its 0-2 padding, so 16 is
-           what a 10-cell "12:00 PM" needs to render whole. */
+           what a 5-cell "23:59" needs with room to type over it. */
         #dr-start-time, #dr-end-time { width: 16; }
+        /* The quick-time rows: one cell tall, so five chips + four chips cost
+           two rows rather than six. 5 × (5 + 2 padding + 1 margin) = 40 ≤ 53. */
+        #dr-start-quick, #dr-end-quick { height: auto; }
         #dr-follow { height: auto; }
+        #dr-nudge { height: auto; }
+        /* A bare Static in a Horizontal takes the whole row and pushes the
+           buttons past the column (and off the modal), so the label is pinned
+           to its own cells. */
+        #dr-nudge .dr-card-title { width: 7; }
         #dr-actions { height: auto; align-horizontal: right; }
         #dr-cal { width: 21; height: auto; margin-left: 1; }
         #dr-cal-head { height: auto; align: center middle; }
         #dr-cal-month { width: 1fr; text-align: center; text-style: bold; }
         #dr-cal-grid { grid-size: 7; grid-gutter: 0; height: auto; }
+        /* 6 columns of 3 = 18 of the 21 available, so the 24 hours land in 4
+           rows under the month. */
+        #dr-hour-grid { grid-size: 6; grid-gutter: 0; height: auto; margin-top: 1; }
         /* Every rule that touches a Button is scoped by an id: Button's own
            `Button:ansi.-style-default` selector outranks a bare class, so
            `.dr-day { border: none }` silently lost and the calendar rendered
@@ -339,6 +368,17 @@ if HAVE_TEXTUAL:
         #dr-presets Button { width: auto; min-width: 0; height: 3; border: none;
                              padding: 0 1; margin: 0 1 0 0; background: $boost;
                              color: $foreground; }
+        #dr-start-quick Button, #dr-end-quick Button {
+                             width: auto; min-width: 0; height: 1; border: none;
+                             padding: 0 1; margin: 0 1 0 0; background: $boost;
+                             color: $foreground; }
+        #dr-nudge Button { width: auto; min-width: 0; height: 1; border: none;
+                           padding: 0 1; margin: 0 1 0 0; background: $boost;
+                           color: $foreground; }
+        /* -selected, not -active: Button uses -active for its own 0.2s pressed
+           effect and strips it on a timer, so the chosen step flickered off. */
+        #dr-nudge Button.-selected { background: $accent; color: $text;
+                                     text-style: bold; }
         #dr-actions Button { width: auto; min-width: 0; margin-left: 1; }
         #dr-cal-head Button { width: auto; min-width: 0; border: none;
                               background: $surface; color: $foreground; }
@@ -351,6 +391,10 @@ if HAVE_TEXTUAL:
         #dr-cal-grid .dr-day.-today { color: $accent; text-style: bold; }
         #dr-cal-grid .dr-day.-selected { background: $accent; color: $text;
                                          text-style: bold; }
+        #dr-hour-grid .dr-hour { width: 3; height: 1; text-align: center;
+                                 background: $surface; color: $foreground; }
+        #dr-hour-grid .dr-hour.-selected { background: $accent; color: $text;
+                                           text-style: bold; }
         """
 
         def __init__(self, current, now_ms: int, id: str | None = None):
@@ -358,6 +402,7 @@ if HAVE_TEXTUAL:
             self._current = current
             self._now = now_ms
             self._active = "start"       # which card the calendar writes into
+            self._step = self.STEPS[0][1]   # minutes per ↑/↓ nudge
             self._view = datetime.fromtimestamp(now_ms / 1000).date().replace(day=1)
             # What we last wrote into each field, so a *user* edit can be told
             # from our own prefill/preset write (both post Input.Changed).
@@ -373,13 +418,23 @@ if HAVE_TEXTUAL:
                         yield Static("START TIME", classes="dr-card-title")
                         with Horizontal(classes="dr-fields"):
                             yield Input(placeholder="MM/DD/YYYY", id="dr-start-date")
-                            yield TimeInput(placeholder="12:00 AM", id="dr-start-time")
+                            yield TimeInput(placeholder="00:00", id="dr-start-time")
+                        with Horizontal(id="dr-start-quick"):
+                            for i, label in enumerate(self.QUICK_START):
+                                yield Button(label, id=f"dr-start-quick-{i}")
                     with Vertical(id="dr-end-card", classes="dr-card"):
                         yield Static("END TIME", classes="dr-card-title")
                         with Horizontal(classes="dr-fields"):
                             yield Input(placeholder="MM/DD/YYYY", id="dr-end-date")
-                            yield TimeInput(placeholder="12:00 AM", id="dr-end-time")
+                            yield TimeInput(placeholder="00:00", id="dr-end-time")
+                        with Horizontal(id="dr-end-quick"):
+                            for i, label in enumerate(self.QUICK_END):
+                                yield Button(label, id=f"dr-end-quick-{i}")
                     yield Checkbox("End time follows current time", True, id="dr-follow")
+                    with Horizontal(id="dr-nudge"):
+                        yield Static("step", classes="dr-card-title")
+                        for label, minutes in self.STEPS:
+                            yield Button(label, id=f"dr-step-{minutes}")
                     with Horizontal(id="dr-actions"):
                         yield Button("Cancel", id="dr-cancel")
                         yield Button("Confirm", variant="primary", id="dr-ok")
@@ -398,6 +453,10 @@ if HAVE_TEXTUAL:
                             # calendar beside the cards. The day is read from
                             # the cell id in on_click instead.
                             yield Static("", id=f"dr-day-{i}", classes="dr-day")
+                    with Grid(id="dr-hour-grid"):
+                        for h in range(self.HOURS):
+                            yield Static(f"{h:02d}", id=f"dr-hour-{h}",
+                                         classes="dr-hour")
 
         def on_mount(self) -> None:
             self._prefill()
@@ -405,6 +464,7 @@ if HAVE_TEXTUAL:
             # box's bottom border so it costs no extra row.
             self.query_one("#dr-box").border_subtitle = "Supports both date and time"
             self._set_active("start")
+            self._render_steps()
 
         # -- prefill from the tab's current window --------------------------
         def _prefill(self) -> None:
@@ -432,6 +492,7 @@ if HAVE_TEXTUAL:
                 time_in.value = db.format_time(dt.hour, dt.minute)
             self._written[date_in.id] = date_in.value
             self._written[time_in.id] = time_in.value
+            self._render_hours()
 
         def _follows_now(self) -> bool:
             return self.query_one("#dr-follow", Checkbox).value
@@ -473,6 +534,42 @@ if HAVE_TEXTUAL:
             self._view = date(year, (month - 1) % 12 + 1, 1)
             self._render_calendar()
 
+        # -- the hour grid ---------------------------------------------------
+        def _active_time(self):
+            """The active card's typed time as ``(hour, minute)``, or ``None``."""
+            try:
+                return db.parse_time(
+                    self.query_one(f"#dr-{self._active}-time", Input).value)
+            except ValueError:
+                return None
+
+        def _render_hours(self) -> None:
+            """Mark the active card's hour in the 24-cell grid."""
+            parsed = self._active_time()
+            hour = parsed[0] if parsed else None
+            for h in range(self.HOURS):
+                self.query_one(f"#dr-hour-{h}", Static).set_class(
+                    h == hour, "-selected")
+
+        def _pick_hour(self, hour: int) -> None:
+            """Write a clicked hour into the active card, keeping its minute.
+
+            The grid is the calendar's other half: the day cells set the date,
+            these set the hour, and both land in whichever card is active.
+            """
+            parsed = self._active_time()
+            minute = parsed[1] if parsed else 0
+            self._write_time(self._active, db.format_time(hour, minute))
+
+        def _write_time(self, card: str, value: str) -> None:
+            """Set one card's time field, and fix the end if that is the card."""
+            if card == "end":
+                # A chosen end time means a fixed end, not "now".
+                self.query_one("#dr-follow", Checkbox).value = False
+            self.query_one(f"#dr-{card}-time", Input).value = value
+            self._written[f"dr-{card}-time"] = value
+            self._render_hours()
+
         def _pick_day(self, index: int) -> None:
             """Write a clicked day into the active card."""
             day = self._day_at(index)
@@ -490,6 +587,7 @@ if HAVE_TEXTUAL:
             self.query_one("#dr-start-card").set_class(which == "start", "-active")
             self.query_one("#dr-end-card").set_class(which == "end", "-active")
             self._render_calendar()
+            self._render_hours()
 
         # -- presets ---------------------------------------------------------
         def _apply_preset(self, key: str) -> None:
@@ -499,6 +597,28 @@ if HAVE_TEXTUAL:
             if start is not None:
                 self._view = datetime.fromtimestamp(start / 1000).date().replace(day=1)
             self._render_calendar()
+
+        def _apply_quick(self, card: str, label: str) -> None:
+            """A quick-time chip: ``now`` re-follows the clock, a time fixes it."""
+            if label == "now":
+                self._set_field("#dr-end", self._now)
+                self.query_one("#dr-follow", Checkbox).value = True
+                self._render_hours()
+                return
+            hour, minute = db.parse_time(label)
+            self._write_time(card, db.format_time(hour, minute))
+
+        # -- nudge step ------------------------------------------------------
+        def _set_step(self, minutes: int) -> None:
+            self._step = minutes
+            for wid in ("#dr-start-time", "#dr-end-time"):
+                self.query_one(wid, TimeInput).step = minutes
+            self._render_steps()
+
+        def _render_steps(self) -> None:
+            for _label, minutes in self.STEPS:
+                self.query_one(f"#dr-step-{minutes}", Button).set_class(
+                    minutes == self._step, "-selected")
 
         # -- confirm ---------------------------------------------------------
         def _confirm(self) -> None:
@@ -512,7 +632,7 @@ if HAVE_TEXTUAL:
                     self.query_one("#dr-end-date", Input).value,
                     self.query_one("#dr-end-time", Input).value, year)
             except ValueError:
-                self.notify("Dates are MM/DD/YYYY, times HH:MM AM/PM",
+                self.notify("Dates are MM/DD/YYYY, times HH:MM (24-hour)",
                             severity="error")
                 return
             if not follow and end is None:
@@ -538,6 +658,8 @@ if HAVE_TEXTUAL:
             # follow switch. Our own prefill/preset writes are ignored by
             # matching the value we recorded.
             wid = event.input.id or ""
+            if wid.endswith("-time"):
+                self._render_hours()      # a typed hour re-marks the grid
             if not wid.startswith("dr-end") or not self._follows_now():
                 return
             if self._written.get(wid) == event.value:
@@ -545,11 +667,15 @@ if HAVE_TEXTUAL:
             self.query_one("#dr-follow", Checkbox).value = False
 
         def on_click(self, event) -> None:
-            # A calendar day is a Static, so its click arrives here rather than
-            # as a Button.Pressed — read the day index from the cell's id.
+            # A calendar day and an hour cell are Statics, so their clicks
+            # arrive here rather than as a Button.Pressed — read the index from
+            # the cell's id.
             wid = getattr(event.widget, "id", "") or ""
             if wid.startswith("dr-day-"):
                 self._pick_day(int(wid.rsplit("-", 1)[1]))
+                return
+            if wid.startswith("dr-hour-"):
+                self._pick_hour(int(wid.rsplit("-", 1)[1]))
                 return
             # Clicking anywhere on a card makes it the calendar's target.
             node = event.widget
@@ -572,6 +698,12 @@ if HAVE_TEXTUAL:
             preset = next((key for _l, wid, key in self.PRESETS if wid == bid), None)
             if preset is not None:
                 self._apply_preset(preset)
+            elif bid.startswith("dr-start-quick-"):
+                self._apply_quick("start", self.QUICK_START[int(bid.rsplit("-", 1)[1])])
+            elif bid.startswith("dr-end-quick-"):
+                self._apply_quick("end", self.QUICK_END[int(bid.rsplit("-", 1)[1])])
+            elif bid.startswith("dr-step-"):
+                self._set_step(int(bid.rsplit("-", 1)[1]))
             elif bid == "dr-prev":
                 self._step_month(-1)
             elif bid == "dr-next":

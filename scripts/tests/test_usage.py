@@ -1146,9 +1146,16 @@ class TypedTimeTest(unittest.TestCase):
             with self.subTest(hour=hour, minute=minute):
                 shown = db.format_time(hour, minute)
                 self.assertEqual(db.parse_time(shown), (hour, minute))
-        self.assertEqual(db.format_time(0, 0), "12:00 AM")
-        self.assertEqual(db.format_time(22, 30), "10:30 PM")
+        # The picker shows a 24-hour clock, the same one the tables print.
+        self.assertEqual(db.format_time(0, 0), "00:00")
+        self.assertEqual(db.format_time(22, 30), "22:30")
         self.assertEqual(db.format_date(datetime(2026, 10, 1)), "10/01/2026")
+
+    def test_a_12_hour_time_is_still_accepted_on_input(self):
+        # The *display* moved to 24-hour; an am/pm marker typed by habit still
+        # has to work, so "12:00 AM" is midnight and not a refusal.
+        self.assertEqual(db.parse_time("12:00 AM"), (0, 0))
+        self.assertEqual(db.format_time(*db.parse_time("12:00 AM")), "00:00")
 
 
 
