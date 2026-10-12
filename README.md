@@ -42,7 +42,7 @@
 - 🗃️ **One local SQLite file** — no network, no upload, no telemetry.
 - ⚡ **Fast incremental sync** — ~5 s to index ~300 sessions / ~420 MB; only new bytes after that.
 - 🖥️ **TUI + headless** — an eight-tab Textual UI for humans, JSON reports for scripts.
-- 🔢 **Real model tokens** — per-model input / output / total plus cache hit / miss / write, straight from `providerData.rawUsage`; total prefers the provider's own reported value.
+- 🔢 **Real model tokens** — per-model input / output / total plus cache hit / miss / write, straight from `providerData.rawUsage`, with a **Provider** column (Built-in, or a third-party label from `providerData.requestModelId`); total prefers the provider's own reported value.
 - 📊 **Calendar-day windows, per tab** — the top-bar range (Today / 2 days / 3 days / 7 days / 30 days / All time) is kept **per tab**, so changing one never moves another: entity tabs default to **7 days**, the Dashboard and the Usage page to **Today**, and Plugins is always all-time. Windows are whole local calendar days (00:00 → now), never "now minus N hours". A window only shrinks the **counts** — the list stays full.
 - 🔐 **Metadata only** — names, timings, statuses, projects. Never message bodies or argument values.
 
@@ -271,7 +271,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 334 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 350 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -281,9 +281,9 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 
 | Suite | Tests | Covers |
 |---|---:|---|
-| `test_sync.py` | 85 | transcript parsing, tool classification, incremental vs `--full` re-sync, crash recovery, unparsed-record accounting |
-| `test_tui.py` | 86 | tab wiring and report shapes through Textual's own `run_test` harness, narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness |
-| `test_usage.py` | 61 | the calendar-day windows (Today / 2 / 3 / 7 / 30 days / all), the token totals, the Dashboard queries, the schema gate, and which indexes earn their keep |
+| `test_sync.py` | 96 | transcript parsing, tool classification, the route-origin column (`requestModelId` → built-in / vendor / host / endpoint), incremental vs `--full` re-sync, crash recovery, unparsed-record accounting |
+| `test_tui.py` | 88 | tab wiring and report shapes through Textual's own `run_test` harness, narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness |
+| `test_usage.py` | 64 | the calendar-day windows (Today / 2 / 3 / 7 / 30 days / all), the token totals and provider grouping, the Dashboard queries, the schema gate, and which indexes earn their keep |
 | `test_config.py` | 21 | the settings layer: defaults unchanged, file, env precedence and bounds, a broken file that stops `main()` before the TUI starts, the keys the app actually reads, and every key `cbut health` reports — with the environment hidden, so a configured shell cannot turn these into false failures |
 | `test_dispatcher.py` | 12 | `bin/cbut`: subcommand routing, venv resolution, help without a resolvable install |
 | `test_format_registry.py` | 10 | the CodeBuddy format registry and the parser agree, both directions |
@@ -323,9 +323,10 @@ launcher, `CBUT_DB` and `CBUT_CODEBUDDY_DIR` for the data (see [Usage](#-usage))
   mechanism (`DeferExecuteTool`).
 - 🤖 **Internal agents** (`autoModeClassifier`, `summaryGenerator`, …) live in the OTel
   traces; trace ingestion is planned but not yet wired into v1.
-- 🏷️ **No provider field** — CodeBuddy transcripts record no provider / account / site /
-  endpoint, so the Usage page has no provider column at all rather than guessing one
-  from the model name.
+- 🏷️ **Provider is read, not guessed.** The Usage and Tokens tabs carry a Provider column:
+  `Built-in`, or a third-party label derived from `providerData.requestModelId` — the vendor name
+  of a known endpoint url, else that host, else the endpoint tag. It is never inferred from the
+  model name, which a custom endpoint's alias can make look built-in.
 - 🔢 **`context tokens` vs model tokens.** The headless `cbut stats` prints a session-level
   `context tokens` figure (turn-metrics `tokenDelta`) next to the per-model token totals;
   the two are deliberately kept apart. The `context tokens` sum is idempotent — repeated

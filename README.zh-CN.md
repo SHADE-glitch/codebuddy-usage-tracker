@@ -42,7 +42,7 @@
 - 🗃️ **单个本地 SQLite 文件** —— 不联网、不上传、无遥测。
 - ⚡ **快速增量同步** —— 约 300 个会话 / 420 MB 约 5 秒完成；之后只读新增字节。
 - 🖥️ **TUI + 无头** —— 给人用的八 tab Textual 界面，给脚本用的 JSON 报告。
-- 🔢 **真实模型 token** —— 按模型的输入 / 输出 / 总计，以及缓存 hit / miss / write，直接来自 `providerData.rawUsage`；总计优先使用 provider 自报值。
+- 🔢 **真实模型 token** —— 按模型的输入 / 输出 / 总计，以及缓存 hit / miss / write，直接来自 `providerData.rawUsage`，并带 **Provider** 列（内置，或由 `providerData.requestModelId` 派生的第三方标签）；总计优先使用 provider 自报值。
 - 📊 **自然日窗口，每个 tab 独立** —— 顶部栏的范围选择器（今天 / 2 天 / 3 天 / 7 天 / 30 天 / 全部时间）**按 tab 各自保存**，改一个不会影响别的：实体 tab 默认 **7 天**，Dashboard 与 Usage 页默认 **今天**，Plugins 恒为全时段。窗口按**本地自然日**（00:00 → 当前），绝不是「当前减 N 小时」。窗口只缩小**计数**，列表始终完整。
 - 🔐 **只存元数据** —— 名称、耗时、状态、项目。绝不存消息正文或参数值。
 
@@ -221,7 +221,7 @@ sync_secs = 30       # TUI 自动同步定时器
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 334 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 350 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -230,9 +230,9 @@ python3 -m unittest discover -s scripts/tests     # Ran 334 tests ... OK
 
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
-| `test_sync.py` | 85 | 转录解析、工具归类、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
-| `test_tui.py` | 86 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、单元格上限与它背后的设置项、状态栏诚实性 |
-| `test_usage.py` | 61 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）、token 汇总、Dashboard 查询、结构版本门禁、索引值不值得留 |
+| `test_sync.py` | 96 | 转录解析、工具归类、路由出处列（`requestModelId` → 内置 / 厂商 / 主机 / 端点）、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
+| `test_tui.py` | 88 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、单元格上限与它背后的设置项、状态栏诚实性 |
+| `test_usage.py` | 64 | 自然日窗口（今天 / 2 / 3 / 7 / 30 天 / 全部）、token 汇总与提供方分组、Dashboard 查询、结构版本门禁、索引值不值得留 |
 | `test_config.py` | 21 | 设置层：默认值没变、文件、env 优先级与取值边界、坏文件会让 `main()` 在启动 TUI 前就退出、app 真的读了哪些键，以及 `cbut health` 把每个键都报出来——环境变量会被藏起来，所以一台配置过的机器也不会把这些用例变成假失败 |
 | `test_dispatcher.py` | 12 | `bin/cbut`：子命令转发、venv 解析、装不上时 help 仍然能跑 |
 | `test_format_registry.py` | 10 | CodeBuddy 格式登记表与解析器双向一致 |
@@ -268,7 +268,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 334 tests ... OK
 
 - 🔌 **MCP 数据初期会很少**，除非你真的调用了 MCP 工具；该 tab 由真实调用填充（`mcp__<server>__<tool>`），也包括被延迟工具机制（`DeferExecuteTool`）包裹的调用。
 - 🤖 **内部 agent**（`autoModeClassifier`、`summaryGenerator` 等）只在 OTel 轨迹里，v1 尚未接入轨迹采集。
-- 🏷️ **没有 provider 字段** —— CodeBuddy 转录不记录 provider / 账号 / 站点 / endpoint，所以 Usage 页干脆没有 provider 列，而不从模型名猜测。
+- 🏷️ **提供方是读出来的，不是猜的。** Usage 与 Tokens 两页有 Provider 列：内置显示 `Built-in`，第三方由 `providerData.requestModelId` 派生的标签 —— 已知端点 URL 显示厂商名，否则显示其主机，再否则显示端点标签。绝不从模型名猜测，因为自定义端点的别名可能长得像内置。
 - 🔢 **`context tokens` 与模型 token 的区别。** 无头 `cbut stats` 会在按模型 token 总计之外，单独打印一行会话级 `context tokens`（turn-metrics `tokenDelta`）；两者刻意分开。`context tokens` 现在是幂等的 —— 重复同步与 schema 迁移不再让它膨胀。
 - 🔄 同步是手动的（或可选 systemd 定时器）；没有实时 hook。
 

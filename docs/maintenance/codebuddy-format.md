@@ -15,13 +15,13 @@ cbut format --write      # refresh the block in this file after changing the reg
 - **Record types a handler claims**: `ai-title`, `function_call`, `function_call_result`, `message`, `model-usage`, `session-meta`, `turn-metrics`
 - **Record types treated as a model response**: `function_call`, `message`, `model-usage`
 - **Transcript record fields**: `_meta`, `arguments`, `callId`, `content`, `cwd`, `durationMs`, `id`, `name`, `providerData`, `sessionId`, `status`, `timestamp`, `tokenDelta`, `type`
-- **`providerData` fields**: `conversationRequestId`, `messageId`, `model`, `rawUsage`
+- **`providerData` fields**: `conversationRequestId`, `messageId`, `model`, `rawUsage`, `requestModelId`
 - **`providerData.rawUsage` fields**: `cache_creation_input_tokens`, `cache_read_input_tokens`, `completion_tokens`, `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, `prompt_cache_write_tokens`, `prompt_tokens`, `total_tokens`
 - **`rawUsage` nested cache path (fallback for the hit above)**: `cached_tokens`, `prompt_tokens_details`
 - **`_meta` fields**: `baggage`
 - **message content-block fields**: `text`
 - **tool argument names**: `agent_type`, `args`, `command`, `skill`, `subagent_type`, `toolName`, `tool_name`
-- **inventory JSON keys**: `installPath`, `mcpServers`, `plugins`, `version`
+- **inventory JSON keys**: `installPath`, `mcpServers`, `models`, `plugins`, `url`, `version`
 - **Tool names that drive classification**: `Skill`, `Agent`, prefix `mcp__` with separator `__`
 - **Meta tools (wrap another tool)**: `DeferExecuteTool`, `ListMcpResources`, `ReadMcpResource`, `ToolSearch`, `WaitForMcpServers`
 - **Tolerant name tables** (an unknown name still indexes): 35 builtin tools, 17 builtin agents, default agent type `general-purpose`

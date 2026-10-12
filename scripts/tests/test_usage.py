@@ -1055,5 +1055,49 @@ class OldDatabaseOnAReadOnlyCliTest(unittest.TestCase):
             tmp.cleanup()
 
 
+class ProviderGroupingTest(unittest.TestCase):
+    """The provider column is returned and joins the grouping key."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.open_db(Path(self.tmp.name) / "t.db")
+        db.ensure_schema(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _row(self, mid, model, provider, pt=10, ct=5, ts=1000):
+        self.conn.execute(
+            "INSERT INTO model_responses(message_id, model, provider,"
+            " prompt_tokens, completion_tokens, ts, usage_available)"
+            " VALUES(?,?,?,?,?,?,1)",
+            (mid, model, provider, pt, ct, ts))
+
+    def test_q_model_tokens_splits_a_model_across_providers(self):
+        self._row("a", "shared-name", "builtin")
+        self._row("b", "shared-name", "Volcano Ark")
+        self.conn.commit()
+        rows = db.q_model_tokens(self.conn)
+        by_provider = {r["provider"]: r for r in rows}
+        self.assertEqual(set(by_provider), {"builtin", "Volcano Ark"})
+        self.assertEqual(by_provider["builtin"]["prompt_tokens"], 10)
+        self.assertEqual(by_provider["Volcano Ark"]["prompt_tokens"], 10)
+
+    def test_q_usage_model_stats_carries_and_groups_by_provider(self):
+        self._row("a", "shared-name", "builtin")
+        self._row("b", "shared-name", None)
+        self.conn.commit()
+        rows = db.q_usage_model_stats(self.conn, 0, 10 ** 15)
+        self.assertEqual({r["provider"] for r in rows}, {"builtin", None})
+        self.assertTrue(all(r["requests"] == 1 for r in rows))
+
+    def test_q_usage_request_logs_carries_provider(self):
+        self._row("a", "m", "Volcano Ark")
+        self.conn.commit()
+        row = db.q_usage_request_logs(self.conn, 0, 10 ** 15)[0]
+        self.assertEqual(row["provider"], "Volcano Ark")
+
+
 if __name__ == "__main__":
     unittest.main()

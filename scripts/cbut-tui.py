@@ -90,18 +90,19 @@ def local_time(ms):
 RANGE_OPTIONS = [(db.USAGE_RANGE_LABELS[k], k)
                  for k in ("1d", "2d", "3d", "7d", "30d", "all")]
 # The Usage page is a single Request Logs list. Column order: time · model ·
-# usage total · input · output · API total · cache hit/miss/write · cache hit
-# rate. cc-switch's provider / cost / duration / HTTP-status columns have no
-# transcript source, so they are deliberately absent rather than estimated.
-USAGE_COLUMNS = ("Time", "Model", "Usage Total", "Input", "Output",
+# provider · usage total · input · output · API total · cache hit/miss/write ·
+# cache hit rate. cc-switch's cost / duration / HTTP-status columns have no
+# transcript source, so they are deliberately absent rather than estimated; the
+# provider now has one (providerData.requestModelId), so it is shown.
+USAGE_COLUMNS = ("Time", "Model", "Provider", "Usage Total", "Input", "Output",
                  "API Total", "Cache hit", "Cache miss",
                  "Cache write", "Cache hit rate")
 
-# Tokens-tab column order: Usage Total right after the model, then the request
-# count and the token parts. The cache detail is kept; the near-always-100%
-# "With usage" and "Coverage" columns were dropped.
-TOKEN_COLUMNS = ("Model", "Usage Total", "Requests", "Input", "Output",
-                 "API Total", "Cache hit", "Cache miss", "Cache write")
+# Tokens-tab column order: Provider right after the model, then Usage Total, the
+# request count and the token parts. The cache detail is kept; the
+# near-always-100% "With usage" and "Coverage" columns were dropped.
+TOKEN_COLUMNS = ("Model", "Provider", "Usage Total", "Requests", "Input",
+                 "Output", "API Total", "Cache hit", "Cache miss", "Cache write")
 
 # Entity tabs and the two detail screens. Declared here rather than inline at
 # `add_columns` because the column plan needs the full list to compute a prefix from,
@@ -778,7 +779,8 @@ if HAVE_TEXTUAL:
             # Reuses q_model_tokens; never re-parses transcripts and never mixes
             # in sessions.tokens (tokenDelta). Total = API total (provider total
             # when present). Usage Total is the display-only re-add of cache hit.
-            rows = [[r["model"], fmt_n(r["usage_total_tokens"]),
+            rows = [[r["model"], db.provider_label(r["provider"]),
+                     fmt_n(r["usage_total_tokens"]),
                      f"{r['responses']:,}",
                      fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
                      fmt_n(r["total_tokens"]),
@@ -1281,6 +1283,7 @@ if HAVE_TEXTUAL:
                 "no cost/duration/status" if rows else "")
             out = [[
                 local_time(r["ts"]), r["model"] or "-",
+                db.provider_label(r["provider"]),
                 fmt_n(r["usage_total_tokens"]),
                 fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
                 fmt_n(r["total_tokens"]),

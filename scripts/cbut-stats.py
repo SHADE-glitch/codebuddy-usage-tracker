@@ -178,6 +178,7 @@ def cmd_mcp(conn, args):
 # cache columns are the first dropped when the terminal is narrow.
 MODEL_TABLE_COLUMNS = (
     ("model", "model"),
+    ("provider", "provider"),
     ("resp", "responses"),
     ("in", "prompt_tokens"),
     ("out", "completion_tokens"),
@@ -186,15 +187,16 @@ MODEL_TABLE_COLUMNS = (
     ("cache miss", "prompt_cache_miss_tokens"),
     ("cache write", "prompt_cache_write_tokens"),
 )
-# Dropped left-to-right until the table fits; model/resp/in/out always survive.
-_MODEL_DROP_ORDER = ("cache write", "cache miss", "cache hit", "resp")
-_MODEL_ALWAYS_KEEP = 4
+# Dropped left-to-right until the table fits; the identity + size columns
+# (model / provider / resp / in / out) always survive.
+_MODEL_DROP_ORDER = ("cache write", "cache miss", "cache hit")
+_MODEL_ALWAYS_KEEP = 5
 
 
 def _fit_model_columns(width, headers, rows):
-    """Reduce (headers, rows) to fit ``width`` by dropping cache, then resp/usage.
+    """Reduce (headers, rows) to fit ``width`` by dropping the cache columns.
 
-    Never drops below the first four columns (model / resp / in / out).
+    Never drops below the first five columns (model / provider / resp / in / out).
     """
     headers = list(headers)
     rows = [list(r) for r in rows]
@@ -212,7 +214,9 @@ def _fit_model_columns(width, headers, rows):
 def cmd_models(conn, args):
     """Per-model token totals from real transcript usage (rawUsage)."""
     data = _rows(db.q_model_tokens(conn), [k for _, k in MODEL_TABLE_COLUMNS])
-    rows = [[r[0] or "?"] + [fmt_n(c) for c in r[1:]] for r in data]
+    # model and provider are text; the rest are counts.
+    rows = [[r[0] or "?", db.provider_label(r[1])]
+            + [fmt_n(c) for c in r[2:]] for r in data]
     headers = [h for h, _ in MODEL_TABLE_COLUMNS]
     width = shutil.get_terminal_size((100, 24)).columns
     headers, rows = _fit_model_columns(width, headers, rows)

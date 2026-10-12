@@ -124,9 +124,13 @@ tool runs from a checkout, so the version only needs to move when a documented c
   The property is pinned by `test_a_real_process_kill_mid_transaction_leaves_no_partial_state`
   (a child that `os._exit`s with the transaction open — not a simulated close): rows and offset
   are lost together, so a retry counts a turn exactly once.
-- **No provider field, by decision.** CodeBuddy transcripts carry no provider / account / site /
-  endpoint, so the Usage page has no provider column at all. Do not "helpfully" add or infer one
-  from the model name — guessing is worse than an honest omission.
+- **Route origin is read, never guessed.** `providerData.requestModelId` names the route: a bare
+  model id for a built-in route, or `<endpoint>:<model id>` for a custom one. The `provider` column
+  stores `builtin`, or a third-party label resolved at ingest — a vendor name for a known url host,
+  else that host, else the endpoint tag (`cbut-sync.resolve_provider`, hosts from `models.json`).
+  It is never inferred from the model *name*: a custom endpoint's alias can look built-in
+  (`deepseek-v4-1-flash` next to the built-in `deepseek-v4.1-flash`). This reverses the earlier
+  "no provider field" decision, which was true only while `requestModelId` went unread.
 - **Name is the primary key of every panel.** Each tab lists the union of what is installed
   (the static `inventory`) and what has *ever been used* (the usage tables), keyed by name
   alone, sorted by call count. A renamed, updated or removed entity keeps its history; a name

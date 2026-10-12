@@ -20,7 +20,7 @@ import tomllib
 from datetime import datetime, timedelta
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # --- locations -------------------------------------------------------------
 
@@ -195,6 +195,11 @@ CREATE TABLE IF NOT EXISTS model_responses (
     session_id                 TEXT,
     conversation_request_id    TEXT,
     model                      TEXT,
+    -- Route origin (schema v7), derived at ingest from providerData.requestModelId
+    -- (never from the model name): 'builtin' for a built-in route, else the
+    -- resolved third-party label (a vendor name, a URL host, or the endpoint
+    -- tag); NULL when requestModelId is absent. See cbut-sync.resolve_provider.
+    provider                   TEXT,
     prompt_tokens              INTEGER,
     completion_tokens          INTEGER,
     cache_read_input_tokens    INTEGER,
@@ -583,12 +588,14 @@ def restore(backup_path, db_path=None, reason: str = "pre-restore") -> Path:
 # column to CREATE TABLE without listing it here fails loudly instead of leaving
 # upgraded databases permanently short of it.
 # v3: the three prompt_cache_* cache parts. v4: provider_total_tokens.
-_NEW_MODEL_COLUMNS = (
-    "prompt_cache_hit_tokens",
-    "prompt_cache_miss_tokens",
-    "prompt_cache_write_tokens",
-    "provider_total_tokens",
-)
+# v7: provider (the only TEXT one — the route origin).
+_NEW_MODEL_COLUMNS = {
+    "prompt_cache_hit_tokens": "INTEGER",
+    "prompt_cache_miss_tokens": "INTEGER",
+    "prompt_cache_write_tokens": "INTEGER",
+    "provider_total_tokens": "INTEGER",
+    "provider": "TEXT",
+}
 
 # Columns the current schema no longer has. v5 removed both of these because
 # they held prose: an AI-generated session title, and the Agent tool's own
@@ -614,24 +621,26 @@ def stored_version(conn: sqlite3.Connection) -> int:
 
 
 def _migrate_model_responses(conn: sqlite3.Connection) -> bool:
-    """Add v3/v4 columns to a pre-existing ``model_responses`` table.
+    """Add v3/v4/v7 columns to a pre-existing ``model_responses`` table.
 
     SQLite has no ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``, so check
-    ``PRAGMA table_info`` first. When any column is actually added (i.e. an old
-    database is being upgraded), clear ``sync_state`` so the next incremental
-    ``cbut sync`` re-reads the transcripts and backfills the new columns via the
-    existing messageId UPSERT — row counts stay stable. ``sessions`` is cleared
-    too: its ``tokens``/``duration_ms`` are *accumulated* from ``turn-metrics``,
-    so a full re-read would otherwise add every turn's delta a second time —
-    and ``unparsed`` for the same reason. Fresh databases already have the
-    columns, so this is a no-op for them.
+    ``PRAGMA table_info`` first. Each column's type comes from
+    ``_NEW_MODEL_COLUMNS`` (all INTEGER but ``provider``, which is TEXT). When any
+    column is actually added (i.e. an old database is being upgraded), clear
+    ``sync_state`` so the next incremental ``cbut sync`` re-reads the transcripts
+    and backfills the new columns via the existing messageId UPSERT — row counts
+    stay stable. ``sessions`` is cleared too: its ``tokens``/``duration_ms`` are
+    *accumulated* from ``turn-metrics``, so a full re-read would otherwise add
+    every turn's delta a second time — and ``unparsed`` for the same reason.
+    Fresh databases already have the columns, so this is a no-op for them.
     """
     existing = {r[1] for r in conn.execute("PRAGMA table_info(model_responses)")}
     added = [c for c in _NEW_MODEL_COLUMNS if c not in existing]
     if not added:
         return False
     for col in added:
-        conn.execute(f"ALTER TABLE model_responses ADD COLUMN {col} INTEGER")
+        conn.execute(
+            f"ALTER TABLE model_responses ADD COLUMN {col} {_NEW_MODEL_COLUMNS[col]}")
     conn.execute("DELETE FROM sync_state")
     conn.execute("DELETE FROM sessions")
     conn.execute("DELETE FROM unparsed")
@@ -934,7 +943,7 @@ def q_model_responses(conn, limit=50, model=None):
     ('provider' | 'derived' | NULL).
     """
     sql = (
-        "SELECT message_id, session_id, conversation_request_id, model,"
+        "SELECT message_id, session_id, conversation_request_id, model, provider,"
         " prompt_tokens, completion_tokens, cache_read_input_tokens,"
         " cache_creation_input_tokens,"
         " prompt_cache_hit_tokens, prompt_cache_miss_tokens,"
@@ -976,7 +985,7 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
     """
     where, params = _time_filter(start_ts, end_ts)
     return conn.execute(
-        "SELECT model,"
+        "SELECT model, provider,"
         " COUNT(*) AS responses,"
         " SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END) AS with_usage,"
         " SUM(prompt_tokens) AS prompt_tokens,"
@@ -989,7 +998,10 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
         f" {_AGG_TOTAL_EXPR} AS total_tokens,"
         f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
         f" {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens"
-        f" FROM model_responses{where} GROUP BY model ORDER BY responses DESC",
+        # Grouped by (model, provider): a model name can be served by two routes
+        # (a built-in id and a custom alias), and those must not merge.
+        f" FROM model_responses{where}"
+        " GROUP BY model, provider ORDER BY responses DESC",
         params,
     ).fetchall()
 
@@ -1005,8 +1017,24 @@ USAGE_RANGE_LABELS = {
     "7d": "7 days", "30d": "30 days", "all": "All time",
 }
 
-# No provider/account/site/endpoint field exists in the transcripts, so the
-# tracker does not model a provider at all (nothing to infer it from).
+# The route origin lives in model_responses.provider (schema v7): 'builtin' for a
+# built-in route, else a third-party label resolved at ingest from
+# providerData.requestModelId. It is read from the transcript, never inferred
+# from the model name. See cbut-sync.resolve_provider.
+PROVIDER_BUILTIN = "builtin"
+
+
+def provider_label(value):
+    """The display label for a ``model_responses.provider`` value.
+
+    ``None`` (unknown) reads as ``-``, the missing-value marker the rest of the
+    interface uses; the built-in sentinel reads as ``Built-in``; every other
+    value — a vendor name, a url host or an endpoint tag — is shown as stored.
+    """
+    if value is None:
+        return "-"
+    return "Built-in" if value == PROVIDER_BUILTIN else value
+
 
 # Per-row total: prefer the provider's own rawUsage total, else fall back to
 # prompt + completion. NULL only when neither is available (never a fabricated 0).
@@ -1188,7 +1216,7 @@ def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0):
     """
     where, params = _ts_where(start_ts, end_ts)
     sql = (
-        "SELECT ts, model, prompt_tokens, completion_tokens,"
+        "SELECT ts, model, provider, prompt_tokens, completion_tokens,"
         f" {_TOTAL_EXPR} AS total_tokens,"
         f" {_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
         f" {_USAGE_TOTAL_EXPR} AS usage_total_tokens,"
@@ -1213,7 +1241,7 @@ def q_usage_model_stats(conn, start_ts, end_ts, order_by="total_tokens"):
     where, params = _ts_where(start_ts, end_ts)
     order = _MODEL_STATS_ORDER.get(order_by, _MODEL_STATS_ORDER["total_tokens"])
     return conn.execute(
-        "SELECT model,"
+        "SELECT model, provider,"
         " COUNT(*) AS requests,"
         " SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END) AS with_usage,"
         " SUM(prompt_tokens) AS prompt_tokens,"
@@ -1224,7 +1252,7 @@ def q_usage_model_stats(conn, start_ts, end_ts, order_by="total_tokens"):
         " SUM(prompt_cache_miss_tokens) AS cache_miss,"
         " SUM(prompt_cache_write_tokens) AS cache_write"
         f" FROM model_responses WHERE {where}"
-        f" GROUP BY model ORDER BY {order}",
+        f" GROUP BY model, provider ORDER BY {order}",
         params,
     ).fetchall()
 

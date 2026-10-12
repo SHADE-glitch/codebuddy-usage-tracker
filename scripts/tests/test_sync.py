@@ -32,11 +32,13 @@ def write_records(path: Path, recs) -> None:
 
 def model_rec(message_id, raw=None, rtype="function_call",
               model="test-model", session_id="s1", cwd="/proj", ts=1000,
-              conv="conv-1"):
+              conv="conv-1", request_model_id=None):
     """A synthetic transcript model-response record.
 
     These are FIXTURES — the token numbers are made up for testing, not real
     CodeBuddy data. ``raw=None`` means the response carried no ``rawUsage``.
+    ``request_model_id`` drives the route-origin column; ``None`` leaves the
+    field absent (an unknown route).
     """
     rec = {
         "type": rtype,
@@ -50,6 +52,8 @@ def model_rec(message_id, raw=None, rtype="function_call",
             "model": model,
         },
     }
+    if request_model_id is not None:
+        rec["providerData"]["requestModelId"] = request_model_id
     if raw is not None:
         rec["providerData"]["rawUsage"] = raw
     return rec
@@ -1485,6 +1489,138 @@ class CrashSafetyTest(unittest.TestCase):
         # Duration is accumulated from turn-metrics (which carries cwd), so only
         # the start/end window is affected.
         self.assertEqual((row["started_at"], row["ended_at"]), (1000, 1000))
+
+
+class ProviderOriginTest(unittest.TestCase):
+    """The route-origin column: read from requestModelId, never from the model name."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.db_path = self.dir / "t.db"
+        self.conn = db.open_db(self.db_path)
+        db.ensure_schema(self.conn)
+        self.tr = self.dir / "s.jsonl"
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def index(self, model_hosts=None):
+        sync.index_file(self.conn, self.tr, 0, {}, {}, {},
+                        model_hosts=model_hosts)
+        self.conn.commit()
+
+    def provider_of(self, message_id):
+        return self.conn.execute(
+            "SELECT provider FROM model_responses WHERE message_id=?",
+            (message_id,)).fetchone()["provider"]
+
+    # -- pure derivation ---------------------------------------------------
+    def test_resolve_provider_cascade(self):
+        hosts = {"ark-code-latest": "ark.cn-beijing.volces.com"}
+        self.assertIsNone(sync.resolve_provider(None, hosts))
+        self.assertIsNone(sync.resolve_provider("", hosts))
+        self.assertEqual(sync.resolve_provider("deepseek-v4.1-flash", hosts),
+                         "builtin")
+        self.assertEqual(
+            sync.resolve_provider("custom-local:ark-code-latest", hosts),
+            "Volcano Ark")
+        self.assertEqual(sync.resolve_provider("custom-local:not-listed", hosts),
+                         "custom-local")
+        self.assertEqual(
+            sync.resolve_provider("custom-local:x", {"x": "llm.internal.example"}),
+            "llm.internal.example")
+        self.assertEqual(
+            sync.resolve_provider("openai:gpt-x", {"gpt-x": "api.openai.com"}),
+            "OpenAI")
+
+    def test_url_host(self):
+        self.assertEqual(
+            sync.url_host("https://ark.cn-beijing.volces.com/api/coding/v3"),
+            "ark.cn-beijing.volces.com")
+        self.assertEqual(sync.url_host("http://Host.EXAMPLE:8080/x"),
+                         "host.example")
+        self.assertEqual(sync.url_host("https://user:pw@api.example.com/v1"),
+                         "api.example.com")
+        self.assertEqual(sync.url_host(""), "")
+        self.assertEqual(sync.url_host(None), "")
+
+    # -- models.json reader ------------------------------------------------
+    def test_load_model_hosts_reads_only_id_and_url(self):
+        (self.dir / "models.json").write_text(json.dumps({
+            "models": [{
+                "id": "ark-code-latest", "name": "ark-code-latest",
+                "url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+                "apiKey": "ark-SECRET-DO-NOT-READ",
+            }],
+        }), encoding="utf-8")
+        hosts = sync.load_model_hosts(self.dir)
+        self.assertEqual(hosts, {"ark-code-latest": "ark.cn-beijing.volces.com"})
+        self.assertNotIn("ark-SECRET-DO-NOT-READ", json.dumps(hosts))
+
+    def test_sync_never_names_the_api_key_field(self):
+        src = (SCRIPTS / "cbut-sync.py").read_text(encoding="utf-8")
+        for token in ('"apiKey"', "'apiKey'", ".apiKey"):
+            self.assertNotIn(
+                token, src,
+                "models.json carries an api key; the parser must never read it")
+
+    def test_load_model_hosts_degrades(self):
+        self.assertEqual(sync.load_model_hosts(self.dir), {})   # no file
+        (self.dir / "models.json").write_text("{not json", encoding="utf-8")
+        self.assertEqual(sync.load_model_hosts(self.dir), {})
+        (self.dir / "models.json").write_text(
+            json.dumps({"models": [{"id": "x"}]}), encoding="utf-8")
+        self.assertEqual(sync.load_model_hosts(self.dir), {})   # no url
+
+    # -- recorded into model_responses -------------------------------------
+    def test_builtin_route_is_recorded(self):
+        write_records(self.tr, [model_rec(
+            "m1", raw={"prompt_tokens": 1, "completion_tokens": 1},
+            request_model_id="deepseek-v4.1-flash")])
+        self.index()
+        self.assertEqual(self.provider_of("m1"), "builtin")
+
+    def test_custom_route_uses_the_vendor_of_a_known_host(self):
+        write_records(self.tr, [model_rec(
+            "m2", raw={"prompt_tokens": 1, "completion_tokens": 1},
+            model="deepseek-v4-1-flash",
+            request_model_id="custom-local:ark-code-latest")])
+        self.index(model_hosts={"ark-code-latest": "ark.cn-beijing.volces.com"})
+        self.assertEqual(self.provider_of("m2"), "Volcano Ark")
+
+    def test_custom_route_without_a_known_model_uses_the_endpoint_tag(self):
+        write_records(self.tr, [model_rec(
+            "m3", raw={"prompt_tokens": 1, "completion_tokens": 1},
+            request_model_id="custom-local:mystery")])
+        self.index(model_hosts={})
+        self.assertEqual(self.provider_of("m3"), "custom-local")
+
+    def test_custom_route_without_a_known_vendor_uses_the_host(self):
+        write_records(self.tr, [model_rec(
+            "m4", raw={"prompt_tokens": 1, "completion_tokens": 1},
+            request_model_id="custom-local:mystery")])
+        self.index(model_hosts={"mystery": "llm.internal.example"})
+        self.assertEqual(self.provider_of("m4"), "llm.internal.example")
+
+    def test_provider_is_recorded_even_without_rawusage(self):
+        write_records(self.tr, [model_rec(
+            "m5", raw=None, request_model_id="custom-local:ark-code-latest")])
+        self.index(model_hosts={"ark-code-latest": "ark.cn-beijing.volces.com"})
+        self.assertEqual(self.provider_of("m5"), "Volcano Ark")
+
+    def test_provider_is_not_clobbered_by_a_later_null_copy(self):
+        # A usage-bearing record sets the origin; a second copy of the same
+        # messageId that carries no requestModelId must not erase it.
+        write_records(self.tr, [
+            model_rec("m6", raw={"prompt_tokens": 1, "completion_tokens": 1},
+                      request_model_id="deepseek-v4.1-flash"),
+            model_rec("m6", raw={"prompt_tokens": 2, "completion_tokens": 2},
+                      request_model_id=None),
+        ])
+        self.index()
+        self.assertEqual(self.provider_of("m6"), "builtin")
 
 
 if __name__ == "__main__":

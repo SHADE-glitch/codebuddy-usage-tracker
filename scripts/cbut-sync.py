@@ -62,6 +62,7 @@ TRANSCRIPT_GLOB = "**/*.jsonl"
 SKILL_MANIFEST_GLOB = "**/SKILL.md"
 AGENT_SPEC_GLOB = "*.md"                 # agents/<name>.md
 MCP_FILE = "mcp.json"
+MODELS_FILE = "models.json"              # custom provider definitions (url per model id)
 PLUGIN_INDEX_FILE = "installed_plugins.json"
 PLUGIN_MARKETPLACE_SEP = "@"             # index keys are "<name>@<marketplace>"
 INVENTORY_HIDDEN_PREFIX = "."            # dotfiles are never an installable item
@@ -186,6 +187,9 @@ RECORD_FIELDS = frozenset({
 })
 PROVIDER_FIELDS = frozenset({
     "messageId", "model", "conversationRequestId", "rawUsage",
+    # The route identity: a bare model id for a built-in route, or
+    # "<endpoint>:<model id>" for a custom one. Drives model_responses.provider.
+    "requestModelId",
 })
 BAGGAGE_FIELDS = frozenset({"baggage"})
 CONTENT_BLOCK_FIELDS = frozenset({"text"})
@@ -200,8 +204,11 @@ TOOL_ARG_FIELDS = frozenset({
     "subagent_type", "agent_type",            # Agent tool
     "toolName", "tool_name",                  # meta tools that wrap another tool
 })
-# JSON keys of the inventory files, not of a transcript.
-INVENTORY_JSON_FIELDS = frozenset({"mcpServers", "plugins", "installPath", "version"})
+# JSON keys of the non-transcript files we read: the inventory files plus
+# models.json (whose "models"[].id/url give the custom routes their host).
+INVENTORY_JSON_FIELDS = frozenset({
+    "mcpServers", "plugins", "installPath", "version", "models", "url",
+})
 
 CODEBUDDY_FIELDS = (RECORD_FIELDS | PROVIDER_FIELDS | BAGGAGE_FIELDS
                     | CONTENT_BLOCK_FIELDS | TOOL_ARG_FIELDS
@@ -398,7 +405,7 @@ def _bump(counts: dict, key: str, n: int = 1) -> None:
 
 def index_file(conn: sqlite3.Connection, path: Path, offset: int,
                skill_owner: dict, agent_owner: dict, command_owner: dict,
-               unparsed=None) -> int:
+               unparsed=None, model_hosts=None) -> int:
     """Index appended bytes of one transcript. Returns the new offset.
 
     Only *fully-consumed* bytes are reported back to the caller, so the tail
@@ -452,7 +459,7 @@ def index_file(conn: sqlite3.Connection, path: Path, offset: int,
 
     for rec in recs:
         _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
-                       unparsed)
+                       unparsed, model_hosts)
     return consumed
 
 
@@ -472,7 +479,108 @@ def _nested_cache_hit(raw):
     return value
 
 
-def _record_model_response(conn, rec, sid, project, ts) -> None:
+# --- model route origin -----------------------------------------------------
+#
+# providerData.requestModelId carries the route identity: a bare model id for a
+# built-in route ("deepseek-v4.1-flash"), or "<endpoint>:<model id>" for a custom
+# one ("custom-local:ark-code-latest"). That shape — never the model *name* — is
+# what separates a built-in response from a third-party one; a custom endpoint's
+# alias can look built-in, so guessing from the name is exactly what this avoids.
+PROVIDER_BUILTIN = db.PROVIDER_BUILTIN
+# Separates the endpoint tag from the model id inside requestModelId
+# ("custom-local:ark-code-latest"). A bare ":" at the call site would be an
+# inlined format claim, so it lives here.
+PROVIDER_SEP = ":"
+
+# Third-party url host -> the vendor a person would recognise. Matched on the
+# registrable suffix, so "ark.cn-beijing.volces.com" hits "volces.com". A host
+# that is not listed is stored verbatim rather than guessed at.
+_VENDOR_BY_HOST = {
+    "volces.com": "Volcano Ark",
+    "openai.com": "OpenAI",
+    "anthropic.com": "Anthropic",
+    "deepseek.com": "DeepSeek",
+    "moonshot.cn": "Moonshot",
+    "bigmodel.cn": "Zhipu",
+    "aliyuncs.com": "Alibaba Cloud",
+    "siliconflow.cn": "SiliconFlow",
+}
+
+
+# The host of a provider url, taken with a regex rather than ``urllib.parse``:
+# this project forbids the ``urllib`` import root (it can reach the network) and
+# only the authority is needed. Any userinfo is skipped and the match stops
+# before a port or path.
+_PROVIDER_HOST_RE = re.compile(
+    r"^[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^@/?#]*@)?([^:/?#]+)")
+
+
+def url_host(url) -> str:
+    """The lower-cased host of ``url``, or ``""`` when it has no authority."""
+    m = _PROVIDER_HOST_RE.match(str(url or ""))
+    return m.group(1).lower() if m else ""
+
+
+def load_model_hosts(codebuddy_dir) -> dict:
+    """{model id -> url host} from ``<codebuddy_dir>/models.json``, else ``{}``.
+
+    The file also holds each provider's ``apiKey``; only ``id``/``name``/``url``
+    are ever read (test_privacy pins that). Any failure — absent file, bad JSON,
+    missing url — degrades to ``{}`` so a sync never breaks over config it does
+    not need.
+    """
+    try:
+        with open(Path(codebuddy_dir) / MODELS_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    entries = data.get("models") if isinstance(data, dict) else None
+    hosts = {}
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id")
+        host = url_host(entry.get("url"))
+        if model_id and host:
+            hosts[model_id] = host
+    return hosts
+
+
+def _vendor_for_host(host: str):
+    """The friendly vendor name for a host, or ``None`` when it is not known."""
+    for suffix, name in _VENDOR_BY_HOST.items():
+        if host == suffix or host.endswith("." + suffix):
+            return name
+    return None
+
+
+def resolve_provider(request_model_id, model_hosts) -> str | None:
+    """The route origin for one response, from ``providerData.requestModelId``.
+
+    Cascade, most specific first — never a guess from the model name:
+
+    * absent               -> ``None``        (unknown)
+    * no ``:``             -> ``'builtin'``   (a built-in route)
+    * ``"<endpoint>:<model id>"`` -> a third-party label, in order:
+        - the vendor of the configured url host, when the model id is in
+          ``models.json`` and its host is recognised (``"Volcano Ark"``);
+        - that url host verbatim when the host is not recognised
+          (``"ark.cn-beijing.volces.com"``);
+        - the endpoint tag (``"custom-local"``) when the model id is not in
+          ``models.json`` at all.
+    """
+    if not isinstance(request_model_id, str) or not request_model_id:
+        return None
+    if PROVIDER_SEP not in request_model_id:
+        return PROVIDER_BUILTIN
+    endpoint, _, model_id = request_model_id.partition(PROVIDER_SEP)
+    host = model_hosts.get(model_id)
+    if not host:
+        return endpoint or None
+    return _vendor_for_host(host) or host
+
+
+def _record_model_response(conn, rec, sid, project, ts, model_hosts=None) -> None:
     """Persist one model response's token usage, deduped by messageId.
 
     Source of truth is ``providerData.rawUsage`` only. The same response can be
@@ -487,6 +595,10 @@ def _record_model_response(conn, rec, sid, project, ts) -> None:
     and ``turn-metrics.tokenDelta`` are never read here. The cache hit is the one
     field with two spellings: the nested copy is read only when the top level is
     absent, so a record carrying both is counted once (see ``NESTED_CACHE_HIT``).
+
+    ``provider`` (the route origin) is resolved from ``requestModelId`` and is
+    independent of ``rawUsage``, so both branches store it — a usage-less
+    placeholder still knows which route served it.
     """
     if rec.get("type") not in MODEL_RESPONSE_TYPES:
         return
@@ -497,6 +609,7 @@ def _record_model_response(conn, rec, sid, project, ts) -> None:
     model = provider.get("model")
     conv = provider.get("conversationRequestId")
     raw = provider.get("rawUsage")
+    origin = resolve_provider(provider.get("requestModelId"), model_hosts or {})
 
     if isinstance(raw, dict):
         vals = {k: raw.get(k) for k in USAGE_FIELDS}
@@ -508,18 +621,19 @@ def _record_model_response(conn, rec, sid, project, ts) -> None:
             missing.append("model")
         conn.execute(
             "INSERT INTO model_responses"
-            "(message_id, session_id, conversation_request_id, model,"
+            "(message_id, session_id, conversation_request_id, model, provider,"
             " prompt_tokens, completion_tokens,"
             " cache_read_input_tokens, cache_creation_input_tokens,"
             " prompt_cache_hit_tokens, prompt_cache_miss_tokens,"
             " prompt_cache_write_tokens, provider_total_tokens,"
             " ts, project, source, usage_available, missing)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'transcript',1,?)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'transcript',1,?)"
             " ON CONFLICT(message_id) DO UPDATE SET"
             "   session_id = COALESCE(excluded.session_id, session_id),"
             "   conversation_request_id ="
             "     COALESCE(excluded.conversation_request_id, conversation_request_id),"
             "   model = COALESCE(excluded.model, model),"
+            "   provider = COALESCE(excluded.provider, provider),"
             "   prompt_tokens = excluded.prompt_tokens,"
             "   completion_tokens = excluded.completion_tokens,"
             "   cache_read_input_tokens = excluded.cache_read_input_tokens,"
@@ -532,7 +646,7 @@ def _record_model_response(conn, rec, sid, project, ts) -> None:
             "   project = COALESCE(excluded.project, project),"
             "   usage_available = 1,"
             "   missing = excluded.missing",
-            (message_id, sid, conv, model, vals["prompt_tokens"],
+            (message_id, sid, conv, model, origin, vals["prompt_tokens"],
              vals["completion_tokens"], vals["cache_read_input_tokens"],
              vals["cache_creation_input_tokens"],
              cache["prompt_cache_hit_tokens"],
@@ -544,10 +658,10 @@ def _record_model_response(conn, rec, sid, project, ts) -> None:
     else:
         conn.execute(
             "INSERT OR IGNORE INTO model_responses"
-            "(message_id, session_id, conversation_request_id, model,"
+            "(message_id, session_id, conversation_request_id, model, provider,"
             " ts, project, source, usage_available, missing)"
-            " VALUES(?,?,?,?,?,?,'transcript',0,'rawUsage')",
-            (message_id, sid, conv, model, ts, project),
+            " VALUES(?,?,?,?,?,?,?,'transcript',0,'rawUsage')",
+            (message_id, sid, conv, model, origin, ts, project),
         )
 
 
@@ -608,13 +722,13 @@ def _record_commands(conn, content, sid, project, ts,
 
 
 def _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
-                   unparsed=None) -> None:
+                   unparsed=None, model_hosts=None) -> None:
     rtype = rec.get("type")
     sid = _session_id(rec)
     project = rec.get("cwd")
     ts = rec.get("timestamp")
 
-    _record_model_response(conn, rec, sid, project, ts)
+    _record_model_response(conn, rec, sid, project, ts, model_hosts)
 
     if rtype == "function_call":
         name = rec.get("name") or ""
@@ -917,6 +1031,8 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
         db.reset(conn)
 
     skill_owner, agent_owner, command_owner = scan_inventory(conn)
+    # Resolved once per run: model id -> url host, for the route-origin column.
+    model_hosts = load_model_hosts(db.CODEBUDDY_DIR)
 
     projects = db.CODEBUDDY_DIR / DIR_PROJECTS
     files = sorted(projects.glob(TRANSCRIPT_GLOB)) if projects.is_dir() else []
@@ -971,7 +1087,7 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
         try:
             new_offset = index_file(conn, path, offset,
                                     skill_owner, agent_owner, command_owner,
-                                    unparsed)
+                                    unparsed, model_hosts)
         except OSError as exc:
             # One unreadable transcript must not abort the whole index — but it is
             # counted rather than skipped quietly, and no offset is stored, so the
