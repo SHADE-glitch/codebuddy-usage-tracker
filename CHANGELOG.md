@@ -728,3 +728,24 @@ Cost     Suite 373 → 376 (test_tui.py: 97 → 100). What it does not buy: the 
          would leave the guard green while a wider cell stayed — harmless, but the number is pinned by observation
          rather than by contract
 Commit   dfb1e17
+
+### D-036 · 2026-10-12 · fix
+Symptom  Two leftovers from the calendar rebuild. The six shortcut chips did not fit their column: at an
+         80-column terminal the row ran from x=2 to x=53 (52 cells) while `#dr-left` was 47 wide, so the last
+         chip, "All time", was cut to "All tim". And after picking a custom range the top bar's 📅 button kept
+         the width it had been built with (10 cells, "📅 Today") and drew a truncated span — "📅 10-06" — until
+         some later full relayout; switching a tab away and back was what made it correct.
+Change   Day cells are Statics, not Buttons: a Button renders "30" as " 3 " at a 3-cell width, and widening
+         every cell to 4 would not leave room for the calendar beside the cards, so a day click is read from
+         the cell id in `on_click` instead of a `Button.Pressed`. The freed cells take `#dr-left` to 53 (one
+         cell spare) and the box budget to 79 columns. `TopBar.set_range_label` now calls `refresh(layout=True)`,
+         since a Button does not re-lay-out when its label grows.
+Evidence Measured on the running app, not derived: the six chips span x=2..53 (52 cells) and the column is 53,
+         so the last chip's right edge (54) sits inside the row's (55); before the change the row ended at 49
+         and the chip at 54, six cells past. The label guard drives a custom range, switches to another tab and
+         back, and finds "10-01 00:00 → 10-03 00:00" whole in the drawn line. L0 `Ran 378, OK`
+Cost     Suite 376 → 378 (test_tui.py: 100 → 102). What it does not buy: the chip fit is asserted against the
+         rendered regions at one terminal size, so a terminal narrower than 79 columns would still clip the
+         picker (it is centred and does not scroll horizontally); and the relayout guard proves the label is
+         whole after a tab switch, not that a label change repaints without one.
+Commit   7442b59
