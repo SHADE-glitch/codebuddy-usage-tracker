@@ -68,6 +68,7 @@ class PredicateTest(unittest.TestCase):
         from pathlib import Path as P
         expected = P.home() / ".local" / "share" / "codebuddy-usage-tracker" / "usage.db"
         self.assertEqual(hermetic.PROTECTED, expected)
+        self.assertEqual(hermetic.PROTECTED_DIRS, (P.home() / ".codebuddy",))
 
     def test_a_child_with_nothing_to_point_it_away_would_use_the_real_database(self):
         stats = str(SCRIPTS / "cbut-stats.py")
@@ -125,40 +126,83 @@ class EnforcementTest(unittest.TestCase):
         """An audit hook that was never installed passes every case above vacuously."""
         with self.assertRaises(hermetic.Refusal):
             subprocess.run([sys.executable, str(SCRIPTS / "cbut-stats.py"), "--help"],
-                           capture_output=True, env=_env_without_db())
+                           capture_output=True, env=_env_without_pins())
 
-    def test_the_same_child_is_allowed_once_its_database_is_pinned(self):
+    def test_the_same_child_is_allowed_once_its_paths_are_pinned(self):
         """The matched pair for the case above.
 
-        Identical argv, one differing environment entry. Without this the previous case
+        Identical argv, differing environment entries. Without this the previous case
         would be satisfied by a hook that refuses every subprocess, and the rule would have
-        been replaced by a denial of service on the suite's own CLI tests.
+        been replaced by a denial of service on the suite's own CLI tests. Both the
+        database *and* the host dir must be pinned: ``health`` reads the host.
         """
-        env = _env_without_db()
+        env = _env_without_pins()
         with tempfile.TemporaryDirectory() as tmp:
             env["CBUT_DB"] = str(Path(tmp) / "usage.db")
+            env["CBUT_CODEBUDDY_DIR"] = str(Path(tmp) / "codebuddy")
             proc = subprocess.run(
                 [sys.executable, str(SCRIPTS / "cbut-stats.py"), "--help"],
                 capture_output=True, text=True, env=env)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("usage", proc.stdout.lower())
 
+    def test_reading_the_real_host_footprint_is_refused(self):
+        """A read under the real host dir is refused — proven on the event, not the call.
+
+        Like the database case above, actually calling ``open()`` here would read the real
+        file to prove a point. The predicate and the hook are exercised directly instead.
+        """
+        host_file = str(hermetic.PROTECTED_DIRS[0] / "projects" / "x.jsonl")
+        self.assertIsNotNone(hermetic._protected_read(host_file))
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("open", (host_file, "r", 0))
+        # A glob reaches the host through scandir, with no ``open`` at all.
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("os.scandir", (str(hermetic.PROTECTED_DIRS[0] / "projects"),))
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("sqlite3.connect", (str(hermetic.PROTECTED_DIRS[0] / "x.vscdb"),))
+
+    def test_an_ordinary_test_path_is_left_alone(self):
+        """The control: the host predicate must not fire on a throwaway path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for candidate in (str(Path(tmp) / "projects" / "x.jsonl"),
+                              str(Path(tmp) / "usage.db"), ":memory:"):
+                self.assertIsNone(hermetic._protected_read(candidate),
+                                  f"refused a throwaway path: {candidate}")
+            hermetic._hook("open", (str(Path(tmp) / "x.jsonl"), "r", 0))  # must not raise
+
+    def test_a_child_that_would_read_the_real_host_is_refused(self):
+        """The predicate, both ways, and the launch it refuses."""
+        stats = str(SCRIPTS / "cbut-stats.py")
+        self.assertTrue(hermetic._child_would_read_the_real_host({"PATH": "/usr/bin"}))
+        self.assertTrue(hermetic._child_would_read_the_real_host(
+            {"CBUT_CODEBUDDY_DIR": str(hermetic.PROTECTED_DIRS[0])}))
+        self.assertFalse(hermetic._child_would_read_the_real_host(
+            {"CBUT_CODEBUDDY_DIR": "/tmp/somewhere/codebuddy"}))
+        # A child with the database pinned but the host left at its default still leaks.
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("subprocess.Popen",
+                           (sys.executable, [sys.executable, stats, "health"],
+                            None, {"CBUT_DB": "/tmp/somewhere/usage.db"}))
+
     def test_an_unrelated_subprocess_is_not_refused(self):
         proc = subprocess.run([sys.executable, "-c", "print('ran')"],
-                              capture_output=True, text=True, env=_env_without_db())
+                              capture_output=True, text=True, env=_env_without_pins())
         self.assertEqual(proc.returncode, 0)
         self.assertIn("ran", proc.stdout)
 
 
-def _env_without_db():
-    """The ambient environment minus anything that pins a database.
+def _env_without_pins():
+    """The ambient environment minus anything that pins a database or the host.
 
-    A copy with ``CBUT_DB`` removed is what a test that forgot to pin would hand the child,
-    and it is also what this case needs: the parent's own environment must not rescue the
-    child, which is the whole reason a child is a hole in the in-process rule.
+    A copy with ``CBUT_DB`` and ``CBUT_CODEBUDDY_DIR`` removed is what a test that forgot
+    to pin would hand the child, and it is also what these cases need: the parent's own
+    environment must not rescue the child, which is the whole reason a child is a hole in
+    the in-process rule.
     """
     env = dict(os.environ)
     env.pop("CBUT_DB", None)
+    env.pop("CBUT_CODEBUDDY_DIR", None)
     return env
 
 

@@ -278,7 +278,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 432 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 435 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -296,7 +296,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `test_dispatcher.py` | 12 | `bin/cbut`: subcommand routing, venv resolution, help without a resolvable install |
 | `test_format_registry.py` | 10 | the CodeBuddy format registry and the parser agree, both directions |
 | `test_privacy.py` | 11 | import allowlist **plus the calls that bypass it** (`__import__`/`eval`/`import_module`), no free-text value in any column, CodeBuddy's own files untouched |
-| `test_hermetic.py` | 10 | a runtime tripwire: the suite never opens the real `usage.db` — no in-process `sqlite3.connect`, and no child process that would resolve it without `CBUT_DB` or `--db` |
+| `test_hermetic.py` | 13 | a runtime tripwire: the suite never opens the real `usage.db` (no in-process `sqlite3.connect`, no child that would resolve it without `CBUT_DB` or `--db`), and never reads the real host footprint (`~/.codebuddy` — no `open`, directory walk or child without `CBUT_CODEBUDDY_DIR`) |
 | `test_snapshots.py` | 9 | automatic snapshots before destructive steps, listing, restore, pruning |
 | `test_maintenance_docs.py` | 13 | the generated format doc cannot drift from the code, and no document may state a CI version the workflow does not run |
 | `test_readme_counts.py` | 5 | the suite table above is the suite table the runner would print, and both pages document every setting the loader knows |

@@ -223,7 +223,7 @@ sync_secs = 30       # TUI 自动同步定时器
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 432 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 435 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -240,7 +240,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 432 tests ... OK
 | `test_dispatcher.py` | 12 | `bin/cbut`：子命令转发、venv 解析、装不上时 help 仍然能跑 |
 | `test_format_registry.py` | 10 | CodeBuddy 格式登记表与解析器双向一致 |
 | `test_privacy.py` | 11 | import 白名单，**加上绕过它的调用方式**（`__import__`/`eval`/`import_module`）、任何表任何文本列都不落自由文本、不写 CodeBuddy 自己的文件 |
-| `test_hermetic.py` | 10 | 一个运行时绊线：套件绝不打开真实的 `usage.db`——进程内没有 `sqlite3.connect`，也没有哪个子进程会在没钉 `CBUT_DB`/`--db` 时去解析它 |
+| `test_hermetic.py` | 13 | 一个运行时绊线：套件绝不打开真实的 `usage.db`（进程内没有 `sqlite3.connect`，也没有哪个子进程会在没钉 `CBUT_DB`/`--db` 时去解析它），也绝不读真实的 host 足迹（`~/.codebuddy`——没有 `open`、目录遍历，也没有哪个子进程会在没钉 `CBUT_CODEBUDDY_DIR` 时去读它） |
 | `test_snapshots.py` | 9 | 破坏性步骤前自动留快照、列举、回滚、保留份数 |
 | `test_maintenance_docs.py` | 13 | 生成的格式依赖文档不可能与代码脱节，任何文档也不许写工作流里并没有的 CI 版本 |
 | `test_readme_counts.py` | 5 | 上面这张表就是运行器会打印的那张表，并且两份页面都把 loader 认识的每个设置项写全了 |
