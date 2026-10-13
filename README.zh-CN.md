@@ -30,7 +30,6 @@
 - [📁 仓库结构](#-仓库结构)
 - [⚠️ 限制与路线图](#️-限制与路线图)
 - [🧹 卸载](#-卸载)
-- [🙏 致谢](#-致谢)
 - [📄 许可](#-许可)
 
 ## ✨ 特性
@@ -289,10 +288,6 @@ rm -rf ~/.local/share/codebuddy-usage-tracker                      # SQLite 索�
 
 再把仓库目录（连同它的 `.venv`）删掉就干净了。CodeBuddy 自己的文件从头到尾只被读过，
 没有需要恢复的东西。🗑️
-
-## 🙏 致谢
-
-灵感来自 [`opencode-skill-tracker`](https://github.com/SHADE-glitch/opencode-skill-tracker) —— 它为 OpenCode 追踪同样的五类。区别在架构：OpenCode 不落盘工具日志，所以那个项目需要实时 hook 插件；CodeBuddy 会落盘，所以 `cbut` 选择读取。💡
 
 ## 📄 许可
 

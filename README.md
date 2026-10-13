@@ -30,7 +30,6 @@
 - [📁 Repository layout](#-repository-layout)
 - [⚠️ Limitations & roadmap](#️-limitations--roadmap)
 - [🧹 Uninstall](#-uninstall)
-- [🙏 Attribution](#-attribution)
 - [📄 License](#-license)
 
 ## ✨ Features
@@ -356,14 +355,6 @@ rm -rf ~/.local/share/codebuddy-usage-tracker                      # the SQLite 
 
 Deleting the repository directory (with its `.venv`) finishes it. CodeBuddy's own files
 were only ever read, so there is nothing to restore there. 🗑️
-
-## 🙏 Attribution
-
-Built in the spirit of
-[`opencode-skill-tracker`](https://github.com/SHADE-glitch/opencode-skill-tracker),
-which tracks the same five categories for OpenCode. The difference is architectural:
-OpenCode has no persisted tool log, so that project needs a live hook plugin; CodeBuddy
-does, so `cbut` reads instead. 💡
 
 ## 📄 License
 
