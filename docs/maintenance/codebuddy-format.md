@@ -38,8 +38,10 @@ cbut format --write      # refresh the block in this file after changing the reg
   - `skills` → `skill`
   - `agents` → `agent`
   - `commands` → `command`
+  - a plugin holding `SKILL.md` at its **install root** is a skill under the plugin's own name: the directory there is the version, and the frontmatter `name:` is not read (a plugin here declares a different one)
 - **Transcript framing**: one JSON record per line, separated by a newline byte (`b'\n'`)
 - **`inventory` is a snapshot of what is installed now**: rebuilt on every sync, deleted and re-inserted in one transaction. A name that leaves it stays listed by the usage tables with `installed = 0`, which is the only thing that distinguishes "removed" from "never installed"
+- **Not inventoried from a plugin**: tools and MCP servers. No installed plugin ships either (`plugin.json` declares neither, and none of the nine on this machine has a tool or MCP file), so there is no rule to read and no rule to guess at. If a plugin ever does, a name it adds would come back from the usage tables alone and read as *removed* — the same failure a root `SKILL.md` had, so this line is the place to look first
 <!-- END generated -->
 
 ## Deliberately not read

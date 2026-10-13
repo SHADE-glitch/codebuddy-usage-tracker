@@ -1840,6 +1840,54 @@ class InventorySnapshotTest(unittest.TestCase):
         (d / "SKILL.md").write_text("# fixture\n", encoding="utf-8")
         return d
 
+    def make_plugin(self, name, version="1", subdirs=(), root_manifest=False):
+        """Lay out one installed plugin the way the cache does: a directory per
+        plugin, a version directory inside it, and ``installPath`` pointing at
+        that version directory (so a plugin *is* its version directory as far as
+        the parser can see)."""
+        ipath = self.root / "plugins" / "cache" / name / version
+        ipath.mkdir(parents=True)
+        for sub in subdirs:
+            (ipath / sub).mkdir()
+        if root_manifest:
+            (ipath / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+        self.installed(name, ipath, version)
+        return ipath
+
+    def installed(self, name, ipath, version="1", marketplace="official"):
+        """Add one install to installed_plugins.json, keeping what is already there."""
+        plugins = self.root / "plugins"
+        plugins.mkdir(exist_ok=True)
+        index = plugins / sync.PLUGIN_INDEX_FILE
+        data = json.loads(index.read_text(encoding="utf-8")) if index.exists() else {}
+        data.setdefault("plugins", {}).setdefault(
+            f"{name}@{marketplace}", []).append(
+            {"installPath": str(ipath), "version": version})
+        index.write_text(json.dumps(data), encoding="utf-8")
+
+    def state_of(self, kind, name):
+        """The state the panels would render for this row, read through the real
+        query rather than through the flags the test just wrote."""
+        query, key = {"skill": (db.q_skills, "skill"),
+                      "agent": (db.q_agents, "agent")}[kind]
+        for row in query(self.conn):
+            if row[key] == name:
+                return db.entity_state(row["installed"], row["ever_used"])
+        return None
+
+    def use(self, kind, name, ts=None):
+        """Record a call against a name, the way the transcript reader would."""
+        now = ts if ts is not None else 1_700_000_000
+        if kind == "skill":
+            self.conn.execute(
+                "INSERT OR IGNORE INTO skill_usage(call_id, skill, ts, status)"
+                " VALUES(?,?,?,'completed')", (f"c-{name}", name, now))
+        else:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO agent_usage(call_id, agent_type, ts, status)"
+                " VALUES(?,?,?,'completed')", (f"c-{name}", name, now))
+        self.conn.commit()
+
     # -- Q1: symlinked skills ------------------------------------------------
 
     def test_a_symlinked_skill_is_found(self):
@@ -1908,6 +1956,68 @@ class InventorySnapshotTest(unittest.TestCase):
         self.make_skill(".cache/nested-skill")
         self.scan()
         self.assertEqual(self.names("skill"), set())
+
+    # -- plugin-root skills --------------------------------------------------
+
+    def test_a_plugin_that_is_a_skill_is_inventoried_as_one(self):
+        """The report: a plugin that ships ``<installPath>/SKILL.md`` and nothing
+        else CodeBuddy can count. docx, pptx and xlsx are installed in exactly
+        that shape. Scanned as subdirectories only, they never reached the table,
+        so the union had nothing to call installed and printed "removed" for a
+        skill the user is looking straight at."""
+        self.make_plugin("docx", version="unknown", root_manifest=True)
+        self.scan()
+        self.assertIn("docx", self.names("skill"))
+
+    def test_a_used_plugin_skill_is_not_reported_as_removed(self):
+        """The symptom, end to end: the same row read back through q_skills."""
+        self.make_plugin("docx", version="unknown", root_manifest=True)
+        self.scan()
+        self.use("skill", "docx")
+        self.assertEqual(self.state_of("skill", "docx"), db.ENTITY_STATE_USED)
+
+    def test_the_plugins_own_name_is_used_not_the_versions_directory(self):
+        """installPath ends in the version, so the directory would file the skill
+        under "unknown" and "1.3.0" -- names nothing can ever call it by."""
+        self.make_plugin("pptx", version="unknown", root_manifest=True)
+        self.make_plugin("agent-browser", version="1.3.0", root_manifest=True)
+        self.scan()
+        self.assertEqual(self.names("skill"), {"pptx", "agent-browser"})
+
+    def test_a_plugin_without_a_root_manifest_is_not_a_skill(self):
+        """jdtls-lsp ships an LSP server and two READMEs. That is not a skill,
+        and inventing one would put a row in the panel with no file behind it."""
+        self.make_plugin("jdtls-lsp", subdirs=("references",))
+        self.scan()
+        self.assertEqual(self.names("skill"), set())
+
+    def test_a_root_manifest_does_not_hide_the_plugin_skill_directory(self):
+        """Both surfaces are read; one is not a substitute for the other."""
+        ipath = self.make_plugin("mixed", version="2.0", root_manifest=True,
+                                 subdirs=("skills",))
+        (ipath / "skills" / "extra").mkdir()
+        (ipath / "skills" / "extra" / "SKILL.md").write_text("# x\n", encoding="utf-8")
+        self.scan()
+        self.assertEqual(self.names("skill"), {"mixed", "extra"})
+
+    def test_a_root_manifest_skill_is_attributed_to_its_plugin(self):
+        """Without the owner the call could not be counted anywhere: skill_usage
+        stores the plugin name, and plugin_usage is built from that map. This is
+        why the Plugins panel showed docx at zero uses."""
+        self.make_plugin("xlsx", version="unknown", root_manifest=True)
+        skill_owner, _agent_owner, _command_owner = self.scan()
+        self.assertEqual(skill_owner["xlsx"], "xlsx")
+
+    def test_a_removed_plugin_takes_its_root_skill_with_it(self):
+        """The snapshot has to answer both ways: a plugin that ships a root skill
+        cannot leave one behind when it is uninstalled."""
+        self.make_plugin("docx", version="unknown", root_manifest=True)
+        self.scan()
+        self.assertIn("docx", self.names("skill"))
+        index = self.root / "plugins" / sync.PLUGIN_INDEX_FILE
+        index.write_text(json.dumps({"plugins": {}}), encoding="utf-8")
+        self.scan()
+        self.assertNotIn("docx", self.names("skill"))
 
     # -- Q2: the snapshot replaces rather than accumulates -------------------
 

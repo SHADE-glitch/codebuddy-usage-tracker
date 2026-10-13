@@ -436,6 +436,23 @@ def collect_inventory() -> tuple[list[tuple], dict, Path | None]:
             version = inst.get("version")
             rows.append(("plugin", name, name, version, str(ipath), "plugin"))
 
+            # A plugin can *be* the skill: its manifest sits at the install root
+            # instead of under skills/ (verified: docx, pptx and xlsx ship
+            # <installPath>/SKILL.md and nothing else CodeBuddy can inventory).
+            # Scanned as subdirectories only, those three were never inventoried,
+            # so their usage history came back "removed" while the owning plugin
+            # read "installed" — and skill_usage got no plugin to attribute to,
+            # which is why the Plugins panel did not count their uses either.
+            # The name is the plugin's own, not the directory's: installPath ends
+            # in the version ("unknown", "1.3.0"), so the directory would be
+            # useless. Not read from the frontmatter `name:` — that diverges from
+            # the invocable name on a plugin already installed here
+            # (skills-sec-audit declares "skills安全审计").
+            if (ipath / SKILL_MANIFEST).is_file():
+                rows.append(("skill", name, name, version,
+                             str(ipath / SKILL_MANIFEST), "plugin"))
+                owner_maps["skill"][name] = name
+
             for sub, kind in PLUGIN_SUBDIRS:
                 sdir = ipath / sub
                 if not sdir.is_dir():
@@ -1137,12 +1154,22 @@ def format_doc(tools=None, agents=None, source: Path | None = None) -> str:
         f"  - a name starting with `{INVENTORY_HIDDEN_PREFIX}` is never an "
         "installed item\n"
         + pairs("plugin subdirectories (dir → kind)", PLUGIN_SUBDIRS) +
+        f"  - a plugin holding `{SKILL_MANIFEST}` at its **install root** is a "
+        "skill under the plugin's own name: the directory there is the version, "
+        "and the frontmatter `name:` is not read (a plugin here declares a "
+        "different one)\n"
         f"- **Transcript framing**: one JSON record per line, separated by a "
         f"newline byte (`{TRANSCRIPT_LINE_SEP!r}`)\n",
         "- **`inventory` is a snapshot of what is installed now**: rebuilt on "
         "every sync, deleted and re-inserted in one transaction. A name that "
         "leaves it stays listed by the usage tables with `installed = 0`, which "
         "is the only thing that distinguishes \"removed\" from \"never installed\"\n",
+        "- **Not inventoried from a plugin**: tools and MCP servers. No installed "
+        "plugin ships either (`plugin.json` declares neither, and none of the nine "
+        "on this machine has a tool or MCP file), so there is no rule to read and "
+        "no rule to guess at. If a plugin ever does, a name it adds would come "
+        "back from the usage tables alone and read as *removed* — the same failure "
+        "a root `SKILL.md` had, so this line is the place to look first\n",
     ]
     return "".join(out)
 
