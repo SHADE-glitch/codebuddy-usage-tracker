@@ -768,3 +768,61 @@ Cost     None. The `(none)` string was already the stated intent; the helper onl
          What it does not buy: the notice is a fixed string per call site, so a future section added
          with `print(table(...))` (no helper) would go back to printing a bare header with no guard.
 Commit   6788a70
+
+### D-038 · 2026-10-13 · guard
+Symptom  `AGENTS.md` has said, since the D-030 isolation work, that any test shelling out to
+         `bin/cbut` must pin `CBUT_SCRIPTS`, `CBUT_DB` **and** `CBUT_CODEBUDDY_DIR` "all three,
+         because the launcher resolves them independently". Two of the three were checked by
+         `scripts/tests/_hermetic.py`; the third was prose. A rule with no check is a preference,
+         and the sibling `ocut` shipped exactly this hole — a fixture read the developer's real
+         plugin-events sidecar, so its tests were red only on the machines that had one.
+Change   The audit hook now refuses three things instead of two. Any `open`, `os.scandir`/`os.listdir`
+         or `sqlite3.connect` naming a file under `~/.codebuddy` raises `Refusal`; the listing events
+         are included because a glob reaches the host's files with no `open` at all, which is how
+         `cbut health` walks `projects/**/*.jsonl`. A child that runs one of our entry points without
+         `CBUT_CODEBUDDY_DIR` pinned is refused as well. The `subprocess.Popen` branch gained an
+         early `return` when argv names no entry point, hoisting the check
+         `_child_would_open_the_real_db` already made on its first line, so the host refusal applies
+         to the same set of children and `bash -n bin/cbut` stays legal.
+Evidence L0 2026-10-13: `python3 -m unittest discover -s scripts/tests` → `Ran 435 tests ... OK` —
+         and, for the first time, the same run under an empty `HOME`
+         (`HOME=/tmp/… PYTHONPATH=/home/shade/.local/lib/python3.14/site-packages python3 -m unittest
+         discover -s scripts/tests`) also reports `Ran 435 tests ... OK`. Before this the suite's
+         answer depended on which machine ran it. Reversal: restoring only
+         `test_sync.py` to its previous form turns the case red with
+         `Refusal: a test tried to read a file under the real host footprint /home/shade/.codebuddy`,
+         naming the path and the variable to pin.
+Cost     One audit-hook event per `open`, so the suite pays a `Path.resolve()` on file opens.
+         The negative control is part of the cost of trusting it: `test_an_ordinary_test_path_is_left_alone`
+         proves a temp path, `usage.db` and `:memory:` are untouched, because a tripwire that refuses
+         ordinary work trains the suite to disable it. What it does not buy: `~/.codebuddy` is the only
+         protected host, and the check reads argv and the environment — a child that hardcodes the real
+         path inside an inline script is out of reach, the same limit the database check already had.
+Commit   dcd1ee3
+
+### D-039 · 2026-10-13 · fix
+Symptom  `test_sync.py::test_inventory_owner_empty_string_not_null` called `scan_inventory(self.conn)`
+         three times with nothing pinning the host directory, so its baseline `n1` was whatever the
+         developer's real `~/.codebuddy` contained — measured here at 140 rows (52 builtin, 28 plugin,
+         60 user), against 52 on a machine with no such directory. The case asserted that re-scanning
+         does not grow `inventory`; what it actually measured was this machine. Two more cases had the
+         same hole, because `cbut health` stats and globs the host dir:
+         `test_config.HealthSurfaceTest._env` handed the child the ambient `CBUT_CODEBUDDY_DIR`, and
+         `test_usage.py::OldDatabaseOnAReadOnlyCliTest` ran `health` against it.
+Change   All three now point somewhere throwaway. The inventory case builds a fixture host
+         (`skills/ai/add-tests/SKILL.md`) under its own temp directory, repoints
+         `sync.db.CODEBUDDY_DIR`, restores it in a `finally`, and asserts `n1 > 0` so the fixture is
+         proven to have produced something. The settings helper hides `CBUT_CODEBUDDY_DIR` alongside
+         every name derived from `db.ENV_NAMES` and pins it to a path that does not exist; the
+         old-database case repoints `db.CODEBUDDY_DIR` the same way.
+Evidence L0 2026-10-13: `Ran 432 tests ... OK` at this commit and `Ran 435 ... OK` after the tripwire
+         that then made the fix necessary landed. The honest limit, measured rather than assumed: the
+         old case was **not** vacuous. `scan_inventory` always inserts the builtin tool, agent and
+         command rows, so `n1` was 52 even with an empty home and the dedup assertion did run — over
+         those builtin rows, which are exactly the rows whose `owner_plugin` is the empty string the
+         case is named for. The defect is hermeticity, not an assertion that never failed.
+Cost     The inventory case now depends on the fixture layout it creates, so a change to
+         `SKILL_MANIFEST_GLOB` or `DIR_SKILLS` can make it fail for the right reason at last.
+         `assertGreater(n1, 0)` is weak on its own — it cannot tell "one row" from "all of them" —
+         and it is kept only so a silently empty fixture does not read as a passing dedup check.
+Commit   d7fa4bf
