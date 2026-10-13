@@ -307,8 +307,11 @@ class HealthSurfaceTest(unittest.TestCase):
     def _env(self, db_path, extra):
         # Strip every setting the loader can read, not a hand-picked few: an
         # ambient CBUT_* value would otherwise change the output this file asserts on.
-        hidden = set(db.ENV_NAMES.values()) | {"CBUT_CONFIG"}
+        # CBUT_CODEBUDDY_DIR goes too, then is pinned below: `health` stats and globs the
+        # host dir, so without a pin the child reads the real ~/.codebuddy.
+        hidden = set(db.ENV_NAMES.values()) | {"CBUT_CONFIG", "CBUT_CODEBUDDY_DIR"}
         base = {k: v for k, v in os.environ.items() if k not in hidden}
+        base["CBUT_CODEBUDDY_DIR"] = str(Path(db_path).parent / "no-such-codebuddy")
         base.update(extra)
         return {"os": base, "db": str(db_path)}
 

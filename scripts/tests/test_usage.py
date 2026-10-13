@@ -1046,8 +1046,15 @@ class OldDatabaseOnAReadOnlyCliTest(unittest.TestCase):
             conn.commit()
             conn.close()
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                rc = stats.main(["--db", str(p), "health"])
+            # `health` stats and globs the host dir; point it at a temp path so the test
+            # never reads the real ~/.codebuddy (the tripwire refuses that).
+            old_host = db.CODEBUDDY_DIR
+            db.CODEBUDDY_DIR = Path(tmp.name) / "no-such-codebuddy"
+            try:
+                with contextlib.redirect_stdout(out):
+                    rc = stats.main(["--db", str(p), "health"])
+            finally:
+                db.CODEBUDDY_DIR = old_host
             self.assertEqual(rc, 0)
             self.assertIn("unparsed", out.getvalue().lower())
             self.assertIn("2 records", out.getvalue())

@@ -184,11 +184,23 @@ class IndexerTest(unittest.TestCase):
     # -- inventory dedup ----------------------------------------------------
 
     def test_inventory_owner_empty_string_not_null(self):
-        # inventory PK includes owner_plugin; NULL there would defeat dedup
-        sync.scan_inventory(self.conn)
-        sync.scan_inventory(self.conn)
-        n1 = self.count("inventory")
-        sync.scan_inventory(self.conn)
+        # inventory PK includes owner_plugin; NULL there would defeat dedup. Scan a
+        # throwaway host (never the real ~/.codebuddy): re-scanning must not grow the
+        # table, and a NULL owner_plugin would insert a twin instead of replacing.
+        root = self._cb_root()
+        d = root / "skills" / "ai" / "add-tests"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("# fixture\n", encoding="utf-8")
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = root
+        try:
+            sync.scan_inventory(self.conn)
+            n1 = self.count("inventory")
+            self.assertGreater(n1, 0, "the fixture host produced nothing to dedup")
+            sync.scan_inventory(self.conn)
+            sync.scan_inventory(self.conn)
+        finally:
+            sync.db.CODEBUDDY_DIR = old
         self.assertEqual(self.count("inventory"), n1)
 
     def test_user_skills_come_from_the_manifest_not_the_category(self):
