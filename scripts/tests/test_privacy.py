@@ -86,11 +86,17 @@ FORBIDDEN_ROOTS = {
 # `tomllib` (the settings parser) was added only after its import closure was listed:
 # collections, datetime, functools, re, string, sys, types, typing — no network, process
 # or thread module anywhere in it.
+# `rich` (cbut-tui.py only): textual's own rendering dependency, imported for
+# `rich.text.Text` so a stale entity's `state` cell can be dimmed. It is not stdlib,
+# so it does not pass the rule above on its own account — what makes it admissible is
+# the measurement AGENTS.md already records for the installed set, re-run for
+# rich 15.0.0: no socket, ssl, http or urllib import anywhere in the package. The
+# TUI already imports textual, which cannot work without rich installed.
 ALLOWED_ROOTS = {
     "argparse", "datetime", "importlib", "json", "os", "pathlib", "re",
     "shutil", "sqlite3", "sys", "time", "tomllib", "typing", "cbut_db", "__future__",
 }
-ALLOWED_BY_FILE = {"cbut-tui.py": ALLOWED_ROOTS | {"textual"}}
+ALLOWED_BY_FILE = {"cbut-tui.py": ALLOWED_ROOTS | {"textual", "rich"}}
 
 # Sentinel argument *values*. Each sits in a slot the parser genuinely has to
 # look at: to name the agent, to name the skill, to find the slash command.

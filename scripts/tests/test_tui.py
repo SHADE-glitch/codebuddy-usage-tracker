@@ -2865,6 +2865,99 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                 str(hist.query_one("#hist-summary", tui.Static).render()).split())
             self.assertIn("1 call", text)
 
+    # 76. every entity tab ends with the shared state column
+    async def test_every_entity_tab_ends_with_the_state_column(self):
+        """The header comes from cbut_db so it cannot drift from the labels.
+
+        Five tab column tuples and five stats header tuples are six independent
+        copies of "does this row still exist on disk". The *wording* is shared
+        (db.entity_state); this pins that all five tabs also agree on the
+        column's name, and that a filled row's last cell is one of the three
+        labels rather than a number nobody decodes.
+        """
+        now = self._noon_ms()
+        make_db(self.db_path, [])
+        insert_tool_calls(self.db_path, [
+            ("c1", "s1", "/p", "Bash", "builtin", now - 60_000, 120, "completed"),
+            ("c2", "s1", "/p", "Uninstalled", "builtin", now - 60_000, 120,
+             "completed")])
+        conn = db.open_db(self.db_path)
+        conn.execute(
+            "INSERT INTO inventory(kind, name, source)"
+            " VALUES('tool','Bash','builtin')")
+        conn.commit()
+        conn.close()
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            labels = {db.ENTITY_STATE_USED, db.ENTITY_STATE_INSTALLED,
+                      db.ENTITY_STATE_REMOVED}
+            for const, table_id in ((tui.TOOLS_COLUMNS, "#t-tools"),
+                                    (tui.SKILLS_COLUMNS, "#t-skills"),
+                                    (tui.AGENTS_COLUMNS, "#t-agents"),
+                                    (tui.PLUGINS_COLUMNS, "#t-plugins"),
+                                    (tui.MCP_COLUMNS, "#t-mcp")):
+                with self.subTest(table=table_id):
+                    self.assertEqual(const[-1], db.ENTITY_STATE_COLUMN)
+                    table = app.query_one(table_id, tui.DataTable)
+                    shown = [str(c.label) for c in table.columns.values()]
+                    self.assertEqual(shown, list(const))
+                    for row in all_rows(table):
+                        # an empty tab renders one placeholder row: the empty
+                        # message, then a dash per remaining column
+                        if str(row[-1]) == "-":
+                            continue
+                        self.assertIn(str(row[-1]), labels)
+
+    # 77. an entity that is no longer installed says so, and says it quietly
+    async def test_a_removed_entity_reads_removed_and_is_dimmed(self):
+        """The bug this exists for: a stale row was indistinguishable from a
+        quiet one, because the only signal was calls=0. Both still read 0 — the
+        label is what separates "never called" from "not there any more"."""
+        now = self._noon_ms()
+        make_db(self.db_path, [])
+        insert_tool_calls(self.db_path, [
+            ("c1", "s1", "/p", "Bash", "builtin", now - 60_000, 1, "completed"),
+            ("c2", "s1", "/p", "Uninstalled", "builtin", now - 60_000, 1,
+             "completed")])
+        conn = db.open_db(self.db_path)
+        conn.execute(
+            "INSERT INTO inventory(kind, name, source)"
+            " VALUES('tool','Bash','builtin')")
+        conn.commit()
+        conn.close()
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            table = app.query_one("#t-tools", tui.DataTable)
+            cells = {str(r[0]): r[-1] for r in all_rows(table)}
+            self.assertEqual(str(cells["Bash"]), db.ENTITY_STATE_USED)
+            gone = cells["Uninstalled"]
+            self.assertEqual(str(gone), db.ENTITY_STATE_REMOVED)
+            self.assertEqual(gone.style, "dim")
+            # the installed-but-uncalled half of the distinction
+            self.assertNotIsInstance(gone, str)
+
+    # 78. a styled cell keeps its style through the name_cap
+    def test_a_styled_cell_survives_the_name_cap(self):
+        """name_cap=8 is inside the documented range, and "installed" is 9.
+
+        Capping on str() would return a plain string, so a stale row would read
+        as loudly on a narrow terminal as on a wide one.
+        """
+        from rich.text import Text
+
+        class _Host(tui.WideTableMixin):
+            name_cap = 8
+
+        host = _Host()
+        capped = host._cap_cell(Text(db.ENTITY_STATE_INSTALLED, style="dim"))
+        self.assertEqual(str(capped), "install…")
+        self.assertEqual(capped.style, "dim")
+        short = host._cap_cell(Text(db.ENTITY_STATE_REMOVED, style="dim"))
+        self.assertEqual(str(short), db.ENTITY_STATE_REMOVED)
+        self.assertEqual(short.style, "dim")
+
 
 if __name__ == "__main__":
     unittest.main()

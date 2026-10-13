@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cbut_db as db  # noqa: E402
 
 try:
+    from rich.text import Text
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import Grid, Horizontal, Vertical
@@ -35,6 +36,19 @@ try:
     HAVE_TEXTUAL = True
 except ImportError:  # pragma: no cover - exercised only without the dep
     HAVE_TEXTUAL = False
+
+
+def state_cell(row):
+    """The ``state`` cell for one entity row, dimmed when the entity is gone.
+
+    DataTable has no per-row style hook — ``add_row`` takes cells, and the only
+    row-level classes it renders are its own header/fixed/zebra ones — so the
+    dimming lands on the state cell itself. That is where the information is
+    anyway: a whole row greyed out would be a mood, and "removed" written in
+    plain text is a fact you can read in a screenshot.
+    """
+    label = db.entity_state(row["installed"], row["ever_used"])
+    return Text(label, style="dim") if label == db.ENTITY_STATE_REMOVED else label
 
 
 def ts(v):
@@ -113,11 +127,20 @@ TOKEN_COLUMNS = ("Model", "Provider", "Usage Total", "Requests", "Input",
 # `add_columns` because the column plan needs the full list to compute a prefix from,
 # and a plan that cannot name the columns it dropped is a silent truncation wearing a
 # guard's clothes.
-TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "avg", "last used")
-SKILLS_COLUMNS = ("skill", "calls", "ok", "last used")
-AGENTS_COLUMNS = ("agent", "calls", "last used")
-PLUGINS_COLUMNS = ("plugin", "uses", "skills", "agents", "cmds")
-MCP_COLUMNS = ("server", "tool", "calls", "ok", "last used")
+#
+# ``state`` (see `db.entity_state`) is last on purpose: the prefix plan drops the
+# tail first, and a narrow terminal should lose "last used" before it loses the
+# answer to "is this thing still installed" — the counts stay readable without it,
+# but the union in the name column does not.
+# The header is the constant the label helper and the tests use, not a retyped
+# string: a renamed column would otherwise keep rendering under the old name here
+# while everything that agrees on the name moved.
+_STATE = db.ENTITY_STATE_COLUMN
+TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "avg", "last used", _STATE)
+SKILLS_COLUMNS = ("skill", "calls", "ok", "last used", _STATE)
+AGENTS_COLUMNS = ("agent", "calls", "last used", _STATE)
+PLUGINS_COLUMNS = ("plugin", "uses", "skills", "agents", "cmds", _STATE)
+MCP_COLUMNS = ("server", "tool", "calls", "ok", "last used", _STATE)
 HISTORY_COLUMNS = ("when", "project", "session", "status", "duration")
 # A plugin's "calls" are attributed uses (plugin_usage), which carry no
 # status/duration_ms — so the plugin history screen has its own columns instead
@@ -749,19 +772,26 @@ if HAVE_TEXTUAL:
             """
             return self.NAME_CAP
 
-        def _cap_cell(self, text: str) -> str:
+        def _cap_cell(self, text):
             """Fit one cell to ``name_cap``, keeping the half that carries meaning.
 
             A path's beginning is the shared prefix (`/home/user/…` repeated down
             the column) and its end is what distinguishes the rows, so paths are
             capped from the left. Everything else — a tool, a model, a skill — is
             read from the start, so it is capped from the right.
+
+            A styled cell keeps its style across the cap. `state_cell` hands over
+            a Text, and ``name_cap = 8`` is inside the documented range, so an
+            "installed" can be capped — dropping the style there would make a
+            stale row look loud on a narrow terminal and quiet on a wide one.
             """
             cap = self.name_cap
-            if len(text) <= cap:
+            plain = text.plain if isinstance(text, Text) else text
+            if len(plain) <= cap:
                 return text
             keep = cap - 1
-            return ("…" + text[-keep:]) if "/" in text else (text[:keep] + "…")
+            clipped = ("…" + plain[-keep:]) if "/" in plain else (plain[:keep] + "…")
+            return Text(clipped, style=text.style) if isinstance(text, Text) else clipped
 
         def _fill(self, table, rows, key_index=0, key_kind=None, key_rows=None):
             # Remember the highlighted row by its ROW KEY, not by index: a
@@ -778,8 +808,12 @@ if HAVE_TEXTUAL:
             table.clear()
             n = 0
             for i, r in enumerate(rows):
-                # NULL renders as "-", matching fmt_n (never a blank cell).
-                cells = [("-" if c is None else str(c)) for c in r]
+                # NULL renders as "-", matching fmt_n (never a blank cell). A cell
+                # that is already text is handed over as it is: the state column
+                # passes a styled Text, and str() on one would drop the style and
+                # leave a row saying "removed" as loudly as the live ones.
+                cells = [c if isinstance(c, (str, Text))
+                         else ("-" if c is None else str(c)) for c in r]
                 key = None
                 if key_kind:
                     # key_index may be a single index or a tuple of indices for
@@ -859,7 +893,11 @@ if HAVE_TEXTUAL:
                 if not width:
                     self.call_after_refresh(self._plan_wide_tables)
                 return
-            raw = [[("-" if c is None else str(c)) for c in r] for r in rows]
+            # Styled cells (the state column) survive to _fill; everything else
+            # is flattened here, so width planning sees the text a cell prints.
+            raw = [[c if isinstance(c, (str, Text))
+                    else ("-" if c is None else str(c)) for c in r]
+                   for r in rows]
             shown = [[self._cap_cell(c) for c in rr] for rr in raw]
             capped = any(a != b for rr, ss in zip(raw, shown) for a, b in zip(rr, ss))
             full = self._column_widths(labels, raw)
@@ -1439,7 +1477,8 @@ if HAVE_TEXTUAL:
             self._fill_wide(
                 "t-tools",
                 [[r["tool_name"], f"{r['calls']:,}", f"{r['completed']:,}",
-                  f"{r['failed']:,}", ms(r["avg_ms"]), ts(r["last_used"])]
+                  f"{r['failed']:,}", ms(r["avg_ms"]), ts(r["last_used"]),
+                  state_cell(r)]
                  for r in db.q_tools(conn, start_ts=start, end_ts=end)],
                 "No tool calls yet", key_kind="tool")
 
@@ -1447,14 +1486,15 @@ if HAVE_TEXTUAL:
             self._fill_wide(
                 "t-skills",
                 [[r["skill"], f"{r['calls']:,}", f"{r['completed']:,}",
-                  ts(r["last_used"])]
+                  ts(r["last_used"]), state_cell(r)]
                  for r in db.q_skills(conn, start_ts=start, end_ts=end)],
                 "No skills used yet", key_kind="skill")
 
         def _fill_agents(self, conn, start=None, end=None) -> None:
             self._fill_wide(
                 "t-agents",
-                [[r["agent_type"], f"{r['calls']:,}", ts(r["last_used"])]
+                [[r["agent_type"], f"{r['calls']:,}", ts(r["last_used"]),
+                  state_cell(r)]
                  for r in db.q_agents(conn, start_ts=start, end_ts=end)],
                 "No agents used yet", key_kind="agent")
 
@@ -1466,7 +1506,7 @@ if HAVE_TEXTUAL:
             self._fill_wide(
                 "t-plugins",
                 [[r["plugin"], f"{r['uses']:,}", f"{r['skills']:,}",
-                  f"{r['agents']:,}", f"{r['commands']:,}"]
+                  f"{r['agents']:,}", f"{r['commands']:,}", state_cell(r)]
                  for r in db.q_plugins(conn)],
                 "No plugins installed", key_kind="plugin")
 
@@ -1476,7 +1516,7 @@ if HAVE_TEXTUAL:
             self._fill_wide(
                 "t-mcp",
                 [[r["server"], r["tool"], f"{r['calls']:,}",
-                  f"{r['completed']:,}", ts(r["last_used"])]
+                  f"{r['completed']:,}", ts(r["last_used"]), state_cell(r)]
                  for r in db.q_mcp(conn, start_ts=start, end_ts=end)],
                 "No MCP calls yet", key_index=(0, 1), key_kind="mcp")
 

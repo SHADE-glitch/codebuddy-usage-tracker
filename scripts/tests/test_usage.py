@@ -650,6 +650,227 @@ class WindowedQueryTest(unittest.TestCase):
                          [(key(day0), 1), (key(d1), 2)])
 
 
+class EntityStateTest(unittest.TestCase):
+    """Installed / in use / removed — derived in the query, never stored.
+
+    ``inventory`` is a snapshot of what is installed *now* (cbut-sync rebuilds
+    it on every sync), so a name with usage history and no inventory row has
+    been uninstalled, renamed or removed. Before the flags existed that row was
+    indistinguishable from one that had simply never been called, which is the
+    whole reason the Skills tab kept listing skills that were not on disk.
+
+    Both flags come out of the name CTE, not out of a column: there is nothing
+    to migrate, and — more to the point — nothing that can drift away from the
+    snapshot it claims to describe.
+    """
+
+    NOW = 2_000_000_000_000
+    DAY = 24 * HOUR
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.open_db(Path(self.tmp.name) / "s.db")
+        db.ensure_schema(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    # -- seeders: one name per state, for every entity kind -----------------
+
+    def _installed(self, kind, name):
+        self.conn.execute(
+            "INSERT INTO inventory(kind, name, source) VALUES(?,?,'user')",
+            (kind, name))
+
+    def _used(self, kind, name, ts=None):
+        """One recorded call for ``name``, at ``ts`` (default: an hour ago)."""
+        at = self.NOW - HOUR if ts is None else ts
+        if kind == "tool":
+            self.conn.execute(
+                "INSERT INTO tool_calls(call_id, session_id, project, tool_name,"
+                " category, ts, status) VALUES(?,'s','/p',?,'builtin',?,"
+                "'completed')", (f"t{name}", name, at))
+        elif kind == "skill":
+            self.conn.execute(
+                "INSERT INTO skill_usage(call_id, skill, session_id, project,"
+                " ts, status) VALUES(?,?,'s','/p',?,'completed')",
+                (f"s{name}", name, at))
+        elif kind == "agent":
+            self.conn.execute(
+                "INSERT INTO agent_usage(call_id, agent_type, kind, source,"
+                " session_id, project, ts, status)"
+                " VALUES(?,?,'active','tool','s','/p',?,'completed')",
+                (f"a{name}", name, at))
+        elif kind == "plugin":
+            self.conn.execute(
+                "INSERT INTO plugin_usage(plugin, marketplace, kind, target,"
+                " session_id, project, ts)"
+                " VALUES(?,'mkt','skill','t','s','/p',?)", (name, at))
+        elif kind == "mcp":
+            self.conn.execute(
+                "INSERT INTO mcp_usage(call_id, server, tool, session_id,"
+                " project, ts, status) VALUES(?,?,'t','s','/p',?,"
+                "'completed')", (f"m{name}", name, at))
+        else:  # pragma: no cover - a typo in the table above, not a state
+            raise AssertionError(kind)
+
+    # -- the three states, on every entity kind ----------------------------
+
+    def _states(self, kind):
+        """{name: label} for one kind, from the query its own tab uses."""
+        fetch, key = {
+            "tool": (db.q_tools, "tool_name"),
+            "skill": (db.q_skills, "skill"),
+            "agent": (db.q_agents, "agent_type"),
+            "plugin": (db.q_plugins, "plugin"),
+            "mcp": (db.q_mcp, "server"),
+        }[kind]
+        return {r[key]: db.entity_state(r["installed"], r["ever_used"])
+                for r in fetch(self.conn)}
+
+    def test_a_name_with_history_and_no_inventory_row_is_removed(self):
+        for kind in ("tool", "skill", "agent", "plugin", "mcp"):
+            with self.subTest(kind=kind):
+                self._used(kind, "gone")
+                self._installed(kind, "here")
+        self.conn.commit()
+        for kind in ("tool", "skill", "agent", "plugin", "mcp"):
+            self.assertEqual(self._states(kind)["gone"],
+                             db.ENTITY_STATE_REMOVED, kind)
+
+    def test_an_installed_entity_that_was_never_called_is_installed(self):
+        for kind in ("tool", "skill", "agent", "plugin", "mcp"):
+            self._installed(kind, "quiet")
+        self.conn.commit()
+        for kind in ("tool", "skill", "agent", "plugin", "mcp"):
+            self.assertEqual(self._states(kind)["quiet"],
+                             db.ENTITY_STATE_INSTALLED, kind)
+
+    def test_a_live_entity_in_use_is_in_use(self):
+        for kind in ("tool", "skill", "agent", "plugin", "mcp"):
+            self._installed(kind, "busy")
+            self._used(kind, "busy")
+        self.conn.commit()
+        for kind in ("tool", "skill", "agent", "plugin", "mcp"):
+            self.assertEqual(self._states(kind)["busy"],
+                             db.ENTITY_STATE_USED, kind)
+
+    def test_removing_an_entity_does_not_remove_its_history(self):
+        # The point of the union: a sync that drops the inventory row must not
+        # take the usage rows with it, or "was it ever used?" becomes
+        # unanswerable the moment the plugin is uninstalled.
+        self._installed("tool", "Read")
+        self._used("tool", "Read")
+        self.conn.commit()
+        self.conn.execute("DELETE FROM inventory WHERE name='Read'")
+        self.conn.commit()
+        rows = db.q_tools(self.conn)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["calls"], 1)
+        self.assertEqual(db.entity_state(rows[0]["installed"],
+                                         rows[0]["ever_used"]),
+                         db.ENTITY_STATE_REMOVED)
+
+    # -- the two things that are easy to get wrong -------------------------
+
+    def test_the_state_does_not_follow_the_window(self):
+        # ``calls`` is windowed, ``ever_used`` is not. An entity last used a
+        # week ago is still a used entity inside a one-day window; calling it
+        # "installed" because the window is quiet would describe the range, not
+        # the entity.
+        self._installed("tool", "Old")
+        self._used("tool", "Old", ts=self.NOW - 7 * self.DAY)
+        self.conn.commit()
+        win = db.q_tools(self.conn, start_ts=self.NOW - self.DAY, end_ts=self.NOW)
+        row = {r["tool_name"]: r for r in win}["Old"]
+        self.assertEqual(row["calls"], 0)
+        self.assertEqual(db.entity_state(row["installed"], row["ever_used"]),
+                         db.ENTITY_STATE_USED)
+
+    def test_a_name_on_both_sides_is_counted_once(self):
+        # The CTE used to emit one row per side, so the LEFT JOIN matched every
+        # usage row twice and ``cbut plugins`` reported 4 uses for 2 calls.
+        # Both wrong halves agreed with each other, which is why the existing
+        # window/all-time comparison stayed green while it happened.
+        self._installed("plugin", "p")
+        self._used("plugin", "p")
+        self._used("plugin", "p", ts=self.NOW - 2 * HOUR)
+        self.conn.commit()
+        row = {r["plugin"]: r for r in db.q_plugins(self.conn)}["p"]
+        self.assertEqual(row["uses"], 2)
+        self.assertEqual(row["installed"], 1)
+        self.assertEqual(row["ever_used"], 1)
+
+    def test_mcp_rows_inherit_their_servers_install_state(self):
+        # mcp.json configures servers, not individual tools, so a tool under a
+        # configured server is installed and a tool under a server that is no
+        # longer configured is not.
+        self._installed("mcp", "kept")
+        self._installed("mcp", "quiet-server")
+        self._used("mcp", "kept")
+        self._used("mcp", "dropped")
+        self.conn.commit()
+        rows = {(r["server"], r["tool"]): r for r in db.q_mcp(self.conn)}
+        self.assertEqual(db.entity_state(rows[("kept", "t")]["installed"],
+                                         rows[("kept", "t")]["ever_used"]),
+                         db.ENTITY_STATE_USED)
+        self.assertEqual(db.entity_state(rows[("dropped", "t")]["installed"],
+                                         rows[("dropped", "t")]["ever_used"]),
+                         db.ENTITY_STATE_REMOVED)
+        # a configured server with no calls is listed once, as (server, NULL)
+        quiet = rows[("quiet-server", None)]
+        self.assertEqual(db.entity_state(quiet["installed"], quiet["ever_used"]),
+                         db.ENTITY_STATE_INSTALLED)
+
+    # -- the flags are read, not looked up somewhere else ------------------
+
+    def test_the_export_views_agree_with_the_queries(self):
+        self._installed("tool", "Read")
+        self._used("tool", "Read")
+        self._used("tool", "gone")
+        self.conn.commit()
+        queried = {r["tool_name"]: (r["installed"], r["ever_used"])
+                   for r in db.q_tools(self.conn)}
+        exported = {r["tool_name"]: (r["installed"], r["ever_used"])
+                    for r in self.conn.execute("SELECT * FROM v_tools")}
+        self.assertEqual(exported, queried)
+
+    def test_every_entity_view_carries_the_two_flags(self):
+        for view, key in (("v_tools", "tool_name"), ("v_skills", "skill"),
+                          ("v_agents", "agent_type"), ("v_mcp", "server"),
+                          ("v_plugins", "plugin")):
+            with self.subTest(view=view):
+                cols = {c[1] for c in
+                        self.conn.execute(f"PRAGMA table_info({view})")}
+                self.assertLessEqual({"installed", "ever_used"}, cols)
+
+    def test_the_inventory_table_still_has_no_state_column(self):
+        # Q6 was decided as "derive it, do not migrate": the answer is a
+        # function of the snapshot, and a stored copy of it is a second thing
+        # that can be stale. This pins the shape so the next person does not
+        # "helpfully" add a column that the DELETE-every-sync can never fill.
+        cols = {c[1] for c in
+                self.conn.execute("PRAGMA table_info(inventory)")}
+        self.assertNotIn("installed", cols)
+        self.assertNotIn("ever_used", cols)
+
+    # -- one label, two front ends -----------------------------------------
+
+    def test_both_front_ends_render_the_shared_label(self):
+        for name in ("cbut-tui.py", "cbut-stats.py"):
+            with self.subTest(script=name):
+                source = (SCRIPTS / name).read_text(encoding="utf-8")
+                self.assertIn("db.entity_state(", source)
+                # and neither re-declares the wording next to its own columns
+                for label in (db.ENTITY_STATE_USED, db.ENTITY_STATE_INSTALLED,
+                              db.ENTITY_STATE_REMOVED):
+                    self.assertNotIn(
+                        f"= \"{label}\"", source,
+                        f"{name} re-declares {label!r} instead of calling "
+                        "db.entity_state")
+
+
 class HitRateTest(unittest.TestCase):
     def test_rate(self):
         self.assertAlmostEqual(db.cache_hit_rate(80, 20), 0.8)

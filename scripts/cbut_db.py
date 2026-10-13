@@ -307,6 +307,10 @@ CREATE TABLE IF NOT EXISTS commands (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_commands ON commands(command, session_id, ts);
 
 CREATE TABLE IF NOT EXISTS inventory (
+    -- A snapshot of what is installed *now*, rewritten in one transaction on every
+    -- sync. `cbut export` dumps this table verbatim, so its rows answer "what is on
+    -- disk right now" and nothing else — "did I ever use this" lives in the usage
+    -- tables, which survive an uninstall.
     kind         TEXT,            -- tool | skill | agent | plugin | mcp
     name         TEXT,
     owner_plugin TEXT,
@@ -342,33 +346,97 @@ CREATE TABLE IF NOT EXISTS unparsed (
 # row, and an installed-but-unused entity still shows with a zero count. Under
 # a time window only the counts shrink — the list itself stays full.
 #
+# ``inventory`` is a *snapshot* of what is installed right now — cbut-sync
+# rebuilds the whole table on every sync — so membership alone already answers
+# "is it still there?". A name that has history but no inventory row was
+# uninstalled, renamed or removed, and until this pair of flags existed that
+# was indistinguishable from a row that had simply never been called.
+#
+#   installed   1 when the name is in the current snapshot
+#   ever_used   1 when any usage row carries the name, at any time
+#
+# Both are derived here rather than stored. That is the whole point: a stored
+# flag is a second copy of the answer, and the one thing this file already got
+# wrong once is a column that stopped matching the thing it described.
+#
+# ``ever_used`` is read from the un-windowed scan in the CTE, *not* from the
+# windowed ``calls`` the row is filtered by. A tool used last month is still a
+# used tool inside a 7-day window; labelling it "installed" because this week
+# was quiet would describe the window, not the entity.
+#
 # These CTEs are shared by the v_* views (all-time, for ``cbut export``) and by
 # the q_* functions (which add the optional window in the LEFT JOIN's ON clause
 # so an out-of-window entity still yields a zero-count row).
-_TOOL_NAMES_CTE = (
-    "WITH names AS ("
-    " SELECT name FROM inventory WHERE kind='tool'"
-    " UNION SELECT DISTINCT tool_name FROM tool_calls WHERE tool_name IS NOT NULL)")
-_SKILL_NAMES_CTE = (
-    "WITH names AS ("
-    " SELECT name FROM inventory WHERE kind='skill'"
-    " UNION SELECT DISTINCT skill FROM skill_usage WHERE skill IS NOT NULL)")
-_AGENT_NAMES_CTE = (
-    "WITH names AS ("
-    " SELECT name FROM inventory WHERE kind='agent'"
-    " UNION SELECT DISTINCT agent_type FROM agent_usage WHERE agent_type IS NOT NULL)")
-_PLUGIN_NAMES_CTE = (
-    "WITH names AS ("
-    " SELECT name FROM inventory WHERE kind='plugin'"
-    " UNION SELECT DISTINCT plugin FROM plugin_usage WHERE plugin IS NOT NULL)")
+#
+# Each CTE collapses to exactly one row per name *before* the join. A name on both
+# sides would otherwise appear twice in ``names`` and every usage row would be
+# counted once per copy — ``cbut plugins`` reported 4 uses for 2 calls before this
+# was one aggregated row, and the window/all-time comparison could not see it
+# because both sides were wrong by the same factor.
+def _names_cte(kind, table, column):
+    """``WITH names AS (...)`` — the installed ∪ ever-used set for one kind."""
+    return (
+        "WITH names AS ("
+        " SELECT name, MAX(installed) AS installed, MAX(ever_used) AS ever_used"
+        " FROM ("
+        f"  SELECT name, 1 AS installed, 0 AS ever_used FROM inventory WHERE kind='{kind}'"
+        "  UNION"
+        f"  SELECT DISTINCT {column}, 0, 1 FROM {table} WHERE {column} IS NOT NULL)"
+        " GROUP BY name)")
+
+
+_TOOL_NAMES_CTE = _names_cte("tool", "tool_calls", "tool_name")
+_SKILL_NAMES_CTE = _names_cte("skill", "skill_usage", "skill")
+_AGENT_NAMES_CTE = _names_cte("agent", "agent_usage", "agent_type")
+_PLUGIN_NAMES_CTE = _names_cte("plugin", "plugin_usage", "plugin")
 # MCP is keyed by (server, tool). A configured server with no usage yet is
 # listed once as (server, NULL) so the tab shows configured-but-unused servers
 # without forking a server that already has recorded calls.
+#
+# The install state belongs to the *server*: mcp.json configures servers, not
+# individual tools, so a row inherits its server's flag. The pairs are turned
+# into ``names`` here so every consumer reads one shape — the other four CTEs
+# already name their output ``names``, and five call sites that had to remember
+# which one they were holding is five chances to read the wrong column.
 _MCP_NAMES_CTE = (
     "WITH pairs AS ("
-    " SELECT server, tool FROM mcp_usage"
-    " UNION SELECT name, NULL FROM inventory i WHERE kind='mcp'"
-    "   AND NOT EXISTS (SELECT 1 FROM mcp_usage m WHERE m.server = i.name))")
+    " SELECT server, tool, 1 AS ever_used FROM mcp_usage"
+    " UNION SELECT name, NULL, 0 FROM inventory i WHERE kind='mcp'"
+    "   AND NOT EXISTS (SELECT 1 FROM mcp_usage m WHERE m.server = i.name)),"
+    " names AS ("
+    " SELECT server, tool,"
+    "  CASE WHEN EXISTS (SELECT 1 FROM inventory i"
+    "                 WHERE i.kind='mcp' AND i.name = pairs.server)"
+    "       THEN 1 ELSE 0 END AS installed,"
+    "  MAX(ever_used) AS ever_used"
+    " FROM pairs GROUP BY server, tool)")
+
+# The one label both front ends render for an entity row. Kept here rather than
+# in either of them because the column header is a per-surface decision but the
+# *meaning* is not: "removed" has to mean the same thing in the TUI, in
+# ``cbut stats`` and in ``cbut export``'s consumers, or the union is lying to
+# half of them.
+ENTITY_STATE_COLUMN = "state"
+ENTITY_STATE_USED = "in use"
+ENTITY_STATE_INSTALLED = "installed"
+ENTITY_STATE_REMOVED = "removed"
+
+
+def entity_state(installed, ever_used) -> str:
+    """The three-state label for one row of an entity tab.
+
+    ``removed`` outranks ``in use`` deliberately: it is the half that is
+    actionable, and "in use" for an entity that is no longer on disk reads as
+    an invitation. A name that is installed and uncalled is ``installed``, not
+    ``unused`` — the tab's own ``calls`` column already says whether it was
+    called, and this one only carries what the usage tables cannot.
+
+    ``installed`` / ``ever_used`` are the CTE flags above, not the windowed
+    count, so the answer does not change when the user narrows the range.
+    """
+    if not installed:
+        return ENTITY_STATE_REMOVED
+    return ENTITY_STATE_USED if ever_used else ENTITY_STATE_INSTALLED
 
 VIEWS_SQL = f"""
 DROP VIEW IF EXISTS v_tools;
@@ -383,7 +451,9 @@ SELECT n.name AS tool_name,
        MAX(c.ts)                                             AS last_used,
        MIN(c.ts)                                             AS first_used,
        COUNT(DISTINCT c.project)                             AS projects,
-       COUNT(DISTINCT c.session_id)                          AS sessions
+       COUNT(DISTINCT c.session_id)                          AS sessions,
+       MAX(n.installed)                                      AS installed,
+       MAX(n.ever_used)                                      AS ever_used
 FROM names n
 LEFT JOIN tool_calls c ON c.tool_name = n.name
 GROUP BY n.name;
@@ -397,7 +467,9 @@ SELECT n.name AS skill,
        MAX(s.ts)                                             AS last_used,
        MIN(s.ts)                                             AS first_used,
        COUNT(DISTINCT s.project)                             AS projects,
-       COUNT(DISTINCT s.session_id)                          AS sessions
+       COUNT(DISTINCT s.session_id)                          AS sessions,
+       MAX(n.installed)                                      AS installed,
+       MAX(n.ever_used)                                      AS ever_used
 FROM names n
 LEFT JOIN skill_usage s ON s.skill = n.name
 GROUP BY n.name;
@@ -410,7 +482,9 @@ SELECT n.name AS agent_type,
        MAX(a.ts)                                             AS last_used,
        MIN(a.ts)                                             AS first_used,
        COUNT(DISTINCT a.project)                             AS projects,
-       COUNT(DISTINCT a.session_id)                          AS sessions
+       COUNT(DISTINCT a.session_id)                          AS sessions,
+       MAX(n.installed)                                      AS installed,
+       MAX(n.ever_used)                                      AS ever_used
 FROM names n
 LEFT JOIN agent_usage a ON a.agent_type = n.name
 GROUP BY n.name;
@@ -425,8 +499,10 @@ SELECT p.server,
        MAX(m.ts)                                             AS last_used,
        MIN(m.ts)                                             AS first_used,
        COUNT(DISTINCT m.project)                             AS projects,
-       COUNT(DISTINCT m.session_id)                          AS sessions
-FROM pairs p
+       COUNT(DISTINCT m.session_id)                          AS sessions,
+       MAX(p.installed)                                      AS installed,
+       MAX(p.ever_used)                                      AS ever_used
+FROM names p
 LEFT JOIN mcp_usage m ON m.server = p.server AND m.tool = p.tool
 GROUP BY p.server, p.tool;
 
@@ -441,7 +517,9 @@ SELECT n.name AS plugin,
        (SELECT COUNT(*) FROM inventory x
           WHERE x.owner_plugin = n.name AND x.kind = 'agent')   AS agents,
        (SELECT COUNT(*) FROM inventory x
-          WHERE x.owner_plugin = n.name AND x.kind = 'command') AS commands
+          WHERE x.owner_plugin = n.name AND x.kind = 'command') AS commands,
+       MAX(n.installed)                                      AS installed,
+       MAX(n.ever_used)                                      AS ever_used
 FROM names n
 LEFT JOIN plugin_usage u ON u.plugin = n.name
 GROUP BY n.name;
@@ -830,7 +908,8 @@ def q_tools(conn, limit=None, start_ts=None, end_ts=None):
            " CAST(AVG(c.duration_ms) AS INTEGER) AS avg_ms,"
            " MAX(c.ts) AS last_used, MIN(c.ts) AS first_used,"
            " COUNT(DISTINCT c.project) AS projects,"
-           " COUNT(DISTINCT c.session_id) AS sessions"
+           " COUNT(DISTINCT c.session_id) AS sessions,"
+           " MAX(n.installed) AS installed, MAX(n.ever_used) AS ever_used"
            " FROM names n LEFT JOIN tool_calls c ON c.tool_name = n.name"
            f"{on_time} GROUP BY n.name ORDER BY calls DESC, n.name")
     if limit:
@@ -847,7 +926,8 @@ def q_skills(conn, limit=None, start_ts=None, end_ts=None):
            " SUM(CASE WHEN s.status='completed' THEN 1 ELSE 0 END) AS completed,"
            " MAX(s.ts) AS last_used, MIN(s.ts) AS first_used,"
            " COUNT(DISTINCT s.project) AS projects,"
-           " COUNT(DISTINCT s.session_id) AS sessions"
+           " COUNT(DISTINCT s.session_id) AS sessions,"
+           " MAX(n.installed) AS installed, MAX(n.ever_used) AS ever_used"
            " FROM names n LEFT JOIN skill_usage s ON s.skill = n.name"
            f"{on_time} GROUP BY n.name ORDER BY calls DESC, n.name")
     if limit:
@@ -867,7 +947,8 @@ def q_agents(conn, limit=None, start_ts=None, end_ts=None):
            " SELECT n.name AS agent_type, COUNT(a.call_id) AS calls,"
            " MAX(a.ts) AS last_used, MIN(a.ts) AS first_used,"
            " COUNT(DISTINCT a.project) AS projects,"
-           " COUNT(DISTINCT a.session_id) AS sessions"
+           " COUNT(DISTINCT a.session_id) AS sessions,"
+           " MAX(n.installed) AS installed, MAX(n.ever_used) AS ever_used"
            " FROM names n LEFT JOIN agent_usage a ON a.agent_type = n.name"
            f"{on_time} GROUP BY n.name ORDER BY calls DESC, n.name")
     if limit:
@@ -882,8 +963,9 @@ def q_mcp(conn, limit=None, start_ts=None, end_ts=None):
            " SUM(CASE WHEN m.status='completed' THEN 1 ELSE 0 END) AS completed,"
            " MAX(m.ts) AS last_used, MIN(m.ts) AS first_used,"
            " COUNT(DISTINCT m.project) AS projects,"
-           " COUNT(DISTINCT m.session_id) AS sessions"
-           " FROM pairs p"
+           " COUNT(DISTINCT m.session_id) AS sessions,"
+           " MAX(p.installed) AS installed, MAX(p.ever_used) AS ever_used"
+           " FROM names p"
            " LEFT JOIN mcp_usage m ON m.server = p.server AND m.tool = p.tool"
            f"{on_time} GROUP BY p.server, p.tool"
            " ORDER BY calls DESC, p.server, p.tool")
@@ -905,7 +987,8 @@ def q_plugins(conn):
         " COUNT(u.id) AS uses, MAX(u.ts) AS last_used,"
         "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = n.name AND x.kind = 'skill')  AS skills,"
         "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = n.name AND x.kind = 'agent')  AS agents,"
-        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = n.name AND x.kind = 'command') AS commands"
+        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = n.name AND x.kind = 'command') AS commands,"
+        " MAX(n.installed) AS installed, MAX(n.ever_used) AS ever_used"
         " FROM names n"
         " LEFT JOIN plugin_usage u ON u.plugin = n.name"
         " GROUP BY n.name ORDER BY uses DESC, n.name",
