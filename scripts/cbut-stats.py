@@ -350,6 +350,22 @@ def cmd_health(conn, args):
         print(f"  schema version {ver[0] if ver else '?'}")
     except sqlite3.Error:
         print("  schema version (missing)")
+    # Which builtin catalogue this machine resolves to. The fallback constants look
+    # exactly like the real list in every table, and the two disagree about names
+    # upstream actually ships, so the only place a stale fallback can be seen is a
+    # line that says which of the two was read. Resolved again here rather than
+    # remembered: health reports the state of the machine now, not of the last sync.
+    sync = db.load_sync()
+    tools, agents, catalog = sync.builtin_catalog()
+    if catalog is not None:
+        catalog_line = f"product.json @ {catalog}"
+    else:
+        found = sync.resolve_product_json()
+        catalog_line = "fallback constants (" + (
+            f"{found} carries no catalogue" if found is not None
+            else "product.json unresolved") + ")"
+    print(f"  {'builtin catalog':<15} {catalog_line} — "
+          f"{len(tools)} tools, {len(agents)} agents")
     projects = db.CODEBUDDY_DIR / "projects"
     n_files = len(list(projects.glob("**/*.jsonl"))) if projects.is_dir() else 0
     tracked = conn.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0]

@@ -25,6 +25,7 @@ or writes `~/.config`.
 
 import contextlib
 import importlib
+import json
 import os
 import sys
 import tempfile
@@ -309,7 +310,11 @@ class HealthSurfaceTest(unittest.TestCase):
         # ambient CBUT_* value would otherwise change the output this file asserts on.
         # CBUT_CODEBUDDY_DIR goes too, then is pinned below: `health` stats and globs the
         # host dir, so without a pin the child reads the real ~/.codebuddy.
-        hidden = set(db.ENV_NAMES.values()) | {"CBUT_CONFIG", "CBUT_CODEBUDDY_DIR"}
+        # CBUT_PRODUCT_JSON is the same kind of override for the builtin catalogue, so it
+        # is hidden as well — otherwise whether the child prints the package's file or the
+        # checked-in fallback depends on whose machine is running the suite.
+        hidden = set(db.ENV_NAMES.values()) | {
+            "CBUT_CONFIG", "CBUT_CODEBUDDY_DIR", "CBUT_PRODUCT_JSON"}
         base = {k: v for k, v in os.environ.items() if k not in hidden}
         base["CBUT_CODEBUDDY_DIR"] = str(Path(db_path).parent / "no-such-codebuddy")
         base.update(extra)
@@ -348,6 +353,52 @@ class HealthSurfaceTest(unittest.TestCase):
         missing = sorted(k for k in db.DEFAULTS if f"{k}=" not in out)
         self.assertFalse(missing,
                          f"health reads these settings but never reports them: {missing}")
+
+    def test_health_says_which_builtin_catalogue_was_read(self):
+        """The fallback constants are indistinguishable from the real list.
+
+        `BUILTIN_TOOLS` names a tool upstream no longer ships, and the installed
+        `product.json` names one the constants do not have, so a table built from
+        the wrong list is indistinguishable from a correct one by inspection. The
+        line is what tells the two apart — and it has to name the file it read, or
+        "product.json" proves nothing about *which* product.json.
+        """
+        from _catalog import SNAPSHOT
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out = self._health(self._env(self._make_db(tmp),
+                                             {"CBUT_PRODUCT_JSON": str(SNAPSHOT)}))
+        self.assertEqual(rc, 0, out)
+        line = next(l for l in out.splitlines() if "builtin catalog" in l)
+        self.assertIn(f"product.json @ {SNAPSHOT}", line)
+        # The snapshot is the installed package's own two arrays, so the counts it
+        # implies are the counts the line must print — not just "some numbers".
+        raw = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertIn(f"{len(raw['tools'])} tools", line)
+        self.assertIn(f"{len(raw['agents'])} agents", line)
+
+    def test_health_reports_the_fallback_and_why_it_was_used(self):
+        """Three states, three messages: resolved, found-but-useless, absent.
+
+        Collapsing "the file is missing" into "the file says nothing" is how a user
+        ends up deleting the wrong thing, so the path is named when there is one and
+        the word "unresolved" is reserved for when there is not.
+        """
+        sync = db.load_sync()
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "absent" / "product.json"
+            empty = Path(tmp) / "empty.json"
+            empty.write_text(json.dumps({"tools": [], "agents": []}), encoding="utf-8")
+            for pinned, expected in (
+                    (missing, "product.json unresolved"),
+                    (empty, "carries no catalogue")):
+                with self.subTest(pinned=pinned.name):
+                    rc, out = self._health(self._env(self._make_db(tmp),
+                                                     {"CBUT_PRODUCT_JSON": str(pinned)}))
+                    self.assertEqual(rc, 0, out)
+                    line = next(l for l in out.splitlines() if "builtin catalog" in l)
+                    self.assertIn("fallback constants", line)
+                    self.assertIn(expected, line)
+                    self.assertIn(str(pinned) if pinned.exists() else "", line)
 
     def test_a_broken_settings_file_is_reported_instead_of_hiding(self):
         """A syntax error is owed the path and a location, not a key name.
