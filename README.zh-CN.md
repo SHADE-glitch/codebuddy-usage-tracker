@@ -95,6 +95,8 @@ CodeBuddy 其实**已经在写**你需要的数据，只是**从不展示**。�
 
 **每个 tab 都列出「用过的 ∪ 已安装的」的并集，以名字为主键，按调用次数排序。** 被删除的 skill、被卸载的插件、被改名的 agent 都保留自己的行和计数；同名但来自两个插件的合并成一行。**Plugins** 统计归属到插件的每一次调用 —— 包括它的 skill、agent 和斜杠命令 —— 所以某个插件的 skill 被用过之后，不会再显示 `uses = 0`。归属是**有据可依**的：只有当插件清单把某个名字映射到该插件时，才会计入。
 
+每个实体 tab 的最后一列是 **state（状态）** —— 它是唯一能把「还在」和「早没了」分开的东西：`in use`（已安装，且历史上至少调用过一次）、`installed`（此刻在磁盘上，从未被调用）、`removed`（已从磁盘消失，只保留历史，显示为暗色）。已安装这一侧是**每次同步都从磁盘重建的快照**，所以卸载一个东西之后，下一次同步它就会从「已安装」这列消失，而它已经挣到的计数一分不少。「用过」刻意不受时间窗口影响：上周用过的工具，在一天窗口里仍然显示 `in use`。
+
 > **API 总计** = 有 provider 原始值时用原始值，否则用 `输入 + 输出`。
 > **Usage 总计** 是仅展示的指标（`输入 + 输出 + 缓存 hit`），它**重复加了一次缓存 hit**（hit 本就包含在输入里），所以约为 API 总计的 2 倍 —— 绝不要把它当作 API 总计。
 > 缓存 hit/miss/write **单独展示**，绝不加进 API 总计。响应里缺失的字段显示为 `-`，绝不伪装成 `0`。
@@ -190,6 +192,7 @@ cbut format              # 🧾  本工具依赖的 CodeBuddy 字段与路径
 |---|---|---|
 | `CBUT_DB` | `~/.local/share/codebuddy-usage-tracker/usage.db` | 数据库位置 |
 | `CBUT_CODEBUDDY_DIR` | `~/.codebuddy` | 源日志目录 |
+| `CBUT_PRODUCT_JSON` | 由 `PATH` 上的 `codebuddy` 可执行文件定位 | 已安装包的工具/agent 目录表。不设置时，`cbut` 扫 `PATH` 找到 `codebuddy`，读它上层的 `product.json`；没装 CodeBuddy 时回落到仓内的常量名单，并在 `cbut health` 里明说。钉住它可以试一份目录表，也可以读 `PATH` 找不到的那一份。 |
 
 ## ⚙️ 配置
 
@@ -222,7 +225,7 @@ sync_secs = 30       # TUI 自动同步定时器
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 444 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 485 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -231,17 +234,17 @@ python3 -m unittest discover -s scripts/tests     # Ran 444 tests ... OK
 
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
-| `test_sync.py` | 96 | 转录解析、工具归类、路由出处列（`requestModelId` → 内置 / 厂商 / 主机 / 端点）、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
-| `test_tui.py` | 117 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、每 tab 独立的日期选择器（日历翻月/跨年、当前目标卡片、能整行放下的预设与快选快捷项、输入框读写的 24 小时时钟、小时网格、微调步进选择器、切 tab 后顶栏跨度仍完整）、两级下钻（窗口内汇总头、Enter 打开单条全字段、长值折行不裁剪、插件路径）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、单元格上限与它背后的设置项、状态栏诚实性 |
-| `test_usage.py` | 89 | 自然日窗口（今天 / 2 / 3 / 7 / 14 / 30 天 / 全部）与自定义范围的标签、日期时间的宽松输入归一化（24 小时显示、输入仍兼容 12 小时）、token 汇总与提供方分组、Dashboard 查询、下钻查询（窗口内按实体汇总、插件使用计数、单条调用的整行）、结构版本门禁、索引值不值得留 |
+| `test_sync.py` | 119 | 转录解析、工具归类、路由出处列（`requestModelId` → 内置 / 厂商 / 主机 / 端点）、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
+| `test_tui.py` | 120 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、每 tab 独立的日期选择器（日历翻月/跨年、当前目标卡片、能整行放下的预设与快选快捷项、输入框读写的 24 小时时钟、小时网格、微调步进选择器、切 tab 后顶栏跨度仍完整）、两级下钻（窗口内汇总头、Enter 打开单条全字段、长值折行不裁剪、插件路径）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、单元格上限与它背后的设置项、状态栏诚实性 |
+| `test_usage.py` | 100 | 自然日窗口（今天 / 2 / 3 / 7 / 14 / 30 天 / 全部）与自定义范围的标签、日期时间的宽松输入归一化（24 小时显示、输入仍兼容 12 小时）、token 汇总与提供方分组、Dashboard 查询、下钻查询（窗口内按实体汇总、插件使用计数、单条调用的整行）、结构版本门禁、索引值不值得留 |
 | `test_stats.py` | 28 | 无界面报告 CLI（`cbut stats`）：总览与各分类表、按模型的 token 报告及窄终端下被丢弃的 cache 列、`show`/`recent`/`inventory`/`export`、`health`（结构版本、设置行、未识别计数）、`backup`→`restore` 往返、生成的 `format` 表面，以及空数据时的 `(none)` 提示 |
-| `test_config.py` | 21 | 设置层：默认值没变、文件、env 优先级与取值边界、坏文件会让 `main()` 在启动 TUI 前就退出、app 真的读了哪些键，以及 `cbut health` 把每个键都报出来——环境变量会被藏起来，所以一台配置过的机器也不会把这些用例变成假失败 |
+| `test_config.py` | 23 | 设置层：默认值没变、文件、env 优先级与取值边界、坏文件会让 `main()` 在启动 TUI 前就退出、app 真的读了哪些键，以及 `cbut health` 把每个键都报出来——环境变量会被藏起来，所以一台配置过的机器也不会把这些用例变成假失败 |
 | `test_dispatcher.py` | 12 | `bin/cbut`：子命令转发、venv 解析、装不上时 help 仍然能跑 |
 | `test_format_registry.py` | 10 | CodeBuddy 格式登记表与解析器双向一致 |
 | `test_privacy.py` | 11 | import 白名单，**加上绕过它的调用方式**（`__import__`/`eval`/`import_module`）、任何表任何文本列都不落自由文本、不写 CodeBuddy 自己的文件 |
 | `test_hermetic.py` | 13 | 一个运行时绊线：套件绝不打开真实的 `usage.db`（进程内没有 `sqlite3.connect`，也没有哪个子进程会在没钉 `CBUT_DB`/`--db` 时去解析它），也绝不读真实的 host 足迹（`~/.codebuddy`——没有 `open`、目录遍历，也没有哪个子进程会在没钉 `CBUT_CODEBUDDY_DIR` 时去读它） |
 | `test_snapshots.py` | 9 | 破坏性步骤前自动留快照、列举、回滚、保留份数 |
-| `test_maintenance_docs.py` | 13 | 生成的格式依赖文档不可能与代码脱节，任何文档也不许写工作流里并没有的 CI 版本 |
+| `test_maintenance_docs.py` | 15 | 生成的格式依赖文档不可能与代码脱节，任何文档也不许写工作流里并没有的 CI 版本 |
 | `test_readme_counts.py` | 5 | 上面这张表就是运行器会打印的那张表，并且两份页面都把 loader 认识的每个设置项写全了 |
 | `test_record_coverage.py` | 6 | 每个被覆盖的提交都记录进 `CHANGELOG.md` |
 | `test_readme_bilingual.py` | 5 | 两份 README 始终是「一份文档、两种语言」，且目录里每个链接都落得到真实标题 |

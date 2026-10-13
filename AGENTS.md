@@ -135,10 +135,17 @@ tool runs from a checkout, so the version only needs to move when a documented c
   (`deepseek-v4-1-flash` next to the built-in `deepseek-v4.1-flash`). This reverses the earlier
   "no provider field" decision, which was true only while `requestModelId` went unread.
 - **Name is the primary key of every panel.** Each tab lists the union of what is installed
-  (the static `inventory`) and what has *ever been used* (the usage tables), keyed by name
+  (the `inventory` table) and what has *ever been used* (the usage tables), keyed by name
   alone, sorted by call count. A renamed, updated or removed entity keeps its history; a name
   that appears under several owners is merged into one row. Under a time window only the counts
   shrink — the list stays full. Add a new panel by name, never by a per-run surrogate id.
+  **`inventory` is a snapshot of what is installed right now**, rebuilt from disk in one
+  transaction on every sync (`collect_inventory` → `replace_inventory`; a failed scan leaves
+  the previous snapshot untouched rather than half-replacing it). So the union is not "ever
+  installed" and a row's absence from `inventory` is the *only* signal that something is gone —
+  which is why `installed`/`ever_used` are derived in the query layer rather than stored, and
+  why `db.entity_state()` (not a per-front-end label) decides what the `state` column says.
+  Neither flag follows the time window; "ever used" means ever.
 - **Windows are whole local calendar days, not "now minus N hours".** `window_bounds` starts at
   local 00:00 (`"1d"` = today, `"2d"` = from yesterday's 00:00, …) and ends at the current time;
   each tab keeps its own window. Do not switch to rolling hours or a shared range — the
