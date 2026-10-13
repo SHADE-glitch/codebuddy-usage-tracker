@@ -963,3 +963,38 @@ Cost     `cbut health` now reads the package's install prefix on every run, on a
          unguarded because `test_format_registry.py` parses only `cbut-sync.py` — is untouched
          and still owed.
 Commit   d6f4e7b
+### D-044 · 2026-10-13 · fix
+Symptom  D-042's `removed` column was right about most names and wrong about three, and the
+         three were the ones a user was looking at. `docx` read `removed` with 8 calls on it
+         while the Plugins panel read the same plugin as `installed` — the panel contradicted
+         itself two tabs apart. A plugin can *be* the skill: it ships `<installPath>/SKILL.md`
+         and nothing else this tool knows how to count. `collect_inventory` only walked
+         `PLUGIN_SUBDIRS`, so docx, pptx and xlsx never reached `inventory` at all, and a name
+         with history but no inventory row is precisely what the union renders as `removed`.
+         Three plugins, three silently missing skills, and the gap scaled with the plugin: one
+         skill's worth of uses was also unattributed, so the Plugins panel undercounted them.
+Change   A plugin holding `SKILL.md` at its install root is inventoried as a skill under the
+         plugin's own name, owned by that plugin. The name comes from the plugin key, not the
+         directory: `installPath` ends in the version (`unknown`, `1.3.0`), so the directory
+         would file the skill under a name nothing can call it by — which is the same row, still
+         removed, just renamed. The frontmatter `name:` is deliberately not read either: a
+         plugin installed here declares `skills安全审计` for the directory `skills-sec-audit`,
+         so the manifest is not the invocable name. `inventory` gains no column and the schema
+         does not move; the owner map gains the entry, which is what `skill_usage.plugin` and
+         therefore `plugin_usage` are built from.
+Evidence L0 2026-10-13: `Ran 492 tests ... OK`. L1 (throwaway store, real logs): the Skills
+         panel reads `docx` as `in use` where it read `removed`, and Plugins goes from
+         `docx uses=0 skills=0` to `uses=8 skills=1`; `pptx` and `xlsx` appear as installed.
+         The `removed` rows that remain — `commit`, `review`, `security-and-hardening`,
+         `add-tests`, `systematic-debugging` and a dozen more — are correct: they belong to the
+         retired `skills/<category>/<skill>` layout that the `~/.agents/skills` symlinks
+         replaced. Provoked: deleting the new branch turns 6 of the 7 new cases red, including
+         the one that reads the symptom back through `db.q_skills`.
+Cost     The two surfaces overlap by name and are read as a union, so a plugin shipping both a
+         root manifest and a `skills/` directory contributes two rows where one plugin might
+         have meant one skill; nothing installed does, and both being real is better than one
+         being invented. Plugin **tools** and plugin **MCP servers** remain uninventoried — no
+         installed plugin ships either, `plugin.json` declares neither, and there is no rule to
+         read without guessing at one, so the format document now names the gap instead. If
+         either appears, the failure mode is this entry's, and that line is where to look.
+Commit   6af151f
