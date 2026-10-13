@@ -6,14 +6,17 @@ Run:  python3 -m unittest discover -s scripts/tests
 import importlib.util
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
+from _catalog import catalog_pinned  # noqa: E402 -- every scan below reads the snapshot fixture
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
@@ -22,6 +25,19 @@ import cbut_db as db  # noqa: E402
 _spec = importlib.util.spec_from_file_location("cbut_sync", SCRIPTS / "cbut-sync.py")
 sync = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sync)
+
+# scan_inventory resolves the installed CodeBuddy package. Pin it for the whole
+# module: a per-test pin is a convention the next test forgets, and forgetting it
+# does not fail -- it just measures whatever CLI the developer has installed.
+_CATALOG_PIN = catalog_pinned()
+
+
+def setUpModule():
+    _CATALOG_PIN.__enter__()
+
+
+def tearDownModule():
+    _CATALOG_PIN.__exit__(None, None, None)
 
 
 def write_records(path: Path, recs) -> None:
@@ -1633,6 +1649,348 @@ class ProviderOriginTest(unittest.TestCase):
         ])
         self.index()
         self.assertEqual(self.provider_of("m6"), "builtin")
+
+
+class BuiltinCatalogTest(unittest.TestCase):
+    """The builtin tool/agent catalogue is read from the installed package.
+
+    Before this, ``BUILTIN_TOOLS`` was 35 hand-typed names and the installed
+    package listed 61: the tool a panel said did not exist, the tool CodeBuddy
+    would happily have run. The check below is that the package decides, and that
+    the checked-in constants are a *fallback* rather than the answer.
+    """
+
+    SNAPSHOT = Path(__file__).resolve().parent / "fixtures" / "product.json.snapshot"
+
+    def catalog(self, env=None):
+        with mock.patch.dict(os.environ, env or {}, clear=False):
+            return sync.builtin_catalog()
+
+    def test_the_installed_package_decides_membership(self):
+        """``cli`` is in product.json and was never in the hand-typed table;
+        ``fork`` is in the table and not in the package. Neither fact may be lost
+        by the hand-off in ``builtin_catalog``."""
+        raw = json.loads(self.SNAPSHOT.read_text(encoding="utf-8"))
+        tools, agents, path = self.catalog(
+            {"CBUT_PRODUCT_JSON": str(self.SNAPSHOT)})
+        self.assertEqual(path, self.SNAPSHOT)
+        self.assertIn("cli", agents, "a name the package ships must be inventoried")
+        self.assertNotIn("fork", agents,
+                         "a name the package dropped must stop being inventoried "
+                         "-- otherwise it lingers forever as a 0-call row")
+        self.assertEqual(set(tools), set(raw[sync.PRODUCT_TOOLS_FIELD]))
+        self.assertEqual(set(agents), set(raw[sync.PRODUCT_AGENTS_FIELD]))
+
+    def test_an_unresolvable_package_falls_back_to_the_checked_in_constants(self):
+        """No package, no empty Tools panel: the shipped constants answer."""
+        tools, agents, path = self.catalog(
+            {"CBUT_PRODUCT_JSON": "/nonexistent/cbut/product.json"})
+        self.assertIsNone(path)
+        self.assertEqual(tools, frozenset(sync.BUILTIN_TOOLS))
+        self.assertEqual(agents, sync.BUILTIN_AGENTS)
+        self.assertIn("fork", agents)
+
+    def test_an_override_naming_nothing_locates_nothing(self):
+        """A pinned path that is not a file locates nothing.
+
+        Handing the path back anyway would make `cbut health` print a file that
+        does not exist as the catalogue in force — naming the one thing health
+        exists to disambiguate. Path-scoped, so the PATH scan is not needed:
+        the override short-circuits before it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            for pinned in (Path(tmp) / "absent.json", Path(tmp)):
+                with self.subTest(pinned=pinned):
+                    with mock.patch.dict(os.environ,
+                                         {"CBUT_PRODUCT_JSON": str(pinned)},
+                                         clear=False):
+                        self.assertIsNone(sync.resolve_product_json())
+        with mock.patch.dict(os.environ,
+                             {"CBUT_PRODUCT_JSON": str(self.SNAPSHOT)},
+                             clear=False):
+            self.assertEqual(sync.resolve_product_json(), self.SNAPSHOT)
+
+    def test_a_product_json_without_a_catalogue_falls_back_rather_than_half_reads(self):
+        """The four variant configs (internal, cloudhosted, ioa, selfhosted) carry
+        no ``tools``/``agents`` key at all. Reading one must not quietly empty the
+        Tools panel -- falling back to the constants is the honest answer."""
+        with tempfile.TemporaryDirectory() as tmp:
+            variant = Path(tmp) / sync.PRODUCT_JSON
+            variant.write_text(json.dumps({"productName": "cloudhosted"}),
+                               encoding="utf-8")
+            tools, agents, path = self.catalog({"CBUT_PRODUCT_JSON": str(variant)})
+        self.assertIsNone(path)
+        self.assertEqual(tools, frozenset(sync.BUILTIN_TOOLS))
+
+    def test_an_unreadable_or_corrupt_file_falls_back(self):
+        for name, body in (("garbage.json", "{not json"),
+                           ("empty.json", "")):
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    bad = Path(tmp) / name
+                    bad.write_text(body, encoding="utf-8")
+                    tools, _agents, path = self.catalog(
+                        {"CBUT_PRODUCT_JSON": str(bad)})
+                self.assertIsNone(path)
+                self.assertEqual(tools, frozenset(sync.BUILTIN_TOOLS))
+
+    def test_kind_stays_our_taxonomy_not_the_packages(self):
+        """product.json has no active/internal field -- it is cbut's own
+        distinction, and an internal agent must not be reclassified because the
+        package stopped mentioning it."""
+        _tools, agents, _path = self.catalog(
+            {"CBUT_PRODUCT_JSON": str(self.SNAPSHOT)})
+        self.assertEqual(agents["compact"], "internal")
+        self.assertEqual(agents["contextSummary"], "internal")
+        self.assertEqual(agents["Explore"], "active")
+
+    def test_the_resolver_finds_the_package_by_walking_up_from_the_executable(self):
+        """The real search, not the override: a fake prefix whose ``codebuddy`` is
+        a symlink into a nested directory, with the package root above it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "pkg" / "node_modules" / "codebuddy-code"
+            (root / "bin").mkdir(parents=True)
+            target = root / sync.PRODUCT_JSON
+            target.write_text(json.dumps({sync.PRODUCT_TOOLS_FIELD: [{"name": "Bash"}],
+                                          sync.PRODUCT_AGENTS_FIELD: [{"name": "cli"}]}),
+                              encoding="utf-8")
+            launcher = root / "bin" / "codebuddy"
+            launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+            launcher.chmod(0o755)          # PATH entries are only tried if executable
+            prefix = Path(tmp) / "bin"
+            prefix.mkdir()
+            (prefix / sync.PRODUCT_CLI_NAME).symlink_to(root / "bin" / "codebuddy")
+            tools, agents, found = self.catalog(
+                {"CBUT_PRODUCT_JSON": "", "PATH": str(prefix)})
+        self.assertEqual(found, target)
+        self.assertEqual(set(tools), {"Bash"})
+        self.assertEqual(set(agents), {"cli"})
+
+    def test_an_empty_path_resolves_to_nothing_rather_than_raising(self):
+        tools, _agents, path = self.catalog(
+            {"CBUT_PRODUCT_JSON": "", "PATH": ""})
+        self.assertIsNone(path)
+        self.assertEqual(tools, frozenset(sync.BUILTIN_TOOLS))
+
+    def test_no_package_means_no_subprocess(self):
+        """The refusal to shell out is load-bearing, not stylistic: the obvious
+        implementation of "find the CLI" is ``readlink $(which codebuddy)`` and
+        that breaks the invariant ``test_privacy`` enforces."""
+        source = Path(sync.__file__).read_text(encoding="utf-8")
+        body = source[source.index("def resolve_product_json"):]
+        body = body[:body.index("\ndef ")] if "\ndef " in body else body
+        for forbidden in ("subprocess", "Popen", "os.system", "shutil.which"):
+            self.assertNotIn(forbidden, body,
+                             f"resolve_product_json must not use {forbidden}")
+
+    def test_the_snapshot_has_not_drifted_from_the_installed_package(self):
+        """The snapshot is what a machine with no CLI compares against, so it has
+        to be current. Skipped where there is nothing to compare against -- but
+        the snapshot is still parsed, so an emptied or hand-edited fixture fails
+        everywhere instead of passing quietly."""
+        snapshot = json.loads(self.SNAPSHOT.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(snapshot[sync.PRODUCT_TOOLS_FIELD]), 30,
+                                "the snapshot lost its tools -- regenerate it")
+        self.assertGreaterEqual(len(snapshot[sync.PRODUCT_AGENTS_FIELD]), 10,
+                                "the snapshot lost its agents -- regenerate it")
+        with mock.patch.dict(os.environ, {"CBUT_PRODUCT_JSON": ""}, clear=False):
+            live_path = sync.resolve_product_json()
+        if live_path is None:
+            self.skipTest("no CodeBuddy package installed to compare the snapshot against")
+        live = sync._load_json(live_path)
+        for key in (sync.PRODUCT_TOOLS_FIELD, sync.PRODUCT_AGENTS_FIELD):
+            self.assertEqual(
+                sorted(set(sync._catalog_names(live.get(key)))),
+                snapshot[key],
+                f"{key} drifted from {live_path}. Re-run "
+                "scripts/tests/product_snapshot.py and re-read the surface.")
+
+
+class InventorySnapshotTest(unittest.TestCase):
+    """``inventory`` answers "what is installed now", and nothing else.
+
+    It used to be written with INSERT OR REPLACE and never deleted from, so a
+    plugin that was uninstalled and a skill directory that was removed kept their
+    rows forever, and every panel kept listing them as if they were installed.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.open_db(Path(self.tmp.name) / "t.db")
+        db.ensure_schema(self.conn)
+        self.root = Path(self.tmp.name) / "cb"
+        (self.root / "projects").mkdir(parents=True)
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = self.root
+        self.addCleanup(setattr, sync.db, "CODEBUDDY_DIR", old)
+        self.addCleanup(self.tmp.cleanup)
+
+    def scan(self):
+        return sync.scan_inventory(self.conn)
+
+    def names(self, kind=None):
+        sql = "SELECT name FROM inventory"
+        if kind:
+            sql += " WHERE kind=?"
+        return {r[0] for r in self.conn.execute(sql, (kind,) if kind else ())}
+
+    def make_skill(self, rel):
+        d = self.root / "skills" / rel
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("# fixture\n", encoding="utf-8")
+        return d
+
+    # -- Q1: symlinked skills ------------------------------------------------
+
+    def test_a_symlinked_skill_is_found(self):
+        """The bug that emptied the Skills panel: ``~/.codebuddy/skills`` is 27
+        symlinks into ``~/.agents/skills``, and ``glob("**/SKILL.md")`` does not
+        descend into a symlinked directory -- it matched exactly one entry, a
+        dot-directory. Nothing installed was visible."""
+        real = Path(self.tmp.name) / "elsewhere" / "grilling"
+        real.mkdir(parents=True)
+        (real / sync.SKILL_MANIFEST).write_text("# fixture\n", encoding="utf-8")
+        (self.root / "skills").mkdir()
+        (self.root / "skills" / "grilling").symlink_to(real)
+        self.scan()
+        self.assertIn("grilling", self.names("skill"),
+                      "a symlinked skill is not visible to a ** glob")
+
+    def test_a_real_skill_beside_a_symlinked_one_is_still_found(self):
+        real = Path(self.tmp.name) / "elsewhere" / "linked-skill"
+        real.mkdir(parents=True)
+        (real / sync.SKILL_MANIFEST).write_text("# fixture\n", encoding="utf-8")
+        (self.root / "skills").mkdir()
+        (self.root / "skills" / "linked-skill").symlink_to(real)
+        self.make_skill("plain-skill")
+        self.scan()
+        self.assertEqual(self.names("skill"), {"linked-skill", "plain-skill"})
+
+    def test_the_retired_category_layout_is_still_read(self):
+        """The old layout was skills/<category>/<skill>/SKILL.md. Following
+        symlinks must not have come at the cost of it."""
+        self.make_skill("ai/add-tests")
+        self.make_skill("backend/api-contract")
+        self.scan()
+        self.assertEqual(self.names("skill"), {"add-tests", "api-contract"})
+
+    def test_a_symlink_without_a_manifest_is_not_a_skill(self):
+        dangling = Path(self.tmp.name) / "gone"
+        (self.root / "skills").mkdir()
+        (self.root / "skills" / "broken").symlink_to(dangling)
+        self.make_skill("real-one")
+        self.scan()
+        self.assertEqual(self.names("skill"), {"real-one"})
+
+    def test_a_symlink_is_never_descended_into(self):
+        """One level, exactly. A link pointing at a tree of skills must contribute
+        its own directory or nothing -- following it would turn a second skill
+        store into a second source of truth for the same panel."""
+        outer = Path(self.tmp.name) / "elsewhere" / "container"
+        inner = outer / "hidden-skill"
+        inner.mkdir(parents=True)
+        (inner / sync.SKILL_MANIFEST).write_text("# fixture\n", encoding="utf-8")
+        (outer / sync.SKILL_MANIFEST).write_text("# fixture\n", encoding="utf-8")
+        (self.root / "skills").mkdir()
+        (self.root / "skills" / "container").symlink_to(outer)
+        self.scan()
+        self.assertEqual(self.names("skill"), {"container"})
+
+    def test_a_dot_directory_is_never_a_skill(self):
+        """``.skill`` was inventoried as a skill because the hidden-prefix rule
+        only ran inside a plugin."""
+        self.make_skill(".skill")
+        self.make_skill("visible")
+        self.scan()
+        self.assertEqual(self.names("skill"), {"visible"})
+
+    def test_a_dot_directory_is_not_searched_for_nested_skills(self):
+        self.make_skill(".cache/nested-skill")
+        self.scan()
+        self.assertEqual(self.names("skill"), set())
+
+    # -- Q2: the snapshot replaces rather than accumulates -------------------
+
+    def test_a_removed_skill_leaves_the_inventory(self):
+        skill = self.make_skill("temporary")
+        self.scan()
+        self.assertIn("temporary", self.names("skill"))
+        shutil.rmtree(skill)
+        self.scan()
+        self.assertNotIn("temporary", self.names("skill"),
+                         "a skill deleted from disk is still listed as installed")
+
+    def test_a_removed_plugin_leaves_the_inventory(self):
+        plugins = self.root / "plugins"
+        plugins.mkdir()
+        index = plugins / sync.PLUGIN_INDEX_FILE
+        index.write_text(json.dumps({"plugins": {"keep@official": [
+            {"installPath": str(plugins / "keep"), "version": "1"}],
+            "drop@official": [{"installPath": str(plugins / "drop"), "version": "1"}]}}),
+            encoding="utf-8")
+        self.scan()
+        self.assertIn("drop", self.names("plugin"))
+        index.write_text(json.dumps({"plugins": {"keep@official": [
+            {"installPath": str(plugins / "keep"), "version": "1"}]}}), encoding="utf-8")
+        self.scan()
+        self.assertEqual(self.names("plugin"), {"keep"})
+
+    def test_a_removed_agent_leaves_the_inventory(self):
+        agents = self.root / "agents"
+        agents.mkdir()
+        spec = agents / "code-reviewer.md"
+        spec.write_text("# fixture\n", encoding="utf-8")
+        self.scan()
+        self.assertIn("code-reviewer", self.names("agent"))
+        spec.unlink()
+        self.scan()
+        self.assertNotIn("code-reviewer", self.names("agent"))
+
+    def test_a_failed_scan_leaves_the_previous_snapshot_alone(self):
+        """All-or-nothing. A half-completed scan that emptied the table would be
+        worse than a stale one: every panel would read as empty while the history
+        underneath it was intact."""
+        self.make_skill("before-the-failure")
+        self.scan()
+        before = self.names("skill")
+
+        original = sync.collect_inventory
+        def exploding():
+            rows, owners, path = original()
+            raise OSError("the filesystem went away mid-scan")
+        with mock.patch.object(sync, "collect_inventory", exploding):
+            with self.assertRaises(OSError):
+                self.scan()
+        self.assertEqual(self.names("skill"), before,
+                         "a failed scan must not clear what was already known")
+
+    def test_the_replace_is_one_transaction(self):
+        """A reader must never see the empty gap between the delete and the
+        insert, and a failure mid-insert must leave the old rows.
+
+        The failure is induced with a real trigger rather than a mocked
+        ``executemany`` — ``sqlite3.Connection`` does not accept attribute
+        patching, and a proxy would test the proxy. ``RAISE(ABORT)`` inside a
+        statement rolls that statement back, which is exactly the shape of the
+        interruption being guarded against.
+        """
+        self.make_skill("keep-me")
+        self.scan()
+        self.conn.execute(
+            "CREATE TRIGGER refuse_new_rows BEFORE INSERT ON inventory"
+            " BEGIN SELECT RAISE(ABORT, 'interrupted'); END")
+        with self.assertRaises(sqlite3.IntegrityError):
+            sync.replace_inventory(
+                self.conn, [("skill", "ghost", "", None, None, "user")])
+        self.conn.execute("DROP TRIGGER refuse_new_rows")
+        self.assertEqual(self.names("skill"), {"keep-me"},
+                         "the delete and the insert are not in one transaction")
+
+    def test_rescanning_is_idempotent(self):
+        self.make_skill("stable")
+        for _ in range(3):
+            self.scan()
+        self.assertEqual(self.names("skill"), {"stable"})
 
 
 if __name__ == "__main__":

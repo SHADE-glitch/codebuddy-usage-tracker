@@ -16,11 +16,13 @@ Standard library only. Nothing in the repository is written by these tests.
 import contextlib
 import importlib.util
 import io
+import os
 import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 
@@ -36,6 +38,21 @@ _spec.loader.exec_module(stats)
 DOC = REPO / "docs" / "maintenance" / "codebuddy-format.md"
 DOCDIR = REPO / "docs" / "maintenance"
 
+# The builtin catalogue is resolved from the *installed* CodeBuddy package, so a
+# checked-in document compared against a live resolution would go red on every
+# machine whose CLI version differs from the one that wrote the file — and green
+# on exactly one. Pin the search to a path that cannot exist, which pins the
+# document to the registry the repository actually ships. The pinned fallback is
+# still asserted below, so this cannot quietly become "an empty document
+# compared against an empty renderer".
+_NO_PRODUCT_JSON = "/nonexistent/cbut-tests/product.json"
+
+
+def fallback_format_doc() -> str:
+    """``format_doc`` as it must read on a machine with no resolvable package."""
+    with mock.patch.dict(os.environ, {"CBUT_PRODUCT_JSON": _NO_PRODUCT_JSON}):
+        return db.load_sync().format_doc()
+
 
 def block_of(text: str) -> str:
     head, _, rest = text.partition(stats.FORMAT_BEGIN + "\n")
@@ -50,9 +67,31 @@ class GeneratedFormatBlockTest(unittest.TestCase):
         """The point of the file: what it states is decided by the parser."""
         self.assertEqual(
             block_of(DOC.read_text(encoding="utf-8")),
-            db.load_sync().format_doc(),
+            fallback_format_doc(),
             "docs/maintenance/codebuddy-format.md is stale — run "
             "`cbut format --write` in the same change as the registry")
+
+    def test_the_document_names_the_catalogue_it_used(self):
+        """A bare "61 builtin tools" is two different statements depending on
+        whether the package resolved, so the source travels with the count."""
+        text = DOC.read_text(encoding="utf-8")
+        self.assertIn("Builtin catalogue source", text)
+        self.assertIn("fallback constants", text,
+                      "the checked-in document must say it describes the "
+                      "shipped registry, not whatever CLI wrote it")
+        self.assertIn("product.json unresolved", text)
+
+    def test_a_product_json_catalogue_changes_the_document(self):
+        """The renderer really does read the catalogue it is handed: give it a
+        different one and the rendered block must move with it."""
+        sync = db.load_sync()
+        shrunk = frozenset({"Bash", "Read"})
+        live = sync.format_doc(tools=shrunk, agents={"general-purpose": "active"},
+                               source=Path("/somewhere/product.json"))
+        self.assertIn("2 builtin tools", live)
+        self.assertIn("1 builtin agents", live)
+        self.assertIn("/somewhere/product.json", live)
+        self.assertNotEqual(block_of(DOC.read_text(encoding="utf-8")), live)
 
     def test_every_read_field_appears_in_the_document(self):
         """Positive control. The comparison above would also pass on a renderer
@@ -71,7 +110,8 @@ class GeneratedFormatBlockTest(unittest.TestCase):
         original = sync.RECORD_FIELDS
         try:
             sync.RECORD_FIELDS = original | {"aNewUpstreamField"}
-            drifted = sync.format_doc()
+            with mock.patch.dict(os.environ, {"CBUT_PRODUCT_JSON": _NO_PRODUCT_JSON}):
+                drifted = sync.format_doc()
         finally:
             sync.RECORD_FIELDS = original
         self.assertNotEqual(block_of(DOC.read_text(encoding="utf-8")), drifted)
@@ -100,7 +140,7 @@ class GeneratedFormatBlockTest(unittest.TestCase):
                 f"intro\n{stats.FORMAT_BEGIN}\nfresh\n{stats.FORMAT_END}\ntrailer\n")
 
     def test_the_writer_is_idempotent(self):
-        body = db.load_sync().format_doc()
+        body = fallback_format_doc()
         with tempfile.TemporaryDirectory() as tmp:
             doc = Path(tmp) / "doc.md"
             doc.write_text(f"{stats.FORMAT_BEGIN}\n{stats.FORMAT_END}\n",

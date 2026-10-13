@@ -24,6 +24,7 @@ import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
+from _catalog import catalog_pinned  # noqa: E402 -- the rebuilds below scan the snapshot fixture
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
@@ -32,6 +33,16 @@ import cbut_db as db  # noqa: E402
 _spec = importlib.util.spec_from_file_location("cbut_sync", SCRIPTS / "cbut-sync.py")
 sync = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sync)
+
+_CATALOG_PIN = catalog_pinned()
+
+
+def setUpModule():
+    _CATALOG_PIN.__enter__()
+
+
+def tearDownModule():
+    _CATALOG_PIN.__exit__(None, None, None)
 
 V2_COLUMNS = (
     " message_id TEXT PRIMARY KEY, session_id TEXT,"

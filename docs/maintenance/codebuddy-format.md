@@ -21,14 +21,15 @@ cbut format --write      # refresh the block in this file after changing the reg
 - **`_meta` fields**: `baggage`
 - **message content-block fields**: `text`
 - **tool argument names**: `agent_type`, `args`, `command`, `skill`, `subagent_type`, `toolName`, `tool_name`
-- **inventory JSON keys**: `installPath`, `mcpServers`, `models`, `plugins`, `url`, `version`
+- **inventory JSON keys**: `agents`, `installPath`, `mcpServers`, `models`, `name`, `plugins`, `tools`, `url`, `version`
 - **Tool names that drive classification**: `Skill`, `Agent`, prefix `mcp__` with separator `__`
 - **Meta tools (wrap another tool)**: `DeferExecuteTool`, `ListMcpResources`, `ReadMcpResource`, `ToolSearch`, `WaitForMcpServers`
 - **Tolerant name tables** (an unknown name still indexes): 35 builtin tools, 17 builtin agents, default agent type `general-purpose`
+- **Builtin catalogue source**: fallback constants (product.json unresolved) — the installed `codebuddy` package's `product.json`, found by resolving the executable on `PATH` and walking up; `CBUT_PRODUCT_JSON` overrides the search. Membership follows the package, so a name it drops stops being inventoried; `kind` (active/internal) stays this tool's taxonomy
 - **Markers parsed out of text**: `<command-name>\s*/?([^<\s]+)\s*</command-name>` · `codebuddy\.session_id=([^,\s]+)`
 - **On-disk layout, relative to `~/.codebuddy`**:
   - `projects` / `**/*.jsonl` — transcripts, the only ingested log tree
-  - `skills` / `**/SKILL.md` — a skill is the parent of a manifest
+  - `skills` — a direct child holding `SKILL.md` is a skill; one category level below is still read, as is `**/SKILL.md` for anything deeper. Symlinked entries are followed exactly one level: `glob("**")` does not cross a symlink, which is how the whole symlinked tree went missing at once
   - `agents` / `*.md` — user agents
   - `mcp.json` — MCP servers
   - `plugins` / `installed_plugins.json`, keys split on `@`
@@ -38,6 +39,7 @@ cbut format --write      # refresh the block in this file after changing the reg
   - `agents` → `agent`
   - `commands` → `command`
 - **Transcript framing**: one JSON record per line, separated by a newline byte (`b'\n'`)
+- **`inventory` is a snapshot of what is installed now**: rebuilt on every sync, deleted and re-inserted in one transaction. A name that leaves it stays listed by the usage tables with `installed = 0`, which is the only thing that distinguishes "removed" from "never installed"
 <!-- END generated -->
 
 ## Deliberately not read

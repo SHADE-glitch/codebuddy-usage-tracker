@@ -54,23 +54,57 @@ FORMAT_METHODS = {"startswith", "endswith", "split", "partition", "rfind",
 # this file, and asserting otherwise would forbid the mirror design.
 SOURCE_CONSTANTS = (
     "DIR_PROJECTS", "DIR_SKILLS", "DIR_AGENTS", "DIR_PLUGINS", "TRANSCRIPT_GLOB",
-    "SKILL_MANIFEST_GLOB", "AGENT_SPEC_GLOB", "MCP_FILE", "PLUGIN_INDEX_FILE",
-    "PLUGIN_MARKETPLACE_SEP", "INVENTORY_HIDDEN_PREFIX", "PLUGIN_SUBDIRS",
-    "TRANSCRIPT_LINE_SEP", "SKILL_TOOL", "AGENT_TOOL", "MCP_TOOL_PREFIX",
-    "MCP_TOOL_SEP", "CMD_RE", "BAGGAGE_SID_RE", "MODEL_RESPONSE_TYPES",
+    "SKILL_MANIFEST", "SKILL_MANIFEST_GLOB", "AGENT_SPEC_GLOB", "MCP_FILE",
+    "PLUGIN_INDEX_FILE", "PLUGIN_MARKETPLACE_SEP", "INVENTORY_HIDDEN_PREFIX",
+    "PLUGIN_SUBDIRS", "TRANSCRIPT_LINE_SEP", "SKILL_TOOL", "AGENT_TOOL",
+    "MCP_TOOL_PREFIX", "MCP_TOOL_SEP", "CMD_RE", "BAGGAGE_SID_RE",
+    "MODEL_RESPONSE_TYPES",
+    "PRODUCT_JSON", "PRODUCT_TOOLS_FIELD", "PRODUCT_AGENTS_FIELD",
+    "PRODUCT_NAME_FIELD", "PRODUCT_CLI_NAME",
     "USAGE_FIELDS", "CACHE_USAGE_FIELDS", "UNPARSEABLE_LINE", "PROVIDER_SEP",
 )
 
 
 def get_literal_keys(tree):
-    """``{key: [lineno, ...]}`` for every ``x.get("<literal>", ...)`` call."""
+    """``{key: [lineno, ...]}`` for every ``x.get("<literal>", ...)`` call.
+
+    ``os.environ.get("PATH")`` is the same AST shape and is deliberately
+    excluded: the check is about JSON keys belonging to *CodeBuddy's data*, and
+    an environment variable name is not one — registering those would put this
+    repository's own configuration into a document that describes the upstream
+    format.
+    """
     out = {}
     for node in ast.walk(tree):
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "get" and node.args
                 and isinstance(node.args[0], ast.Constant)
                 and isinstance(node.args[0].value, str)):
-            out.setdefault(node.args[0].value, []).append(node.lineno)
+            continue
+        owner = node.func.value
+        if (isinstance(owner, ast.Attribute) and owner.attr == "environ"
+                and isinstance(owner.value, ast.Name) and owner.value.id == "os"):
+            continue
+        out.setdefault(node.args[0].value, []).append(node.lineno)
+    return out
+
+
+def constant_string_values(tree):
+    """Values of module-level ``NAME = "literal"`` constants.
+
+    A registered field the code reads *through* a constant never appears as a
+    literal at the call site (``raw.get(PRODUCT_TOOLS_FIELD)``), so it needs the
+    same exemption the dynamically-read token fields get. Derived from the
+    source rather than hand-listed: a new ``PRODUCT_*_FIELD`` is covered the
+    moment it exists, and renaming one moves the value and the read together.
+    """
+    out = set()
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            out.add(node.value.value)
     return out
 
 
@@ -159,16 +193,20 @@ class FieldsAreRegisteredTest(unittest.TestCase):
 
     def test_no_registered_field_is_dead(self):
         """A registered field nobody reads is the schema_version failure mode:
-        a declaration that stopped being true. The two token tuples and the nested
-        cache path are read dynamically (``raw.get(k)``, ``raw.get(TUPLE[0])``) so
-        they are exempted *by construction* — RAW_USAGE_FIELDS is derived from them,
-        not typed out again. The nested path is the one exemption with no column to
-        check it against, so its proof is behavioural:
-        ``test_a_nested_cache_hit_is_recorded_when_the_top_level_is_absent``.
+        a declaration that stopped being true. Two groups are exempt *by
+        construction* rather than by hand-listing, so neither can rot:
+
+        * the token tuples and the nested cache path, read dynamically
+          (``raw.get(k)``, ``raw.get(TUPLE[0])``) — RAW_USAGE_FIELDS is derived
+          from them, not typed out again. The nested path is the one exemption
+          with no column to check it against, so its proof is behavioural:
+          ``test_a_nested_cache_hit_is_recorded_when_the_top_level_is_absent``.
+        * fields read through a registered constant (``raw.get(PRODUCT_TOOLS_FIELD)``),
+          derived by ``constant_string_values`` from the source.
         """
         reads = set(get_literal_keys(TREE))
         dynamic = (frozenset(sync.USAGE_FIELDS) | frozenset(sync.CACHE_USAGE_FIELDS)
-                   | sync.NESTED_USAGE_FIELDS)
+                   | sync.NESTED_USAGE_FIELDS | constant_string_values(TREE))
         dead = sync.CODEBUDDY_FIELDS - reads - dynamic
         self.assertEqual(dead, frozenset(),
                          f"registered but never read: {sorted(dead)}")

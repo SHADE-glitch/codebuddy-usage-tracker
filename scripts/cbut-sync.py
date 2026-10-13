@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -56,10 +57,13 @@ DIR_SKILLS = "skills"
 DIR_AGENTS = "agents"
 DIR_PLUGINS = "plugins"
 TRANSCRIPT_GLOB = "**/*.jsonl"
-# A skill is the *parent of a manifest*: skills/<category>/<skill>/SKILL.md.
-# Treating one directory level as the skill listed the categories ("backend",
-# "frontend") as skills and hid every real one.
-SKILL_MANIFEST_GLOB = "**/SKILL.md"
+# The manifest that makes a directory a skill. It is joined onto each entry
+# rather than globbed: ``**/SKILL.md`` does not descend into a *symlinked*
+# directory, and ~/.codebuddy/skills is symlinks, so a recursive glob saw none
+# of the installed skills while the panels kept listing names from a layout
+# that no longer exists. A skill is a direct child of skills/ that holds one.
+SKILL_MANIFEST = "SKILL.md"
+SKILL_MANIFEST_GLOB = "**/SKILL.md"      # kept: the retired layout is still read (see _skill_dirs)
 AGENT_SPEC_GLOB = "*.md"                 # agents/<name>.md
 MCP_FILE = "mcp.json"
 MODELS_FILE = "models.json"              # custom provider definitions (url per model id)
@@ -74,6 +78,18 @@ PLUGIN_SUBDIRS = ((DIR_SKILLS, "skill"), (DIR_AGENTS, "agent"),
 # A transcript is newline-delimited JSON. The same separator decides where an
 # incremental offset is allowed to resume: one byte mid-line is a rewritten file.
 TRANSCRIPT_LINE_SEP = b"\n"
+
+# The builtin catalogue, read from the installed CodeBuddy package rather than
+# retyped here. NOT under ~/.codebuddy — it ships inside the npm package, at
+# <package-root>/product.json, which is found by resolving the ``codebuddy``
+# executable on PATH upwards (see ``resolve_product_json``). The JSON keys below
+# are the only thing about that file this parser assumes.
+PRODUCT_JSON = "product.json"
+PRODUCT_TOOLS_FIELD = "tools"
+PRODUCT_AGENTS_FIELD = "agents"
+PRODUCT_NAME_FIELD = "name"
+# The executable on PATH that leads to the package root.
+PRODUCT_CLI_NAME = "codebuddy"
 
 # Tool names that carry meaning for classification (see ``_classify``).
 SKILL_TOOL = "Skill"
@@ -208,6 +224,9 @@ TOOL_ARG_FIELDS = frozenset({
 # models.json (whose "models"[].id/url give the custom routes their host).
 INVENTORY_JSON_FIELDS = frozenset({
     "mcpServers", "plugins", "installPath", "version", "models", "url",
+    # product.json, the builtin catalogue. Read by name, so the field has to be
+    # registered or the registry stops describing the parser.
+    PRODUCT_TOOLS_FIELD, PRODUCT_AGENTS_FIELD, PRODUCT_NAME_FIELD,
 })
 
 CODEBUDDY_FIELDS = (RECORD_FIELDS | PROVIDER_FIELDS | BAGGAGE_FIELDS
@@ -236,7 +255,7 @@ def _session_id(rec) -> str | None:
     return m.group(1) if m else None
 
 
-# --- inventory (what is installed / available) -----------------------------
+# --- builtin catalogue (product.json) ---------------------------------------
 
 
 def _load_json(path: Path):
@@ -247,8 +266,124 @@ def _load_json(path: Path):
         return None
 
 
-def scan_inventory(conn: sqlite3.Connection) -> tuple[dict, dict, dict]:
-    """Populate the inventory table; return skill/agent/command -> plugin maps."""
+def resolve_product_json() -> Path | None:
+    """Locate the installed CodeBuddy package's ``product.json``, or ``None``.
+
+    ``CBUT_PRODUCT_JSON`` wins; otherwise PATH is scanned for the ``codebuddy``
+    executable and the package root is found by walking up from the resolved
+    target. Pure ``os``/``pathlib`` on purpose — shelling out to
+    ``readlink $(which codebuddy)`` would break the invariant that no production
+    script spawns a process (``test_privacy``).
+    """
+    override = os.environ.get("CBUT_PRODUCT_JSON")
+    if override:
+        pinned = Path(override).expanduser()
+        # An override that names nothing is an override that locates nothing:
+        # returning the path anyway would report a file nobody can read as the
+        # catalogue in force, which is the one claim health exists to refute.
+        return pinned if pinned.is_file() else None
+    path_env = os.environ.get("PATH")
+    if not path_env:
+        return None
+    for entry in path_env.split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            candidate = Path(entry) / PRODUCT_CLI_NAME
+            if not candidate.is_file() or not os.access(candidate, os.X_OK):
+                continue
+            # Symlinks into node_modules/.bin are what npm actually installs;
+            # resolve() is what makes the package root reachable by walking up.
+            for parent in candidate.resolve().parents:
+                found = parent / PRODUCT_JSON
+                if found.is_file():
+                    return found
+        except OSError:
+            continue
+    return None
+
+
+def builtin_catalog() -> tuple[frozenset, dict, Path | None]:
+    """Return ``(tool names, agent name -> kind, product.json path or None)``.
+
+    The installed package decides **membership** — which names exist at all —
+    because that is what moves with the install: product.json carries ``cli``
+    and not ``fork``, so a name the package dropped stops being inventoried
+    instead of outliving it as a permanent 0-call row. Membership it does not
+    carry is ``kind``: active-vs-internal is this tool's taxonomy, and
+    BUILTIN_AGENTS supplies it, defaulting to "active".
+
+    The checked-in fallback constants exist so a machine without a resolvable
+    package still gets a catalogue instead of empty panels. ``cbut health``
+    prints which of the two was used, so a stale fallback cannot quietly
+    masquerade as the real list.
+    """
+    path = resolve_product_json()
+    if path is not None:
+        raw = _load_json(path)
+        if isinstance(raw, dict):
+            tools = frozenset(_catalog_names(raw.get(PRODUCT_TOOLS_FIELD)))
+            names = _catalog_names(raw.get(PRODUCT_AGENTS_FIELD))
+            if tools and names:
+                agents = {n: BUILTIN_AGENTS.get(n, "active") for n in names}
+                return tools, agents, path
+    return frozenset(BUILTIN_TOOLS), dict(BUILTIN_AGENTS), None
+
+
+def _catalog_names(entries) -> list[str]:
+    """Names out of a product.json array, whatever shape the entries have."""
+    if not isinstance(entries, list):
+        return []
+    names = []
+    for entry in entries:
+        if isinstance(entry, str):
+            names.append(entry)
+        elif isinstance(entry, dict) and isinstance(entry.get(PRODUCT_NAME_FIELD), str):
+            names.append(entry[PRODUCT_NAME_FIELD])
+    return names
+
+
+# --- inventory (what is installed / available) -----------------------------
+
+
+def _skill_dirs(base: Path):
+    """Yield every directory under ``base`` that holds a manifest.
+
+    Two layouts are real on this machine and both are still read:
+
+    ``skills/<skill>/SKILL.md``
+        The entries are symlinks. The manifest is found by *joining* onto the
+        entry, which crosses the link.
+    ``skills/<category>/<skill>/SKILL.md``
+        The retired layout, reached by descending into a real directory.
+
+    Recursion is deliberately blind to symlinks: ``Path.glob("**/…")`` does not
+    descend into a symlinked directory at all, which is how a glob for
+    ``**/SKILL.md`` found none of the 27 symlinked skills while the panels went
+    on listing names from a layout that had been gone for weeks.
+    """
+    try:
+        entries = sorted(base.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name.startswith(INVENTORY_HIDDEN_PREFIX):
+            continue
+        try:
+            if (entry / SKILL_MANIFEST).is_file():
+                yield entry
+            elif entry.is_dir() and not entry.is_symlink():
+                yield from _skill_dirs(entry)
+        except OSError:
+            continue
+
+
+def collect_inventory() -> tuple[list[tuple], dict, Path | None]:
+    """Read every installed entity off disk.
+
+    Returns ``(rows, owner maps, product.json path)`` and writes nothing, so a
+    scan that dies half way through cannot leave a half-replaced table behind.
+    """
     root = db.CODEBUDDY_DIR
     rows: list[tuple] = []
     skill_owner: dict[str, str] = {}
@@ -257,11 +392,13 @@ def scan_inventory(conn: sqlite3.Connection) -> tuple[dict, dict, dict]:
     owner_maps = {"skill": skill_owner, "agent": agent_owner,
                   "command": command_owner}
 
-    # builtin tools + agents. owner_plugin is part of the primary key, so use an
-    # empty string (not NULL) for "no owner" — SQLite treats NULLs as distinct
-    # in a unique index, which would let duplicates accumulate across runs.
-    rows += [("tool", n, "", None, None, "builtin") for n in sorted(BUILTIN_TOOLS)]
-    rows += [("agent", n, "", None, None, "builtin") for n in sorted(BUILTIN_AGENTS)]
+    # builtin tools + agents, from the installed package when it can be found.
+    # owner_plugin is part of the primary key, so use an empty string (not NULL)
+    # for "no owner" — SQLite treats NULLs as distinct in a unique index, which
+    # would let duplicates accumulate across runs.
+    tools, agents, product_path = builtin_catalog()
+    rows += [("tool", n, "", None, None, "builtin") for n in sorted(tools)]
+    rows += [("agent", n, "", None, None, "builtin") for n in sorted(agents)]
 
     # MCP servers
     mcp_path = root / MCP_FILE
@@ -269,16 +406,13 @@ def scan_inventory(conn: sqlite3.Connection) -> tuple[dict, dict, dict]:
     for server in (mcp.get("mcpServers") or {}):
         rows.append(("mcp", server, "", None, str(mcp_path), "user"))
 
-    # User skills. The layout on disk is skills/<category>/<skill>/SKILL.md, so a
-    # skill is the *parent of a manifest* — the directories directly under
-    # skills/ are categories, and listing them as skills put names like "backend"
-    # and "frontend" in the Skills panel while the real skills were missing.
-    # The scan also covers a skill that sits one level down with no category.
+    # User skills. Dot-prefixed entries are skipped here as well as inside a
+    # plugin: ".skill" was inventoried as a skill because the hidden-prefix rule
+    # only ran on the plugin side.
     user_skills = root / DIR_SKILLS
     if user_skills.is_dir():
-        for manifest in sorted(user_skills.glob(SKILL_MANIFEST_GLOB)):
-            rows.append(("skill", manifest.parent.name, "", None,
-                         str(manifest.parent), "user"))
+        for skill in _skill_dirs(user_skills):
+            rows.append(("skill", skill.name, "", None, str(skill), "user"))
 
     # User agents: ~/.codebuddy/agents/<name>.md. These were never scanned, so
     # an installed-but-unused agent could not appear in the Agents panel at all.
@@ -313,13 +447,34 @@ def scan_inventory(conn: sqlite3.Connection) -> tuple[dict, dict, dict]:
                     rows.append((kind, item, name, version, str(entry), "plugin"))
                     owner_maps[kind][item] = name
 
-    conn.executemany(
-        "INSERT OR REPLACE INTO inventory(kind, name, owner_plugin, version, path, source)"
-        " VALUES(?, ?, ?, ?, ?, ?)",
-        rows,
-    )
-    conn.commit()
-    return skill_owner, agent_owner, command_owner
+    return rows, owner_maps, product_path
+
+
+def replace_inventory(conn: sqlite3.Connection, rows: list[tuple]) -> None:
+    """Make ``inventory`` a snapshot of what is installed right now.
+
+    One transaction for the delete and the insert, so a reader never sees the
+    empty gap, and so a failure mid-write leaves the previous snapshot intact.
+    The table used to be written with INSERT OR REPLACE only, which meant an
+    uninstalled plugin or a deleted skill file kept its row forever and every
+    panel kept listing it — "ever used ∪ installed" read as "installed ∪ ever
+    believed installed". "Ever used" is what the usage tables carry; this table
+    answers only "is it here now".
+    """
+    with conn:                                  # BEGIN … COMMIT / ROLLBACK
+        conn.execute("DELETE FROM inventory")
+        conn.executemany(
+            "INSERT OR REPLACE INTO inventory(kind, name, owner_plugin, version, path, source)"
+            " VALUES(?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
+def scan_inventory(conn: sqlite3.Connection) -> tuple[dict, dict, dict]:
+    """Refresh the inventory snapshot; return skill/agent/command -> plugin maps."""
+    rows, owner_maps, _path = collect_inventory()
+    replace_inventory(conn, rows)
+    return owner_maps["skill"], owner_maps["agent"], owner_maps["command"]
 
 
 # --- transcript indexing ---------------------------------------------------
@@ -910,13 +1065,29 @@ def backfill_plugin_usage(conn: sqlite3.Connection) -> int:
 # --- documentation ---------------------------------------------------------
 
 
-def format_doc() -> str:
+def format_doc(tools=None, agents=None, source: Path | None = None) -> str:
     """Render the format registry as markdown (``cbut format``).
 
     Every value is read back out of the constants rather than retyped, so the
     checked-in document cannot describe a surface the code no longer reads.
     ``scripts/tests/test_maintenance_docs.py`` holds the file to this output.
+
+    The builtin catalogue is the one part that is *not* a constant any more, so
+    it is passed in — together with where it came from, because a count of 61
+    and a count of 35 are the same number of tools on a machine with a
+    resolvable CodeBuddy package and one without, and a document that stated
+    the first while the code used the second would be lying. Left to itself it
+    resolves the live catalogue; ``test_maintenance_docs`` pins the fallback so
+    the checked-in file describes the checked-in registry.
     """
+    if tools is None or agents is None:
+        _tools, _agents, resolved = builtin_catalog()
+        tools = _tools if tools is None else tools
+        agents = _agents if agents is None else agents
+        source = source or resolved
+    origin = "product.json" if source else "fallback constants"
+    where = f" (`{source}`)" if source else " (product.json unresolved)"
+
     def row(title, values):
         items = ", ".join(f"`{v}`" for v in sorted(values))
         return f"- **{title}**: {items}\n"
@@ -942,15 +1113,23 @@ def format_doc() -> str:
         f"with separator `{MCP_TOOL_SEP}`\n",
         row("Meta tools (wrap another tool)", META_TOOLS),
         f"- **Tolerant name tables** (an unknown name still indexes): "
-        f"{len(BUILTIN_TOOLS)} builtin tools, {len(BUILTIN_AGENTS)} builtin agents, "
+        f"{len(tools)} builtin tools, {len(agents)} builtin agents, "
         f"default agent type `{DEFAULT_AGENT_TYPE}`\n",
+        f"- **Builtin catalogue source**: {origin}{where} — the installed "
+        f"`{PRODUCT_CLI_NAME}` package's `{PRODUCT_JSON}`, found by resolving "
+        "the executable on `PATH` and walking up; `CBUT_PRODUCT_JSON` overrides "
+        "the search. Membership follows the package, so a name it drops stops "
+        "being inventoried; `kind` (active/internal) stays this tool's taxonomy\n",
         "- **Markers parsed out of text**: "
         f"`{CMD_RE.pattern}` · `{BAGGAGE_SID_RE.pattern}`\n",
         "- **On-disk layout, relative to `~/.codebuddy`**:\n"
         f"  - `{DIR_PROJECTS}` / `{TRANSCRIPT_GLOB}` — transcripts, the only "
         "ingested log tree\n"
-        f"  - `{DIR_SKILLS}` / `{SKILL_MANIFEST_GLOB}` — a skill is the parent "
-        "of a manifest\n"
+        f"  - `{DIR_SKILLS}` — a direct child holding `{SKILL_MANIFEST}` is a "
+        f"skill; one category level below is still read, as is `{SKILL_MANIFEST_GLOB}` "
+        "for anything deeper. Symlinked entries are followed exactly one level: "
+        "`glob(\"**\")` does not cross a symlink, which is how the whole symlinked "
+        "tree went missing at once\n"
         f"  - `{DIR_AGENTS}` / `{AGENT_SPEC_GLOB}` — user agents\n"
         f"  - `{MCP_FILE}` — MCP servers\n"
         f"  - `{DIR_PLUGINS}` / `{PLUGIN_INDEX_FILE}`, keys split on "
@@ -960,6 +1139,10 @@ def format_doc() -> str:
         + pairs("plugin subdirectories (dir → kind)", PLUGIN_SUBDIRS) +
         f"- **Transcript framing**: one JSON record per line, separated by a "
         f"newline byte (`{TRANSCRIPT_LINE_SEP!r}`)\n",
+        "- **`inventory` is a snapshot of what is installed now**: rebuilt on "
+        "every sync, deleted and re-inserted in one transaction. A name that "
+        "leaves it stays listed by the usage tables with `installed = 0`, which "
+        "is the only thing that distinguishes \"removed\" from \"never installed\"\n",
     ]
     return "".join(out)
 
