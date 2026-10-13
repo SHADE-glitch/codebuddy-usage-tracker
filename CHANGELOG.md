@@ -855,3 +855,111 @@ Cost     The manifest and ignore lists are hard-coded, so a deliberate second ma
          rule, not something this entry introduces.
 
 Commit   ca82a0b
+
+### D-041 · 2026-10-13 · fix
+Symptom  The Skills tab listed 55 skills and not one of them was installed. `scan_inventory`
+         globbed `skills/**/SKILL.md` (`scripts/cbut-sync.py:279`), and pathlib's `**` does not
+         descend into a symlinked directory — while all 27 skills on this machine are
+         symlinks into `~/.agents/skills`. Measured, not reasoned: the glob matched exactly one
+         file, `.codebuddy/skills/.skill/SKILL.md`, a dot-directory that
+         `INVENTORY_HIDDEN_PREFIX` never filtered because the filter was applied only inside
+         plugin subdirectories. What the tab showed instead was the union's other half — 55
+         rows from a retired `skills/<category>/<skill>/` layout whose directories are gone.
+         Two more rows in the same table were wrong the other way: `scan_inventory` only ever
+         ran `INSERT OR REPLACE`, so an uninstalled plugin, a deleted skill and five deleted
+         agents each kept their row forever, and `BUILTIN_TOOLS` was 35 names typed by hand
+         against an installed `product.json` carrying 61 — with `fork` in the constant and not
+         in the package, and `cli` the other way round.
+Change   Skill discovery walks the direct children of `skills/`, follows one level of symlink
+         (npm-style: the link *is* the entry) and never descends through one; the dot filter
+         now applies to the same walk. Reading and writing are split: `collect_inventory`
+         returns rows, `replace_inventory` writes `DELETE` + `INSERT` inside one transaction
+         afterwards, so inventory means "installed now" and a failed scan leaves the previous
+         snapshot alone. The catalogue comes from the installed package's `product.json`,
+         located from the `codebuddy` executable on `PATH` and found by walking up to the
+         package root — pure `os`/`pathlib`; the checked-in constants stay as the fallback, and
+         `format_doc()` now reports which of the two it used instead of restating a count. An
+         `CBUT_PRODUCT_JSON` override naming a non-file resolves to nothing.
+Evidence L0 2026-10-13: `python3 -m unittest discover -s scripts/tests` → `Ran 485 tests ...
+         OK`. L1, real `~/.codebuddy` logs into a throwaway store at `/tmp/…` (L2 not touched —
+         the live `usage.db` was not rebuilt): every table is row-identical to the live one
+         except `inventory`, `141 → 133`. Inside it, `skill|user 55 → 27` (the 27 are the
+         symlinked skills, previously 0), `tool|builtin 35 → 61`, `agent|user 5 → 0`,
+         `plugin|plugin 10 → 9` (the uninstalled one is gone), zero rows whose name starts
+         with a dot. Provoked, each with the failure named: restoring `skills/**/SKILL.md` turns
+         five inventory cases red; dropping the `DELETE` turns three red; returning `None` from
+         the resolver turns two red; inserting `subprocess.run(["which", "codebuddy"])` turns
+         two error and makes two `test_privacy` cases red, which is the reason the resolver
+         walks `PATH` itself.
+Cost     The one-level symlink rule is a decision, not a limit discovered: a skill installed by
+         symlinking a directory into a category folder is not found, and neither is one nested
+         two deep. That is the layout this repository retired, so the old reading has to stay
+         readable — it does, one level down and only through real directories. The drift guard
+         is the other cost: `product.json` is upstream's to change, and the checked-in snapshot
+         is compared against it whenever a `codebuddy` is on `PATH`, so a CodeBuddy upgrade that
+         adds a tool fails here until `scripts/tests/product_snapshot.py` is re-run. Without an
+         installed CLI the comparison is skipped, but the snapshot is still parsed first, so an
+         emptied fixture is caught on every machine.
+Commit   2fb070a
+
+### D-042 · 2026-10-13 · fix
+Symptom  An installed skill and one uninstalled last month rendered identically — same row,
+         same columns, and a `-` where `last used` should be. The `UNION` that lets a removed
+         skill keep its history also erased the evidence that it is gone: `inventory.source`
+         was read by `cbut inventory` and by no panel query, and no column anywhere carried
+         installed/removed, so the only tell was a call count of zero. The complaint this
+         started from — "I deleted the skill, why is it still listed" — had no honest answer
+         in the UI, because the database could not tell either.
+Change   `installed` and `ever_used` are derived in the query layer, aggregated over the
+         inventory side and the history side of each names CTE, and `db.entity_state()`
+         turns them into `in use` / `installed` / `removed` for both front ends to render.
+         No column and no migration: under snapshot semantics, a missing inventory row *is*
+         the removed state, so storing it would duplicate a fact the query can derive. `removed`
+         outranks `in use`, and neither flag follows the time window — `ever_used` comes from
+         the un-windowed history scan, because a tool last used last week is still in use.
+Evidence L0 2026-10-13: `Ran 485 tests ... OK`. L1 (same throwaway store as D-041):
+         `cbut skills` reads `removed` for `docx` and `add-tests` — names with history and no
+         inventory row — and `in use` for `playwright-cli`; `cbut agents` reads `removed` for
+         `code-reviewer`, whose file was deleted while its two calls stayed. Provoked: removing
+         the inner `GROUP BY name` doubles every count (`cbut plugins` reports 4 uses for 2)
+         and turns three cases red; hardcoding `ever_used = 1` marks an unused configured MCP
+         server as in use and turns two red; narrowing the renderable check to `isinstance(c, str)`
+         flattens every `Text` cell, and the dimming case goes red.
+Cost     `rich` becomes a second non-stdlib import in `cbut-tui.py`, admitted to the privacy
+         allowlist by measurement rather than by assertion: `import socket|ssl|http|urllib`
+         matches nothing anywhere in rich 15.0.0, not even `urllib`. The scope of that claim
+         is unchanged from the one already in AGENTS.md — it is about a version installed here.
+         The state column is last on purpose, because the column plan drops the tail first: a
+         narrow terminal loses `last used` before it loses the answer to "is this still here".
+         Dimming covers the state cell only, since Textual's `DataTable` has no per-row style
+         hook — a row is therefore not uniformly greyed, which reads as a deliberate choice
+         rather than a missing one only if you know it.
+Commit   9764332
+
+### D-043 · 2026-10-13 · fix
+Symptom  D-041 made the catalogue come from the installed package and left a checked-in
+         fallback for a machine that cannot resolve one — but nothing said which of the two a
+         given run had used. The two disagree about 27 tool names, and D-041 left
+         `builtin_catalog()` documenting that "`cbut health` prints which of the two was used"
+         without adding the line, so the commit that introduced the catalogue also shipped the
+         claim it made about it.
+Change   `cmd_health` resolves the catalogue again and prints it: `product.json @ <path>` with
+         the counts, or `fallback constants (…)`. The parenthetical keeps three states
+         apart — resolved, found but carrying no catalogue (the four variant product configs
+         have no `tools` key), and unresolved — because "the file is missing" and "the file
+         says nothing" lead a user to delete different things.
+Evidence L0 2026-10-13: `Ran 485 tests ... OK`. The two health cases pin the resolved line to
+         the snapshot's own two arrays and assert the counts it implies, then pin two
+         throwaway files — one absent, one carrying empty arrays — and require the matching
+         phrase. `HealthSurfaceTest._env` now hides `CBUT_PRODUCT_JSON` with the other two path
+         overrides, because without it the child's line depended on whose machine ran the
+         suite. Provoked: dropping `resolve_product_json`'s `is_file()` turns the resolver case
+         red with `PosixPath('…/absent.json') is not None`.
+Cost     `cbut health` now reads the package's install prefix on every run, on a path derived
+         from `PATH`. It is the same walk the indexer already does on every sync, and it
+         happens after the settings line, so a slow `PATH` shows up in a report that used to
+         be a pure database check. The registry escape hatch this file still carries —
+         `cmd_health` re-declaring `"projects"` and `"**/*.jsonl"` outside the format registry,
+         unguarded because `test_format_registry.py` parses only `cbut-sync.py` — is untouched
+         and still owed.
+Commit   d6f4e7b
