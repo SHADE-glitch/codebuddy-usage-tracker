@@ -277,7 +277,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 435 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 444 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -301,6 +301,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `test_readme_counts.py` | 5 | the suite table above is the suite table the runner would print, and both pages document every setting the loader knows |
 | `test_record_coverage.py` | 6 | every covered commit is recorded in `CHANGELOG.md` |
 | `test_readme_bilingual.py` | 5 | the two READMEs stay one document in two languages, and every table-of-contents link has a heading to land on |
+| `test_conventions.py` | 9 | the dimension-A root layer is present at the root, AGENTS.md names its dimension in one line instead of quoting the standard's body, and no runtime state the ignore list covers is tracked |
 
 `test_readme_counts.py` is what keeps this table honest: a suite added without a row, or a row left
 at an old number, fails the suite.

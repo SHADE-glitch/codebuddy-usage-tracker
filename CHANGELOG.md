@@ -826,3 +826,32 @@ Cost     The inventory case now depends on the fixture layout it creates, so a c
          `assertGreater(n1, 0)` is weak on its own — it cannot tell "one row" from "all of them" —
          and it is kept only so a silently empty fixture does not read as a passing dedup check.
 Commit   d7fa4bf
+
+### D-040 · 2026-10-13 · guard
+Symptom  The root-file layer was a naming convention with nothing behind it. No check in this
+         repository asserted that the finalized files sit at the repository root, that `LICENSE`
+         exists, or that `AGENTS.md` points at the machine-wide standard instead of restating it.
+         A renamed or deleted root file would only be noticed by a person reading the diff.
+Change   Add `scripts/tests/test_conventions.py` (9 cases, standard library only, and it installs
+         the same hermetic tripwire as its siblings). It asserts the finalized layer is present at
+         the root and that `pyproject.toml` is the only manifest; that `AGENTS.md` carries the
+         one-line dimension pointer and reproduces none of the standard's own numbered section
+         headings; that `.gitignore` still covers the runtime state the standard lists and that
+         `git ls-files` tracks none of it; and that no process draft is tracked anywhere. `AGENTS.md`
+         gains the dimension line above the shared-standard pointer it already had. The README pair
+         moves from 435 to 444 tests, because `test_readme_counts.py` compares the table against
+         `scripts/tests/` by set equality and a new suite has to be counted, not ignored. Nothing
+         is fetched — every assertion reads this working tree.
+Evidence `python3 -m pytest scripts/tests -q` 444 passed (142 subtests), run with the final content
+         of this entry in the tree. Provoked for real: moving `LICENSE` out of the tree turns the
+         root-layer case red with `AssertionError: Lists differ: [] != ['LICENSE: create this file
+         at the repository root']`, and restoring it turns the suite green again. Two earlier
+         drafts of the guard were themselves red and were corrected rather than suppressed — a
+         heading match that also caught this repository's own `## CI`, and an ignore-list spelling
+         that only matched `.venv/`. No test was skipped, widened or moved to make a check pass.
+Cost     The manifest and ignore lists are hard-coded, so a deliberate second manifest or a new
+         runtime artefact is a change to this file rather than a surprise failure. The README
+         aggregate is a second place to update for every new suite; that is the repository's own
+         rule, not something this entry introduces.
+
+Commit   ca82a0b
