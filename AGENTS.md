@@ -2,18 +2,10 @@
 
 Guidance for AI coding agents working in this repository.
 
-> **Dimension.** This repository is dimension **A — open source, strict** in the machine-wide
-> `CONVENTIONS.md` (outside this repository); the shared rules live in `STANDARD.md` and the
-> dimension-A detail in `~/.agents/standards/dimensions/a.md`.
->
-> **Shared standard.** Root file names, the process-draft location (`docs/reports/`), the
-> `CHANGELOG` entry format and the runtime ignore list are defined once in the machine-wide
-> `STANDARD.md` (outside this repository); the dimension-A rules — the language policy, CI
-> version pinning and entry commands, and the test entry command — live in
+> **Dimension.** A — open source (strict), per `CONVENTIONS.md` §0; the shared rules live once in
+> `~/.agents/standards/STANDARD.md` (§1 root files, §2 process drafts, §3 CHANGELOG entries,
+> §4 runtime ignore list, §6 remotes/pushing, §8 profile listing) and the dimension-A detail in
 > `~/.agents/standards/dimensions/a.md`. Neither is restated here.
->
-> **Push over SSH, never HTTPS.** Verify `git remote get-url --push origin` starts with `git@`
-> before pushing; if it starts with `https://`, fix it first — never push over HTTPS.
 
 ## What this is
 
@@ -234,16 +226,11 @@ tool runs from a checkout, so the version only needs to move when a documented c
   `chore:`), code before docs.
 
 ## Recording conventions
-- **`feat` commits are out of scope, by class.** This is an original project with no upstream, so a
-  feature is the product, not a droppable deviation — features are documented in the READMEs. The
-  exclusion is one regex over the commit subject inside the check; it must not decay into a
-  per-commit skip flag.
-- `kind` ∈ `fix` | `perf` | `taste` | `guard` | `revert` | `chore`, cut by **who may demand a
-  revert**: bug → `fix`; measurable degradation only → `perf`; only my taste → `taste` (zero
-  obligation, discardable on an upgrade); no behaviour change, detects drift → `guard`; withdraws
-  earlier work → `revert`; cleanup owed nothing either way → `chore`.
-- **An empty covered window is legal only when the header says so.** If the window contains covered
-  commits but the record has no entries, the check fails: a pass over an empty set proves nothing.
+
+Common CHANGELOG rules: `STANDARD.md` §3.
+
+- The `feat` exclusion is one regex over the commit subject inside the check; it must not decay
+  into a per-commit skip flag. Features are documented in the READMEs.
 - **Verification tiers** (named by what the claim needs, not by the tool): **L0** =
   `python3 -m unittest discover -s scripts/tests` (temp database, no host), **L1** = a throwaway
   store outside the repository (`--db /tmp/…`) fed by the real logs or by copied logs, **L2** = the
@@ -258,9 +245,7 @@ tool runs from a checkout, so the version only needs to move when a documented c
   - An L1/L2 result is reported per table, not for the tables you expected to change: compare
     **every** table's row count before and after a rebuild, or a regression in a table you did
     not touch stays invisible.
-- `Symptom` names the mechanism, never the session: no prompt text, no command lines, no tool
-  argument values, no real paths from `~/.codebuddy`. The record is held to the same
-  metadata-not-content rule as the code.
+- The record is held to the same metadata-not-content rule as the code.
 - Run the coverage check before committing docs:
   `python3 -m unittest scripts.tests.test_record_coverage`. It is part of the suite.
 
@@ -354,17 +339,8 @@ true.
 
 ## Listed on the GitHub profile
 
-This repo is listed on the owner's profile front page (`SHADE-glitch/SHADE-glitch`). That page lives
-in a **separate repository and never updates itself** — when a fact it states about this repo
-changes, update the profile README in the same round. The profile's own `AGENTS.md` is the
-authoritative rulebook; its guard `scripts/check-profile.mjs` must keep passing.
+See `STANDARD.md` §8 for the shared profile-listing triggers. This repo's own additions:
 
-- **Rename / transfer / delete** — the profile link dies; fix the row.
 - **Purpose drift** — the profile's one-line description must still be true. The claims it copies —
   *"no network, no message bodies"*, "dev tooling" — are **promises**: if one stops holding, change
   the profile line that makes it.
-- **LICENSE change** — the profile's license badge must equal this repo's `LICENSE`.
-- **Version / runtime declaration change** — the matching badge must equal this repo's declaration.
-- **Freeze / archive / upstream-frozen** — say so on the profile; never leave a stale "maintained".
-- **Public ↔ private** — a repo that goes private must be **delisted** (only the two whitelisted
-  private apps may stay, and they are not this one).
