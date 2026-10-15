@@ -183,18 +183,15 @@ tool runs from a checkout, so the version only needs to move when a documented c
   them from transcripts, and do not describe trace ingestion as part of v1. Wiring traces in is a
   design task: the tree holds both `.jsonl` and `.json` files and needs a session-linking decision
   before it can be counted honestly.
-- **Never commit runtime state or working notes**: `usage.db`, `.venv/`, `__pycache__/`, generated
-  systemd units in user paths, and the session reports — `STATE.md`, `PROFILE.md`, `AUDIT.md`,
-  `PLAN.md`, `VERIFY.md` — which live under `docs/reports/` and are ignored by a non-anchored
-  `reports/` rule. Those are working documents, not artifacts: the repository is public, and they
-  contain real paths, real counts and open defects. If a check needs to change and it starts
-  matching a file that should stay local, fix the ignore list in the same commit. Long-lived
-  maintenance material goes in `docs/maintenance/` and *is* committed.
+- **Never commit runtime state or working notes** — `STANDARD.md` §4 and §2 hold the ignore
+  list and the process-draft location; this repo adds `usage.db` and generated systemd units
+  in user paths to the ignored set. Those are working documents, not artifacts: the repository
+  is public, and they contain real paths, real counts and open defects. If a check needs to
+  change and it starts matching a file that should stay local, fix the ignore list in the same
+  commit. Long-lived maintenance material goes in `docs/maintenance/` and *is* committed.
 
 ## Conventions
 
-- **Docs are bilingual**: `README.md` (English, landing page) and `README.zh-CN.md` (Chinese).
-  Edit both together and keep section order aligned; a section added on one side alone is drift.
 - **Settings are read once, in one place.** `db.load_config()` resolves environment > file >
   `DEFAULTS`. Adding a knob means: one entry in `DEFAULTS`, one in `ENV_NAMES`, one in `_BOUNDS`, and
   one assignment in the app — `test_config.py` pins the default against the constant it replaces, so a
@@ -222,6 +219,11 @@ tool runs from a checkout, so the version only needs to move when a documented c
   `no_settings_env()`, which hides **every name derived from `db.ENV_NAMES`** (a hand-copied list is how
   the next key gets forgotten here too), and the check is that the whole suite is run twice: once clean,
   once with every setting set to a hostile value. Five cases were red that way before the helper existed.
+
+## Docs & commits
+
+- **Docs are bilingual**: `README.md` (English, landing page) and `README.zh-CN.md` (Chinese).
+  Edit both together and keep section order aligned; a section added on one side alone is drift.
 - Commit messages are **English** and follow Conventional Commits (`feat:` / `fix:` / `docs:` /
   `chore:`), code before docs.
 
