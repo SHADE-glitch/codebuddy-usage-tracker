@@ -10,6 +10,14 @@
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=black)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/codebuddy-usage-tracker)
 
+**What it is** — A passive, read-only tracker for [CodeBuddy Code](https://cnb.cool/codebuddy/codebuddy-code): an eight-tab TUI and headless JSON reports over every built-in tool, skill, agent, plugin and MCP tool you use.
+
+**What it solves** — CodeBuddy keeps its history in local logs shaped for resuming sessions; `cbut` indexes them into one local SQLite file so you can see what you have used and what is installed.
+
+**How to run** — `./install.sh`, then `cbut sync`.
+
+**Where to look** — See [AGENTS.md](AGENTS.md) and [MAINTENANCE.md](MAINTENANCE.md).
+
 > 🔭 See how you **actually** use [CodeBuddy Code](https://cnb.cool/codebuddy/codebuddy-code) —
 > every 🧰 built-in tool, 🎯 skill, 🤖 agent, 🧩 plugin and 🔌 MCP tool.
 

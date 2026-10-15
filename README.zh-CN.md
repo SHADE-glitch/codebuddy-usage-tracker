@@ -10,6 +10,14 @@
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=black)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/codebuddy-usage-tracker)
 
+**是什么** —— 一个针对 CodeBuddy Code 的被动只读追踪器：八 tab 的 TUI 与无头 JSON 报告，覆盖你用过的每一个内置工具、skill、agent、插件与 MCP 工具。
+
+**解决什么** —— CodeBuddy 把历史存在为「恢复会话」而设计的本地日志里；`cbut` 把它们索引进一个本地 SQLite 文件，看清用过什么、装了什么。
+
+**怎么跑** —— `./install.sh`，然后 `cbut sync`。
+
+**去哪看** —— 见 [AGENTS.md](AGENTS.md) 与 [MAINTENANCE.md](MAINTENANCE.md)。
+
 > 🔭 看清你**真正**是怎么用 [CodeBuddy Code](https://cnb.cool/codebuddy/codebuddy-code) 的 ——
 > 每一个 🧰 内置工具、🎯 skill、🤖 agent、🧩 插件和 🔌 MCP 工具。
 
