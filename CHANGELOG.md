@@ -1015,3 +1015,16 @@ Evidence 2026-10-16: CodeBuddy CLI (`-p --tools ''`, every tool disabled) in a d
 Cost     Both hooks name `~/.agents`, absent in another clone, so they are skipped there — the
          pointer stays the portable part. Nothing is copied, so nothing can drift.
 Commit   795730d
+
+### D-046 · 2026-10-16 · chore
+Symptom  The checked-in `fixtures/product.json.snapshot` lagged the installed CodeBuddy CLI:
+         `MemAnswer` and `MemCurate` had been added upstream, so
+         `test_the_snapshot_has_not_drifted_from_the_installed_package` failed and the two real
+         builtin tools were read as unknown.
+Change   Regenerate the snapshot with `scripts/tests/product_snapshot.py` (61 -> 63 tools) and drop
+         an unused `import importlib.util` from `scripts/cbut-tui.py`.
+Evidence L2 2026-10-16: the drift guard was red before the regeneration;
+         `python3 -m unittest discover -s scripts/tests` 492 passed after it.
+Cost     The snapshot is a copy of upstream's tool list; the next CLI upgrade drifts it again, and
+         this guard is the only thing that will say so.
+Commit   3face03
