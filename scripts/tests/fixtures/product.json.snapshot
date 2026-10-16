@@ -31,6 +31,8 @@
     "LeaveWorktree",
     "LibraryUpload",
     "ListMcpResources",
+    "MemAnswer",
+    "MemCurate",
     "Monitor",
     "NotebookEdit",
     "PowerShell",
