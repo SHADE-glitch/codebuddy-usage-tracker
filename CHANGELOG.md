@@ -998,3 +998,20 @@ Cost     The two surfaces overlap by name and are read as a union, so a plugin s
          read without guessing at one, so the format document now names the gap instead. If
          either appears, the failure mode is this entry's, and that line is where to look.
 Commit   6af151f
+
+### D-045 · 2026-10-16 · chore
+Symptom  The pointer in AGENTS.md is followed only by an agent that chooses to follow it: it named
+         `~/.agents/standards/`, but nothing made that text reach the context, and the section list
+         it carried had drifted — §5 (the conflict rule) was missing.
+Change   End the pointer block with two bare `@` imports (`@~/.agents/standards/STANDARD.md`,
+         `@~/.agents/standards/dimensions/a.md`) and add `opencode.json`, whose `instructions` array
+         names the same two files. Add `§5 conflict rule` to the section list. `test_conventions.py`'s
+         `ROOT_FILES` gains `opencode.json`.
+Evidence 2026-10-16: CodeBuddy CLI (`-p --tools ''`, every tool disabled) in a directory whose only
+         memory file was an `AGENTS.md` carrying the two imports printed the tokens they carried — the
+         text is injected, not read by a tool. opencode `run` printed the token its `instructions`
+         named, with no tool call. `python3 -m pytest scripts/tests/test_conventions.py -q`
+         9 passed.
+Cost     Both hooks name `~/.agents`, absent in another clone, so they are skipped there — the
+         pointer stays the portable part. Nothing is copied, so nothing can drift.
+Commit   795730d
