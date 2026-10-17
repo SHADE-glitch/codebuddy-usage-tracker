@@ -1028,3 +1028,66 @@ Evidence L2 2026-10-16: the drift guard was red before the regeneration;
 Cost     The snapshot is a copy of upstream's tool list; the next CLI upgrade drifts it again, and
          this guard is the only thing that will say so.
 Commit   3face03
+
+### D-047 · 2026-10-17 · perf
+Symptom  `idx_tool_cat` keyed `tool_calls.category`, and nothing in this tool compares that column —
+         not a query, and not one of the five views either. It came from the first schema and
+         outlived the v6 sweep, which retired the two session indexes: nobody had looked at it. What
+         is worth recording is *how* the v6 pair was found — by grepping the source for a `WHERE` on
+         the column — because that method cannot see an f-string, and that is the only reason this
+         one survived. The lesson is sharpened by the sibling project `opencode-usage-tracker`,
+         which has the query shape this index serves (`WHERE category = 'builtin'` in its MCP-shape
+         check) and whose copy of the index is genuinely reached, in one plan of 1,452. Same index
+         name, two repositories, opposite verdicts: neither can be decided by the name.
+Change   Drop the index, and migrate it out of databases that already hold it — `SCHEMA_VERSION`
+         7 -> 8 with a fourth `MIGRATIONS` step, `_drop_dead_category_index`, alongside the v6 one
+         rather than folded into it, so the v6 docstring keeps describing v6. Three cases added,
+         and the query extractor they share with the session-index guard had to be rewritten (see
+         Evidence — the first attempt at each of the two guards was wrong in a different way).
+         README counts moved with the suite: `test_usage.py` 100 -> 103, `Ran 492` -> `Ran 495`,
+         which the repository's own `test_readme_counts` demanded rather than tolerated.
+Evidence L2 2026-10-17: reachability was decided on statements that really ran, not on source text
+         — `open_db` was wrapped with `set_trace_callback` for the whole suite, capturing 8,339
+         executable statements, each re-planned with `EXPLAIN QUERY PLAN` against a real-size
+         database. `idx_tool_cat` is named in **0** of them; the indexes that are kept are named in
+         13 to 703. All five views were read back out of `sqlite_master` and none mentions the
+         column. Read path, on real-size copies: all ten headless reports (`stats`, `tools`,
+         `skills`, `agents`, `mcp`, `plugins`, `recent`, `inventory`, `export`, `models`) printed
+         byte-identical output with and without the index, with matching exit status, and each output
+         was checked to be a report rather than an error — the
+         first pass at this had compared two usage-error messages for `cbut stats tools`, which is
+         not a subcommand, and was discarded. No existing query's plan can change at all: a plan
+         that never names the index cannot. Write path, at the real row count: re-inserting the real
+         37,345 `tool_calls` rows took **145.03 ms with the index and 121.87 ms without** (+19.0%),
+         and the database 9,539,584 B against 8,892,416 B. This index is **not** dead the way the v6
+         pair were — it is a covering index for `WHERE category = ?` and the planner does choose it
+         for that shape, statistics or not — so the only argument for the cut is that no such query
+         exists here, and the cost of carrying one that does not is measurable at this size.
+         Re-adding it is one `CREATE INDEX` line and no migration, because `CREATE INDEX IF NOT
+         EXISTS` runs on every open. Guards, provoked: planting
+         `SELECT COUNT(*) FROM tool_calls WHERE category = 'builtin'` into `cbut_db.py` turns
+         `test_no_query_filters_by_category` red, planting `WHERE session_id = ?` still turns the
+         v6 guard `test_no_query_filters_by_session_id` red, and re-declaring the index turns
+         `test_the_category_index_is_neither_declared_nor_present` red; each was restored and
+         re-checked green. The first version of that last one asserted the index was absent from a
+         fresh database and **was provably empty** — the migration drops it in the same open, so a
+         re-declared line is invisible to it; that is what the negative check caught, and the
+         assertion now reads the declaration. The extractor both guards share had a second defect:
+         it scraped double-quoted spans out of the raw source, where `re.I` counts the English word
+         "with" as the SQL keyword `WITH`, so it reported a *docstring about* a query as a query; it
+         now reads string constants out of the AST with docstrings removed. Real file — snapshot
+         `usage-20261017-082233-manual.db` (18,350,080 B) taken first: `migrate` returned `migrated`
+         then `current`, `idx_*` went 10 -> 9 with only `idx_tool_cat` gone and nothing unexpected
+         added, `schema_version` 8, `quick_check`/`integrity_check` ok, 0 foreign-key violations, and
+         `cbut health` differs by the schema-version line alone. `python3 -m unittest discover -s
+         scripts/tests` 495 tests, OK (492 before the three new cases).
+Cost     The cut is cheap to reverse — one line, no migration — which is the whole reason it is safe
+         to make on "no caller today". The cost is that the reversal has to stay honest: if a query
+         of that shape is ever added, `test_no_query_filters_by_category` fails and the index comes
+         back with it, and that test sees only string constants it can read, so a query assembled
+         where it cannot look would not warn anybody. The second cost is about the guards, not the
+         index: of the tests written for this entry, **two were green while guarding nothing** — a
+         name-based absence check that the migration itself made vacuous, and an extractor that went
+         red on prose — and both were only found by trying to make them fail. A guard is not
+         evidence until it has been made to go red on the thing it claims to catch.
+Commit   9917a95
