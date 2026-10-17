@@ -1206,3 +1206,28 @@ Cost     Name-based, so a personal skill that reuses a plugin skill's name is at
          recorded keeps them, which is intended — the panel's job is what happened, not what is
          installed now.
 Commit   2ca3f3e
+
+### D-051 · 2026-10-17 · fix
+Symptom  The Plugins tab ignored the date picker. `_fill_plugins` passed no bounds and
+         `q_plugins` accepted none, so at a 7-day range the same `docx` calls read 8 there and 1
+         under Skills, and moving the range on that tab changed nothing. The plugin list is
+         all-time on purpose — the inventory carries no timestamps, and an installed plugin with
+         no use in range must not vanish — but the *counts* had no reason to be.
+Change   `q_plugins` takes `start_ts`/`end_ts` and puts them in the LEFT JOIN's ON clause, the
+         same shape `q_skills`/`q_agents`/`q_mcp` already use: `uses` and `last_used` follow the
+         window, the row set stays installed ∪ ever used, and `installed`/`ever_used` stay
+         unwindowed so the state column describes the entity and not the range. `_fill_plugins`
+         passes the pane's bounds. One case in `test_usage.py` pins windowed counts, a zero-use
+         installed plugin still listed, and an unwindowed state.
+Evidence L0 2026-10-17: `python3 -m unittest discover -s scripts/tests` 511 passed (510 before
+         the new case). On the live database at a 7-day window `q_plugins` now returns
+         `docx uses=1 last=2026-10-12 12:17` and nothing else, which is the same row the Skills
+         tab shows for `docx`; unwindowed it still returns `docx 8` and `playwright-cli 4`. The
+         old behaviour is the same query without bounds, so the two readings come from one
+         statement.
+Cost     Two tabs can still disagree on *scope* (Skills lists skills, Plugins lists plugins), and
+         the Plugins tab's `skills`/`agents`/`commands` columns remain inventory counts — how many
+         the plugin ships, not how many were used — because the inventory has no per-item
+         timestamps. Only `uses` and `last used` are windowed, which is exactly the pair the Skills
+         tab windows under the name `calls` / `last used`.
+Commit   57b2627
