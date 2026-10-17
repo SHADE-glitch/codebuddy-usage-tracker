@@ -1498,15 +1498,17 @@ if HAVE_TEXTUAL:
                 "No agents used yet", key_kind="agent")
 
         def _fill_plugins(self, conn, start=None, end=None) -> None:
-            # No time window: the plugin list is all-time (the inventory carries
-            # no timestamps), so start/end are accepted for the shared fill
-            # signature but ignored. Name is the row key, so Enter/double-click
-            # opens the plugin's own drill-down; version is not shown.
+            # The *list* is all-time — the inventory carries no timestamps, and a
+            # plugin with no use in range must not vanish — but ``uses`` and
+            # ``last used`` are windowed, like every other tab. It used to ignore
+            # start/end, so the same call read 8 here and 1 under Skills at a
+            # 7-day window. Name is the row key, so Enter/double-click opens the
+            # plugin's own drill-down; version is not shown.
             self._fill_wide(
                 "t-plugins",
                 [[r["plugin"], f"{r['uses']:,}", f"{r['skills']:,}",
                   f"{r['agents']:,}", f"{r['commands']:,}", state_cell(r)]
-                 for r in db.q_plugins(conn)],
+                 for r in db.q_plugins(conn, start_ts=start, end_ts=end)],
                 "No plugins installed", key_kind="plugin")
 
         def _fill_mcp(self, conn, start=None, end=None) -> None:

@@ -529,6 +529,24 @@ class WindowedQueryTest(unittest.TestCase):
         self.assertEqual(rows["unused"]["uses"], 0)   # installed, never used
         self.assertEqual(rows["ghost"]["uses"], 1)    # used, not installed
 
+    def test_q_plugins_window_counts_uses_but_keeps_the_whole_list(self):
+        """The two panels disagreed: Plugins ignored the window, so the same
+        docx calls read 8 there and 1 under Skills at a 7-day range. The list
+        stays all-time (the inventory has no timestamps); the counts do not."""
+        self._plugin("used")
+        self._plugin("unused")
+        self._plugin_use("used", "t", self.NOW - HOUR)
+        self._plugin_use("used", "t2", self.NOW - 100 * HOUR)
+        self.conn.commit()
+        rows = {r["plugin"]: r for r in db.q_plugins(
+            self.conn, start_ts=self._recent(), end_ts=self.NOW)}
+        self.assertEqual(set(rows), {"used", "unused"})
+        self.assertEqual(rows["used"]["uses"], 1)
+        self.assertEqual(rows["used"]["last_used"], self.NOW - HOUR)
+        self.assertEqual(rows["unused"]["uses"], 0)
+        # the state describes the entity, not the range
+        self.assertEqual(rows["used"]["ever_used"], 1)
+
     # -- q_model_tokens ---------------------------------------------------
 
     def test_q_model_tokens_window_vs_all_time(self):

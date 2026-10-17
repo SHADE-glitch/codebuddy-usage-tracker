@@ -1048,13 +1048,18 @@ def q_mcp(conn, limit=None, start_ts=None, end_ts=None):
     return conn.execute(sql, params).fetchall()
 
 
-def q_plugins(conn):
+def q_plugins(conn, start_ts=None, end_ts=None):
     """Every plugin, keyed by NAME: installed (static inventory) ∪ ever used.
 
-    No version column and no time window: name is the primary key, so a version
-    bump never forks a plugin and an uninstalled-but-used plugin keeps its row.
-    ``uses`` counts every attributed skill/agent/command invocation.
+    No version column: name is the primary key, so a version bump never forks a
+    plugin and an uninstalled-but-used plugin keeps its row. ``uses`` counts
+    every attributed skill/agent/command invocation inside the window, and the
+    window lives in the JOIN — an installed plugin with no use in range stays
+    listed with 0 rather than vanishing, which is what the Skills and Agents
+    panels already do. ``installed``/``ever_used`` ignore the window, so the
+    state column describes the entity, not the range.
     """
+    on_time, params = _on_time(_time_conds(start_ts, end_ts, col="u.ts"))
     return conn.execute(
         f"{_PLUGIN_NAMES_CTE}"
         " SELECT n.name AS plugin,"
@@ -1065,7 +1070,9 @@ def q_plugins(conn):
         " MAX(n.installed) AS installed, MAX(n.ever_used) AS ever_used"
         " FROM names n"
         " LEFT JOIN plugin_usage u ON u.plugin = n.name"
+        f"{on_time}"
         " GROUP BY n.name ORDER BY uses DESC, n.name",
+        params,
     ).fetchall()
 
 
