@@ -201,6 +201,65 @@ Read it as the v8 reading's sibling (+14% on the insert pass, ≈ 0.7 MiB of the
 new claim about the machine. The *reachability* half is not a number here at all — it is the command
 above the table that holds it, on every run, for every index the schema declares.
 
+**What it cost on the read side, measured the same day.** Copy the live file twice, `DROP INDEX` on
+one, plan every statement the report surface runs in a fresh connection on each side, and diff the
+plans:
+
+```bash
+cd <repo> && ./.venv/bin/python - <<'PY'
+import shutil, sqlite3, sys
+from pathlib import Path
+sys.path.insert(0, "scripts"); sys.path.insert(0, "scripts/tests")
+import cbut_db as db
+import test_indexes as T
+tmp = Path("/tmp/cbut-corpus"); tmp.mkdir(exist_ok=True)
+tracker = tmp / "usage.db"
+if tracker.exists(): tracker.unlink()
+c = db.open_db(tracker); db.ensure_schema(c); c.close()
+SQLS = sorted({s for s in T.run_statements(tracker) if s.split()[0].upper() in T.PLANNABLE})
+def side(cut):
+    f = Path(f"/var/tmp/cbut-plan-{'cut' if cut else 'kept'}.db")
+    shutil.copy(db.DB_PATH, f)
+    a = sqlite3.connect(f)
+    a.execute("DROP INDEX IF EXISTS idx_model_resp_model")
+    if not cut:                                   # the live file has been migrated already
+        a.execute("CREATE INDEX idx_model_resp_model ON model_responses(model)")
+    a.commit(); a.close()
+    out = {}
+    for sql in SQLS:
+        c = sqlite3.connect(f); c.row_factory = sqlite3.Row
+        out[sql] = " | ".join(r["detail"] for r in c.execute(
+            "EXPLAIN QUERY PLAN " + sql, [None] * T.placeholders(sql)))
+        c.close()
+    return out
+kept, cut = side(False), side(True)
+print(len(kept), "statements,", sum(kept[s] != cut[s] for s in kept), "with a different plan")
+PY
+```
+
+2026-10-17 reading: **3 of 87 plans differ** — and the three are the ones that make the "no plan
+names it" shortcut wrong. Put the index back on a copy and the planner does choose it:
+
+| statement | with the index | without it |
+|---|---|---|
+| `q_model_summary` (one model) | `SEARCH model_responses USING INDEX idx_model_resp_model (model=?)` | same, `…idx_model_resp_model_ts (model=?)` |
+| `q_model_tokens` (roll-up) | `SCAN … USING INDEX idx_model_resp_model` + temp B-tree | same, `…idx_model_resp_model_ts` |
+| `q_usage_model_stats` (roll-up) | `SCAN … USING INDEX idx_model_resp_model` + temp B-tree | same, `…idx_model_resp_model_ts` |
+
+One equality lookup and two full scans, each served just as well by the wider key that leads with
+the same column. Timed over 300 runs of each query function on the same copies, in milliseconds:
+
+| query | with the index | without |
+|---|---|---|
+| `q_model_summary` | 12.15 | 13.19 |
+| `q_model_tokens` | 28.70 | 28.36 |
+| `q_usage_model_stats` | 22.98 | 23.78 |
+
+The sign flips between rows, so what these queries cost is the scan, not which covering key the
+scan walks. That is the reading the cut rests on: **reachability alone would have passed this
+index** (3 plans name it), so `scripts/tests/test_indexes.py` also fails when a declared key is a
+strict prefix of a wider declared key on the same table.
+
 ## Query cost
 
 ```bash

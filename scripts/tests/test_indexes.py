@@ -19,6 +19,14 @@ report command in `cbut-stats.py` and every public `q_*` in `cbut_db.py`, called
 through its own signature (which is what the TUI calls). `set_trace_callback` records
 what ran; `EXPLAIN QUERY PLAN` then says which index each statement can reach.
 
+Reachability is necessary but not sufficient, and the v9 cut is the case that says so:
+`idx_model_resp_model` **was** named by 3 of the 87 plans — one equality lookup and two
+full scans, which the wider key serves identically — so the reachability rule passes
+it. The second rule is structural and needs no rows: an index whose key is a **strict
+prefix** of another declared index's key on the same table can never win a plan,
+because the wider index answers every lookup the narrower one can. `PRAGMA index_info`
+reads the keys from the schema `ensure_schema` builds, so neither rule parses DDL.
+
 Two properties make it exact rather than approximate:
 
 * **Plans do not depend on rows, so nothing has to be sized.** Nothing in this build
@@ -194,8 +202,39 @@ def plan_index(statements, conn):
 
 
 def unreachable(named, declared):
-    """The declared indexes no plan named. The one decision this file exists for."""
+    """The declared indexes no plan named."""
     return sorted(set(declared) - set(named))
+
+
+def shape(conn, names):
+    """Each declared index's table and key columns, read from the schema it built.
+
+    Not parsed out of `TABLES_SQL`: a regex over DDL is a second reader of it, and the
+    one that drifts. `PRAGMA index_info` answers what SQLite actually created.
+    """
+    out = {}
+    for name in names:
+        cols = tuple(r[2] or "" for r in conn.execute(f"PRAGMA index_info({name})"))
+        table = conn.execute("SELECT tbl_name FROM sqlite_master WHERE name = ?",
+                             (name,)).fetchone()
+        out[name] = (table[0] if table else "", cols)
+    return out
+
+
+def prefix_duplicates(shape_map):
+    """Indexes whose key is a strict prefix of another index's key on the same table.
+
+    Reachability cannot see these, which is why they need a rule of their own: put
+    `idx_model_resp_model` back and 3 of the 87 plans name it — one equality lookup and
+    two full scans, each served just as well by `idx_model_resp_model_ts`, which leads
+    with the same column (timed: the cost does not move). A wider index answers every
+    lookup the narrower one can, so the narrower is a write cost with no plan it wins.
+    """
+    return sorted(
+        name for name, (table, cols) in shape_map.items()
+        if any(other != name and other_table == table and len(cols) < len(other_cols)
+               and other_cols[:len(cols)] == cols
+               for other, (other_table, other_cols) in shape_map.items()))
 
 
 class IndexReachabilityTest(unittest.TestCase):
@@ -239,6 +278,40 @@ class IndexReachabilityTest(unittest.TestCase):
             "statement reads is written on every insert and buys nothing — either drop "
             "it from TABLES_SQL with a migration that removes it from existing files, "
             "or write the query that reads it.")
+
+    def test_no_declared_index_is_a_prefix_of_a_wider_one(self):
+        """The rule the reachability check above cannot be, and the one that cut last.
+
+        The v9 cut (`idx_model_resp_model`) was named by 3 of the 87 plans, so the case
+        above would have passed it. What finds it is this: `(model)` is `(model, ts)`
+        minus a column, and without `ANALYZE` the planner cannot prefer the narrower key
+        for a plan the wider one also serves.
+        """
+        shape_map = shape(self.conn, DECLARED_INDEXES)
+        self.assertEqual(
+            sorted(n for n, (_, cols) in shape_map.items() if not cols), [],
+            "a declared index that `ensure_schema` does not build has an unknown key, "
+            "so this check cannot see the index that duplicates it")
+        self.assertEqual(
+            prefix_duplicates(shape_map), [],
+            f"{prefix_duplicates(shape_map)} has a key that is a strict prefix of "
+            "another declared index's key on the same table. A wider index serves every "
+            "lookup the narrower one can, so drop it from `TABLES_SQL` with a migration "
+            "that removes it from existing files.")
+
+    def test_a_prefix_duplicate_is_reported_and_its_wider_key_is_not(self):
+        """The guard, provoked with a name instead of with the repository."""
+        planted = {
+            "idx_a": ("t", ("model",)),
+            "idx_b": ("t", ("model", "ts")),
+            "idx_c": ("t", ("tool",)),
+            "idx_d": ("other", ("model",)),
+            "idx_e": ("t", ("ts", "model")),
+        }
+        self.assertEqual(
+            prefix_duplicates(planted), ["idx_a"],
+            "a narrower key must be reported, and the wider key it duplicates, the same "
+            "key on a different table and a different column order must not be")
 
     def test_an_index_that_never_appears_in_a_plan_is_reported(self):
         """The guard, provoked with a name instead of with the repository.

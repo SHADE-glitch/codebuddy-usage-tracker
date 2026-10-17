@@ -812,15 +812,19 @@ def _drop_dead_model_index(conn: sqlite3.Connection) -> bool:
     """v9: remove the single-column index on `model`.
 
     `idx_model_resp_model_ts` leads with the same column, so the narrow one was a
-    duplicate: it could only win a plan no statement here produces. This was established
-    the way the two cuts above were — the statements the suite really executes, captured
-    with ``set_trace_callback`` and re-planned with ``EXPLAIN QUERY PLAN`` — and unlike
-    them it is now established *every run*, by ``scripts/tests/test_indexes.py``. That
-    measurement named it in 0 of the 87 plans the report surface produces (the other ten
-    indexes are named in 1 to 6), and in 0 of the 1,961 statements one index run over
-    the real host produced. Cost at this table's size: a full insert pass over the real
-    27,114 rows 265.4 ms with it and 232.4 ms without (+14.2%), and 0.70 MiB of a
-    16.91 MiB file.
+    duplicate — but *not* one no plan names. Put it back on a copy of the live file and
+    it is named by 3 of the 87 plans the report surface produces: `q_model_summary`
+    (`SEARCH ... (model=?)`) and the two per-model roll-ups, `q_model_tokens` and
+    `q_usage_model_stats` (`SCAN ... USING INDEX` then a temp B-tree for the `GROUP BY`).
+    Dropping it moves those three to `idx_model_resp_model_ts`, which leads with the
+    same column, and the cost does not move: 300 timed runs of each on the same copies
+    read 12.15 against 13.19 ms, 28.70 against 28.36 and 22.98 against 23.78, the sign
+    flipping between them. So what justifies the cut is that a wider key answers every
+    lookup the narrow one can, not that nothing named it — which is why
+    ``scripts/tests/test_indexes.py`` checks that *as well as* reachability, on every run.
+
+    Cost at this table's size: a full insert pass over the real 27,114 rows 265.4 ms
+    with it and 232.4 ms without (+14.2%), and 0.70 MiB of a 16.91 MiB file.
 
     Unlike the two cuts above there is nothing to re-read: an index is derived state and
     no row is touched, which is why this step is a bare ``DROP INDEX``. Undoing the cut

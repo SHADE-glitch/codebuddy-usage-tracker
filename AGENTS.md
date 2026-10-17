@@ -307,12 +307,20 @@ without it the scan would pass on a database that indexed nothing. The second ke
 column from being added silently: a usage table gaining a prose column is a privacy change, so
 `test_no_prose_column_exists_in_a_usage_table` fails until the column is declared as metadata.
 
-**4. No index is carried that no statement reaches.** An index is written on every insert and
-copy-on-write for every `UPDATE`, so one that nothing reads is a cost with a comment attached to it.
-This schema has been cut three times for that reason (the two session indexes, `idx_tool_cat`, and
-`idx_model_resp_model`), and the first three cuts were justified by a reading taken by hand — the
-statements the suite really executes, captured with `set_trace_callback` and re-planned with
-`EXPLAIN QUERY PLAN` — which guarded nothing after the commit that took it.
+**4. No index is carried that no statement reaches, and none is a prefix of a wider one.** An index is
+written on every insert and copy-on-write for every `UPDATE`, so one that nothing reads is a cost with
+a comment attached to it. This schema has been cut three times for that reason (the two session
+indexes, `idx_tool_cat`, and `idx_model_resp_model`), and the first three cuts were justified by a
+reading taken by hand — the statements the suite really executes, captured with
+`set_trace_callback` and re-planned with `EXPLAIN QUERY PLAN` — which guarded nothing after the
+commit that took it.
+
+Two rules, because reachability alone missed the last cut: put `idx_model_resp_model` back and 3 of
+the 87 plans **do** name it (one equality lookup, two covering scans), each served just as well by
+`idx_model_resp_model_ts`, which leads with the same column. So the second rule is structural: an
+index whose key is a strict prefix of another declared index's key on the same table can never win a
+plan, and `PRAGMA index_info` answers that from the schema `ensure_schema` builds — no rows, no DDL
+parsing.
 
 ```bash
 python3 -m unittest scripts.tests.test_indexes       # plans every statement the report surface runs
