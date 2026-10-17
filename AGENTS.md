@@ -258,7 +258,7 @@ Common CHANGELOG rules: `STANDARD.md` §3.
 
 ## Invariants and how to check them
 
-Three promises are load-bearing enough that prose is not proof. Each has a command that fails when
+Four promises are load-bearing enough that prose is not proof. Each has a command that fails when
 the promise breaks — a rule without a check is a preference.
 
 **1. Nothing leaves the machine.** No production script imports a socket, HTTP client, mail,
@@ -306,6 +306,25 @@ was guarded in a named column. It also carries a positive control (names that *m
 without it the scan would pass on a database that indexed nothing. The second keeps a new free-text
 column from being added silently: a usage table gaining a prose column is a privacy change, so
 `test_no_prose_column_exists_in_a_usage_table` fails until the column is declared as metadata.
+
+**4. No index is carried that no statement reaches.** An index is written on every insert and
+copy-on-write for every `UPDATE`, so one that nothing reads is a cost with a comment attached to it.
+This schema has been cut three times for that reason (the two session indexes, `idx_tool_cat`, and
+`idx_model_resp_model`), and the first three cuts were justified by a reading taken by hand — the
+statements the suite really executes, captured with `set_trace_callback` and re-planned with
+`EXPLAIN QUERY PLAN` — which guarded nothing after the commit that took it.
+
+```bash
+python3 -m unittest scripts.tests.test_indexes       # plans every statement the report surface runs
+```
+
+The check runs the statements rather than reading them, because a grep for `WHERE category` cannot see
+through an f-string, and it plans them rather than timing them, because a plan is a function of the
+schema alone here (nothing in this build runs `ANALYZE`, so there is no `sqlite_stat1` to read). Its
+corpus is the read surface a person runs — the report CLI and the query functions the TUI calls. The
+indexer's own statements are not in it, and the direction of that gap is the safe one: a statement only
+the indexer runs can make the check report an index that is in fact reached, never make it pass
+silently on a dead one.
 
 Maintenance material — the format surface itself, the version matrix, the size and latency
 baseline — lives in [`docs/maintenance/`](docs/maintenance/), and `test_maintenance_docs.py` keeps

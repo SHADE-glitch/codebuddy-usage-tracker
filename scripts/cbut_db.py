@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # --- locations -------------------------------------------------------------
 
@@ -221,7 +221,17 @@ CREATE TABLE IF NOT EXISTS model_responses (
     usage_available            INTEGER DEFAULT 0,
     missing                    TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_model_resp_model   ON model_responses(model);
+-- No single-column index on `model`. There was one (`idx_model_resp_model`), cut in
+-- schema v9 for the reason the two session indexes and `idx_tool_cat` were — and that
+-- reason now has a standing check instead of a reading taken by hand:
+-- `scripts/tests/test_indexes.py` plans every statement this build runs with `EXPLAIN
+-- QUERY PLAN` and fails on an index no plan names. `idx_model_resp_model_ts` leads
+-- with the same column, and
+-- every reader that filters by model also bounds the window (`q_model_responses`,
+-- `q_model_summary`, the requests tab) or aggregates over it (`q_usage_model_stats`),
+-- so the narrow index was a duplicate whose only possible win was a plan no statement
+-- here produces. Measured on this machine's own 27,114-row table: a full insert pass
+-- 265.4 ms against 232.4 ms, and 0.70 MiB of a 16.91 MiB file.
 CREATE INDEX IF NOT EXISTS idx_model_resp_ts      ON model_responses(ts);
 CREATE INDEX IF NOT EXISTS idx_model_resp_model_ts ON model_responses(model, ts);
 
@@ -795,11 +805,42 @@ def _drop_dead_category_index(conn: sqlite3.Connection) -> bool:
     return True
 
 
+DEAD_MODEL_INDEX = "idx_model_resp_model"
+
+
+def _drop_dead_model_index(conn: sqlite3.Connection) -> bool:
+    """v9: remove the single-column index on `model`.
+
+    `idx_model_resp_model_ts` leads with the same column, so the narrow one was a
+    duplicate: it could only win a plan no statement here produces. This was established
+    the way the two cuts above were — the statements the suite really executes, captured
+    with ``set_trace_callback`` and re-planned with ``EXPLAIN QUERY PLAN`` — and unlike
+    them it is now established *every run*, by ``scripts/tests/test_indexes.py``. That
+    measurement named it in 0 of the 87 plans the report surface produces (the other ten
+    indexes are named in 1 to 6), and in 0 of the 1,961 statements one index run over
+    the real host produced. Cost at this table's size: a full insert pass over the real
+    27,114 rows 265.4 ms with it and 232.4 ms without (+14.2%), and 0.70 MiB of a
+    16.91 MiB file.
+
+    Unlike the two cuts above there is nothing to re-read: an index is derived state and
+    no row is touched, which is why this step is a bare ``DROP INDEX``. Undoing the cut
+    is one ``CREATE INDEX`` line — ``CREATE INDEX IF NOT EXISTS`` runs on every open, so
+    a re-add needs no migration at all.
+    """
+    present = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index'")}
+    if DEAD_MODEL_INDEX not in present:
+        return False
+    conn.execute(f"DROP INDEX {DEAD_MODEL_INDEX}")
+    return True
+
+
 MIGRATIONS = (
     ("model_responses cache and total columns", _migrate_model_responses),
     ("prose columns removed", _drop_prose_columns),
     ("dead session indexes dropped", _drop_dead_session_indexes),
     ("dead tool-category index dropped", _drop_dead_category_index),
+    ("dead model index dropped", _drop_dead_model_index),
 )
 
 

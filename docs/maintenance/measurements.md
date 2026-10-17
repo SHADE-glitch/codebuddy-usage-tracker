@@ -134,6 +134,67 @@ session-detail screens (the obvious future consumer) were **ruled out** rather t
 so a session-keyed read contradicts the panel model instead of extending it. If that decision is ever
 reversed, the index is one `CREATE INDEX` away and the guard above says so before you ship it.
 
+**Resolved as of schema v9**: **`idx_model_resp_model`** (the table above prices it at ≈ 0.5 MiB) was a
+single-column index on `model_responses(model)`, and `idx_model_resp_model_ts` already leads with that
+column. Every reader that filters by model also bounds the window, so the narrow index could only win a
+plan no statement here produces. It is dropped by a migration, and — this is the part that changes the
+method — the claim no longer rests on a reading taken by hand and thrown away with the commit that ran
+it: **`scripts/tests/test_indexes.py`** now captures the statements the report surface really executes
+(`set_trace_callback`), re-plans each with `EXPLAIN QUERY PLAN`, and fails if a declared index is named
+in none of the plans. That is exactly how the v6 and v8 cuts were justified, with a lifetime longer
+than the commit.
+
+```bash
+cd <repo> && ./.venv/bin/python - <<'PY'
+import os, shutil, sqlite3, sys, time
+sys.path.insert(0, "scripts"); import cbut_db as db
+WITH_INDEX = "CREATE INDEX idx_model_resp_model ON model_responses(model)"
+c = sqlite3.connect(f"file:{db.DB_PATH}?mode=ro", uri=True)
+ROWS = c.execute("SELECT COUNT(*) FROM model_responses").fetchone()[0]
+COLS = [r[1] for r in c.execute("PRAGMA table_info(model_responses)")]; c.close()
+VALUES = [tuple(i if col in ("ts", "prompt_tokens", "completion_tokens", "reasoning_tokens",
+                             "cache_read", "cache_write", "total_tokens", "duration_ms")
+                else 1 if col == "usage_available" else f"{col}-{i}" for col in COLS)
+          for i in range(ROWS)]
+INSERT = (f"INSERT INTO model_responses({', '.join(COLS)})"
+          f" VALUES({', '.join('?' * len(COLS))})")
+for cut in (False, True):
+    path = f"/tmp/cbut-cost-{'cut' if cut else 'kept'}.db"
+    conn = sqlite3.connect(path); db.ensure_schema(conn)
+    conn.execute("DROP INDEX IF EXISTS idx_model_resp_model")
+    if not cut:
+        conn.execute(WITH_INDEX)
+    conn.commit(); start = time.perf_counter()
+    for _ in range(3):
+        conn.execute("DELETE FROM model_responses"); conn.executemany(INSERT, VALUES)
+        conn.commit()
+    conn.execute("VACUUM")
+    print(f"{'without' if cut else 'with'} the index:",
+          round((time.perf_counter() - start) / 3 * 1000, 1), "ms per pass,",
+          round(os.path.getsize(path) / 2 ** 20, 2), "MiB")
+    conn.close()
+for cut in (False, True):
+    path = f"/tmp/cbut-real-{'cut' if cut else 'kept'}.db"
+    shutil.copy(db.DB_PATH, path); conn = sqlite3.connect(path)
+    conn.execute("DROP INDEX IF EXISTS idx_model_resp_model")
+    if not cut:
+        conn.execute(WITH_INDEX)
+    conn.execute("VACUUM"); conn.close()
+    print(f"{'without' if cut else 'with'} it, on a copy of the live file:",
+          round(os.path.getsize(path) / 2 ** 20, 2), "MiB")
+PY
+```
+
+| 2026-10-17, on ≈ 27k rows | with the index | without it |
+|---|---|---|
+| one full insert pass | ≈ 265 ms | ≈ 232 ms |
+| file, built schema | ≈ 10.9 MiB | ≈ 10.4 MiB |
+| file, a copy of the live one | ≈ 16.9 MiB | ≈ 16.2 MiB |
+
+Read it as the v8 reading's sibling (+14% on the insert pass, ≈ 0.7 MiB of the file) rather than as a
+new claim about the machine. The *reachability* half is not a number here at all — it is the command
+above the table that holds it, on every run, for every index the schema declares.
+
 ## Query cost
 
 ```bash
