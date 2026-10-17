@@ -1175,4 +1175,34 @@ Cost     Two rules, two blind spots: a redundant index that is not a prefix is o
          executed on a connection built inside a helper is invisible to it, and that gap stays
          safe only while every reader keeps using the one door. Re-adding the index means writing
          the query the wider key cannot serve.
-Commit   3c28e40
+Commit   3c28e40 68609d4
+
+### D-050 · 2026-10-17 · fix
+Symptom  `skill_usage.plugin` is decided once, when the row is written, from the inventory
+         snapshot of that moment — and nothing ever revisits it. Three installed plugins *are*
+         their own skill, with the manifest at `<installPath>/SKILL.md` instead of under
+         `skills/`, and the inventory could not see that shape until it learned to. So the eight
+         `docx` calls (seven on 2026-10-07, one on 2026-10-12) carry `plugin` NULL while the
+         inventory has carried `docx -> docx` ever since, and the Plugins panel counted none of
+         them: `plugin_usage` held 4 rows, all `playwright-cli`.
+Change   `attribute_plugin_skills` fills the owner on `skill_usage` rows that are still NULL,
+         from `inventory` rows that are plugin-sourced, and `backfill_plugin_usage` runs it
+         before deriving — so every sync is a catch-up, not a one-shot. Name-based like
+         write-time attribution and NULL-only, so a row that already names an owner is never
+         overwritten and a skill no plugin owns (the user's own library) stays NULL. Three
+         cases in `test_sync.py` pin the fill, the untouched library row, and the no-overwrite
+         rule.
+Evidence L0 2026-10-17: `python3 -m unittest discover -s scripts/tests` 510 passed (507
+         before the three cases). On the live database, before the change: 8 `docx` rows with
+         `plugin` NULL and 4 `plugin_usage` rows; after one `cbut sync`: the same 8 rows carry
+         `plugin='docx'` and `plugin_usage` holds 12 (8 `docx` + 4 `playwright-cli`), while the
+         other 37 skill calls stay NULL. The pre-change snapshot `usage-20261017-124734-manual.db`
+         still reads `(NULL, 8)` and 4, which is what makes the new statement the only thing that
+         moved those rows.
+Cost     Name-based, so a personal skill that reuses a plugin skill's name is attributed to the
+         plugin — the same ambiguity write-time attribution already has (`_plugin_owner` looks
+         the name up in a map that only plugin-owned skills populate). The fill cannot rewrite
+         history twice: it only ever fills a NULL. A plugin removed after its calls were
+         recorded keeps them, which is intended — the panel's job is what happened, not what is
+         installed now.
+Commit   2ca3f3e
