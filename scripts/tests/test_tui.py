@@ -724,12 +724,25 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
     # --- 5r..5y: the picker's clock — 24-hour display, grids, quick chips ----
 
     async def _open_picker(self, app, pilot, pane="tab-tools"):
-        """Open the picker on ``pane`` and return the modal it pushed."""
+        """Open the picker on ``pane`` and return the modal it pushed, once mounted.
+
+        ``push_screen`` only queues the screen; ``on_mount`` → ``_prefill`` writes
+        the tab's current window into the fields. A caller that assigns values
+        before that runs has them silently overwritten by the defaults — the
+        modal is in ``screen_stack`` a pump cycle before it is mounted, which is
+        why this waits on ``is_mounted`` rather than on a fixed pause.
+        """
         app.query_one(tui.TabbedContent).active = pane
         await pilot.pause()
         app.query_one("#range", tui.Select).value = "custom"
         await pilot.pause()
-        return app.screen_stack[-1]
+        modal = app.screen_stack[-1]
+        for _ in range(100):
+            if modal.is_mounted:
+                break
+            await pilot.pause(0.01)
+        assert modal.is_mounted, "the date-range modal never mounted"
+        return modal
 
     # 5r. the fields show a 24-hour clock, so a day's start reads 00:00
     async def test_the_picker_shows_times_in_24_hour(self):
@@ -1649,8 +1662,8 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             # the range Select lives in the top bar, not inside the Usage pane
             self.assertEqual(len(app.query("#tab-usage #range")), 0)
 
-    # 39. Plugins is all-time, keyed by name, no version column, no range Select
-    async def test_plugins_all_time_no_version_no_range(self):
+    # 39. Plugins: no version column, all-time list, windowed counts
+    async def test_plugins_list_is_all_time_but_its_counts_follow_the_window(self):
         now = int(time.time() * 1000)
         make_db(self.db_path, [])
         conn = db.open_db(self.db_path)
@@ -1661,10 +1674,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         conn.execute(
             "INSERT INTO plugin_usage(plugin, marketplace, kind, target,"
             " session_id, project, ts) VALUES('myplug','mkt','skill','t','s',"
-            "'/p',?)", (now - 100 * 3600_000,))
+            "'/p',?)", (now - 10 * 24 * 3600_000,))   # older than the 7d default
         conn.commit()
         conn.close()
-        app = TrackerApp(str(self.db_path))
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
         async with app.run_test() as pilot:
             await pilot.pause()
             app.query_one(tui.TabbedContent).active = "tab-plugins"
@@ -1672,11 +1685,18 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             t = app.query_one("#t-plugins", tui.DataTable)
             labels = [str(c.label) for c in t.columns.values()]
             self.assertNotIn("version", labels)
+            # the range control is live on this tab, like every other one
+            self.assertTrue(app.query_one("#range", tui.Select).display)
+            self.assertEqual(app.tab_range["tab-plugins"], "7d")
+            # 100 hours ago: outside the default week, inside "all" — and the row
+            # is listed either way, because the inventory side has no timestamps
+            self.assertEqual(all_rows(t)[0][1], "0")
+            app.tab_range["tab-plugins"] = "all"
+            app._refresh_active_tab()
+            await pilot.pause()
             row = all_rows(t)[0]
-            self.assertEqual(row[0], "myplug")   # still listed
-            self.assertEqual(row[1], "1")        # all-time use (no window)
-            # the range Select is hidden while the Plugins tab is active
-            self.assertFalse(app.query_one("#range", tui.Select).display)
+            self.assertEqual(row[0], "myplug")
+            self.assertEqual(row[1], "1")
 
     # 39b. the Skills tab has no plugin column (name is the key)
     async def test_skills_tab_has_no_plugin_column(self):
@@ -2856,7 +2876,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
     async def test_the_plugin_tab_drills_down_two_levels(self):
         now = self._noon_ms()
         insert_plugin_usage(self.db_path, [
-            ("myplug", "mp", "skill", "s/t", "s1", "/p/a", now)])
+            # an hour back, not exactly `now`: the tab's window ends at `now`
+            # exclusive, so a row on the boundary would be filtered out
+            ("myplug", "mp", "skill", "s/t", "s1", "/p/a", now - 3600_000)])
         app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
         async with app.run_test(size=WIDE) as pilot:
             await pilot.pause()

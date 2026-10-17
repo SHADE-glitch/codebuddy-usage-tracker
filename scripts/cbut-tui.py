@@ -1262,11 +1262,13 @@ if HAVE_TEXTUAL:
             self.sync_mod = None
             # Per-tab range state: each tab keeps its own window, so changing
             # one tab's range never moves another's. Entity tabs default to 7
-            # days; the Dashboard and the Usage page default to Today; Plugins
-            # has no window (all-time).
+            # days; the Dashboard and the Usage page default to Today. Plugins
+            # is windowed too — its list stays all-time, but `uses`/`last used`
+            # count inside the range like every other tab's.
             self.tab_range = {
                 "tab-dashboard": "1d",
                 "tab-tools": "7d", "tab-skills": "7d", "tab-agents": "7d",
+                "tab-plugins": "7d",
                 "tab-mcp": "7d", "tab-tokens": "7d", "tab-usage": "1d",
             }
             self._last_refresh = None      # epoch ms
@@ -1567,7 +1569,7 @@ if HAVE_TEXTUAL:
                 self._fill_tools(conn, *self._bounds_for("tab-tools"))
                 self._fill_skills(conn, *self._bounds_for("tab-skills"))
                 self._fill_agents(conn, *self._bounds_for("tab-agents"))
-                self._fill_plugins(conn)          # all-time, no window
+                self._fill_plugins(conn, *self._bounds_for("tab-plugins"))
                 self._fill_mcp(conn, *self._bounds_for("tab-mcp"))
                 self._fill_tokens(conn, *self._bounds_for("tab-tokens"))
                 o = db.overview(conn)          # status bar stays all-time
@@ -1673,7 +1675,6 @@ if HAVE_TEXTUAL:
                 else:
                     fn = self._PANE_FILL.get(pane)
                     if fn:
-                        # Plugins ignores its bounds (all-time).
                         getattr(self, fn)(conn, *self._bounds_for(pane))
             except sqlite3.Error as exc:
                 self._report_query_error(exc)
@@ -1760,8 +1761,7 @@ if HAVE_TEXTUAL:
             self._plan_wide_tables(event.size.width)
 
         def _range_of(self, pane):
-            """The window key for a pane, or ``None`` for the all-time Plugins
-            tab (which is not in ``self.tab_range``)."""
+            """The window key for a pane (``None`` only if a pane has no range)."""
             return self.tab_range.get(pane)
 
         def _now_ms(self) -> int:
@@ -1773,7 +1773,7 @@ if HAVE_TEXTUAL:
 
             Never cached: every refresh derives the window from the current
             time, so a long-running app does not drift. ``None`` as the start
-            means all-time (the Plugins tab).
+            means all-time.
             """
             rng = self._range_of(pane)
             now = self._now_ms()
@@ -1787,8 +1787,7 @@ if HAVE_TEXTUAL:
             """Point the shared range Select at the active tab's own window.
 
             Every tab keeps its own range (``self.tab_range``), so switching tabs
-            shows that tab's range, not the one you last picked elsewhere. The
-            Plugins tab has no window, so the Select is hidden there. Setting
+            shows that tab's range, not the one you last picked elsewhere. Setting
             ``Select.value`` posts a ``Changed`` message, which
             ``on_select_changed`` ignores when it already matches the active
             tab's range (so this never re-triggers a refresh loop).
@@ -1798,9 +1797,6 @@ if HAVE_TEXTUAL:
             except Exception:
                 return
             pane = self.query_one(TabbedContent).active
-            if pane == "tab-plugins":
-                sel.display = False
-                return
             sel.display = True
             value = self._range_of(pane)
             # A custom window is shown as "Custom…" in the Select, with the span
@@ -2088,8 +2084,6 @@ if HAVE_TEXTUAL:
             if event.select.id != "range":
                 return
             pane = self.query_one(TabbedContent).active
-            if pane == "tab-plugins":
-                return                    # Plugins has no window
             if event.value == CUSTOM_RANGE:
                 # "Custom…" opens the picker — unless this is the programmatic
                 # sync that points the Select at an already-custom window.
@@ -2125,8 +2119,7 @@ if HAVE_TEXTUAL:
             # own buttons (it is the active screen).
             if event.button.id == "date-range":
                 pane = self.query_one(TabbedContent).active
-                if pane != "tab-plugins":
-                    self._open_date_range(pane)
+                self._open_date_range(pane)
 
         # --- row select: route to detail screens ---------------------------
 
@@ -2141,8 +2134,7 @@ if HAVE_TEXTUAL:
                 self.push_screen(CallDetailScreen(call_kind, call_key))
                 return
             # The entity tabs' drill-downs follow the tab's own window, so the
-            # summary and the list agree with the row that was opened. The
-            # Plugins tab has no window (its range is None) — all-time.
+            # summary and the list agree with the row that was opened.
             pane = self.query_one(TabbedContent).active
             rng = self._range_of(pane)
             if rng is None:

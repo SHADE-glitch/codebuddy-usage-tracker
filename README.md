@@ -50,7 +50,7 @@
 - ⚡ **Fast incremental sync** — ~5 s to index ~300 sessions / ~420 MB; only new bytes after that.
 - 🖥️ **TUI + headless** — an eight-tab Textual UI for humans, JSON reports for scripts.
 - 🔢 **Real model tokens** — per-model input / output / total plus cache hit / miss / write, straight from `providerData.rawUsage`, with a **Provider** column (Built-in, or a third-party label from `providerData.requestModelId`); total prefers the provider's own reported value.
-- 📊 **Calendar-day windows, per tab** — the top-bar range (Today / 2 days / 3 days / 7 days / 30 days / All time) is kept **per tab**, so changing one never moves another: entity tabs default to **7 days**, the Dashboard and the Usage page to **Today**, and Plugins is always all-time. Windows are whole local calendar days (00:00 → now), never "now minus N hours". A window only shrinks the **counts** — the list stays full.
+- 📊 **Calendar-day windows, per tab** — the top-bar range (Today / 2 days / 3 days / 7 days / 30 days / All time) is kept **per tab**, so changing one never moves another: entity tabs default to **7 days**, the Dashboard and the Usage page to **Today**. Plugins has a window too — its list is all-time, its counts are not. Windows are whole local calendar days (00:00 → now), never "now minus N hours". A window only shrinks the **counts** — the list stays full.
 - 📅 **Custom date range** — the top bar's 📅 control (or **Custom…** in the range list) opens a picker with shortcut chips, an editable **START TIME** and **END TIME** (a date plus a 24-hour time), and a month calendar: ‹ › step the month and, at the year's ends, the year. Under each card a quick-time row puts the day's edges one click away — the start offers `00:00`/`06:00`/`12:00`/`18:00`/`23:59`, the end adds **now** — and a 24-cell hour grid under the calendar sets the hour of whichever card is active, so a date and its hour are picked the same way. Clicking a card aims both grids, so the next day *or hour* you click lands in that card; ↑/↓ and the wheel nudge the focused field by the step you pick (`1m` / `10m` / `1h`). Dates and times may be typed loosely — `10-1` is `10/01`, `9:5 AM` and `21:05` are both `21:05`. The choice is kept per tab, and the top bar always shows the span it is showing.
 - 🔎 **Two-level drill-down** — <kbd>Enter</kbd> or double-click a row on the Tools, Skills, Agents, Plugins, MCP or Tokens tab: the first screen summarises that entity (its counts and totals **in the tab's own window**) above its recent calls; <kbd>Enter</kbd> a call to see **every field of that single call**, laid out to fill the screen.
 - 🔐 **Metadata only** — names, timings, statuses, projects. Never message bodies or argument values.
@@ -94,9 +94,10 @@ The **Dashboard** opens first: an at-a-glance summary of the important numbers, 
 know where to look before drilling in. A shared top bar above the tabs carries the range
 selector, and **each tab keeps its own range** — changing one tab's window never moves
 another's. The entity tabs (Tools, Skills, Agents, MCP, Tokens) default to **7 days**;
-the Dashboard and the Usage page default to **Today**. The **Plugins** tab has no window
-at all: its list is all-time, so the selector is hidden there. A window only changes the
-**counts**; it never drops a row, because every tab is keyed by name.
+the Dashboard and the Usage page default to **Today**. The **Plugins** tab works the
+same way: its list is all-time — installed ∪ ever used — while `uses` and `last used`
+count inside its window. A window only changes the **counts**; it never drops a row,
+because every tab is keyed by name.
 
 | | Tab | What it shows |
 |---|-----|---------------|
@@ -104,7 +105,7 @@ at all: its list is all-time, so the selector is hidden there. A window only cha
 | 🧰 | **Tools** | tool calls by name, completion, average duration, last used |
 | 🎯 | **Skills** | skill invocations by name (merged across owners), last use |
 | 🤖 | **Agents** | subagent types by name, call count, last use |
-| 🧩 | **Plugins** | every plugin — installed **and** ever used — with its skills/agents/commands; all-time, no version column |
+| 🧩 | **Plugins** | every plugin — installed **and** ever used — with its skills/agents/commands; all-time list, windowed counts, no version column |
 | 🔌 | **MCP** | MCP servers and tools, invocation counts |
 | 🔢 | **Tokens** | per-model **usage total**, requests, input, output, **API total**, cache hit/miss/write |
 | 📊 | **Usage** | request log with summary panels (cc-switch-style columns) |
