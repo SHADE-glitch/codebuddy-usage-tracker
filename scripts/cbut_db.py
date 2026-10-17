@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # --- locations -------------------------------------------------------------
 
@@ -238,7 +238,6 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 );
 CREATE INDEX IF NOT EXISTS idx_tool_name    ON tool_calls(tool_name);
 CREATE INDEX IF NOT EXISTS idx_tool_ts      ON tool_calls(ts);
-CREATE INDEX IF NOT EXISTS idx_tool_cat     ON tool_calls(category);
 
 CREATE TABLE IF NOT EXISTS skill_usage (
     call_id     TEXT PRIMARY KEY,
@@ -767,10 +766,40 @@ def _drop_dead_session_indexes(conn: sqlite3.Connection) -> bool:
     return True
 
 
+DEAD_CATEGORY_INDEX = "idx_tool_cat"
+
+
+def _drop_dead_category_index(conn: sqlite3.Connection) -> bool:
+    """v8: remove the index on a column no query compares.
+
+    ``tool_calls.category`` is written by the sync and printed by `cbut stats tools` and
+    `cbut recent`. Nothing filters it, and no view filters it either — established against the
+    8,339 statements the suite really executes (captured with ``set_trace_callback`` and
+    re-planned with ``EXPLAIN QUERY PLAN``), not against a regex over source, because a grep for
+    ``WHERE category`` cannot see through an f-string. ``idx_tool_cat`` is named in 0 of those
+    plans while the other indexes are named in 13 to 703 of them.
+
+    It is not dead the way the session indexes were — it is a *covering* index for
+    ``WHERE category = ?`` and the planner does choose it for that shape. There is just no such
+    query here, and at this table's size the cost of carrying it is measurable rather than a
+    rounding error: re-inserting the real 37,345 rows took 145.03 ms with it and 121.87 ms
+    without (+19.0%), and the database 9,539,584 B against 8,892,416 B. Undoing the cut is one
+    ``CREATE INDEX`` line — ``CREATE INDEX IF NOT EXISTS`` runs on every open, so a re-add needs
+    no migration at all.
+    """
+    present = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index'")}
+    if DEAD_CATEGORY_INDEX not in present:
+        return False
+    conn.execute(f"DROP INDEX {DEAD_CATEGORY_INDEX}")
+    return True
+
+
 MIGRATIONS = (
     ("model_responses cache and total columns", _migrate_model_responses),
     ("prose columns removed", _drop_prose_columns),
     ("dead session indexes dropped", _drop_dead_session_indexes),
+    ("dead tool-category index dropped", _drop_dead_category_index),
 )
 
 

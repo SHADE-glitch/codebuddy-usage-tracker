@@ -1146,6 +1146,40 @@ class ViewGroupByTest(unittest.TestCase):
         self.assertEqual(rows[0]["uses"], 2)
 
 
+def _queries_filtering(needle: str) -> list[str]:
+    """String constants in `cbut_db.py` that look like SQL and match `needle`.
+
+    Read out of the AST, with the module's own docstrings removed. The first version of this
+    helper scraped double-quoted spans out of the raw bytes, and with `re.I` that counts the
+    English word "with" as the SQL keyword `WITH` — so a docstring *describing* a query was
+    extracted and reported as one, and it went red on prose the moment a docstring named a
+    filtered column. A guard that fails on prose is a guard somebody deletes, so the
+    docstrings come out. The `SELECT`/`WITH` requirement stays, so a UI label is still not
+    mistaken for a query, and the floor below is what keeps a broken extractor from passing
+    by finding nothing.
+    """
+    import ast
+    import re as _re
+
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "cbut_db.py").read_text(
+        encoding="utf-8"))
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef)):
+            doc = ast.get_docstring(node, clean=False)
+            if doc is not None:
+                docstrings.add(doc)
+    queries = [n.value for n in ast.walk(tree)
+               if isinstance(n, ast.Constant) and isinstance(n.value, str)
+               and n.value not in docstrings
+               and _re.search(r"\b(?:SELECT|WITH)\b", n.value, _re.I)]
+    if len(queries) <= 40:
+        raise AssertionError(f"the extractor found only {len(queries)} queries — it is "
+                             "broken, not the schema")
+    return [q for q in queries if _re.search(needle, q, _re.I)]
+
+
 class IndexTest(unittest.TestCase):
     def test_expected_indexes_exist(self):
         tmp = tempfile.TemporaryDirectory()
@@ -1169,18 +1203,24 @@ class IndexTest(unittest.TestCase):
         ever built, this fails and the index comes back with it. Reads the real source,
         so it cannot drift into a claim about code that no longer exists.
         """
-        import re as _re
-        src = (Path(__file__).resolve().parents[1] / "cbut_db.py").read_text(
-            encoding="utf-8")
-        queries = _re.findall(
-            r'"((?:[^"]|\\.)*?(?:SELECT|WITH)[^"]*)"', src, _re.I)
-        self.assertGreater(len(queries), 50,
-                           "the extractor found almost no queries — it is broken, "
-                           "not the schema")
-        filtering = [q for q in queries
-                     if _re.search(r"session_id\s*(?:=|IN|IS|LIKE)", q, _re.I)]
+        filtering = _queries_filtering(r"session_id\s*(?:=|IN|IS|LIKE)")
         self.assertEqual(filtering, [],
                          f"{len(filtering)} query(ies) filter by session_id")
+
+    def test_no_query_filters_by_category(self):
+        """Why `idx_tool_cat` was dropped: nothing compares the column.
+
+        A tripwire on the justification rather than a proof of the claim, and the difference
+        is worth stating: this reads string constants out of the source, so a query assembled
+        where it cannot see would walk past it — which is how this index survived the v6
+        sweep, and why the cut was decided on the 8,339 statements the suite really executes
+        (captured with `set_trace_callback`, re-planned with `EXPLAIN QUERY PLAN`: 0 of them
+        name the index, against 13-703 for the ones that are kept). What it can do is go red
+        the moment somebody writes the query that would justify the index coming back.
+        """
+        filtering = _queries_filtering(r"category\s*(?:=|IN|IS|LIKE)")
+        self.assertEqual(filtering, [],
+                         f"{len(filtering)} query(ies) filter by category")
 
     def test_a_new_database_carries_no_session_indexes(self):
         tmp = tempfile.TemporaryDirectory()
@@ -1226,6 +1266,71 @@ class IndexTest(unittest.TestCase):
         self.assertNotIn("idx_model_resp_session", after)
         self.assertIn("idx_tool_name", after, "the drop took a live index with it")
         self.assertIn("idx_model_resp_model_ts", after)
+        self.assertEqual(status, "migrated")
+        self.assertEqual(version, str(db.SCHEMA_VERSION))
+
+    def test_the_category_index_is_neither_declared_nor_present(self):
+        """The assertion that catches a re-add has to read the declaration, not the result.
+
+        This test was written the other way first — assert `idx_tool_cat` is absent from a
+        fresh database — and the negative check proved it empty: putting the `CREATE INDEX`
+        line back into `TABLES_SQL` left it green, because `SCHEMA_SQL` creates the index
+        and `_drop_dead_category_index` drops it again in the same open. The database that
+        comes out is indistinguishable from the cut one, so a name-based check cannot tell
+        the two apart and no longer guards the thing that must not return. The declaration
+        can, so here it is: if an index on `tool_calls(category)` is declared again, this
+        fails, and `test_no_query_filters_by_category` is the check that should have had to
+        change first.
+        """
+        import re as _re
+        declared = _re.search(
+            r"CREATE\s+(?:UNIQUE\s+)?INDEX[^;]*ON\s+tool_calls\s*\(\s*category\s*\)",
+            db.TABLES_SQL, _re.I)
+        self.assertIsNone(
+            declared,
+            "an index on tool_calls(category) is declared again: "
+            f"{declared.group(0).strip() if declared else ''}")
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            conn = db.open_db(Path(tmp.name) / "usage.db")
+            db.ensure_schema(conn)
+            names = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'")}
+            conn.close()
+        finally:
+            tmp.cleanup()
+        self.assertNotIn("idx_tool_cat", names)
+        self.assertIn("idx_tool_name", names, "the schema lost a live index instead")
+
+    def test_migrating_a_v7_database_drops_the_dead_category_index(self):
+        """The category index goes on upgrade, and every other one survives."""
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = Path(tmp.name) / "usage.db"
+            conn = db.open_db(path)
+            db.ensure_schema(conn)
+            # Re-create the v7 shape by hand: the dead index plus the live ones it
+            # sits beside, and a version row that says this database predates the drop.
+            conn.executescript(
+                "CREATE INDEX idx_tool_cat ON tool_calls(category);"
+                "UPDATE meta SET value='7' WHERE key='schema_version';")
+            conn.commit()
+            before = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'")}
+            self.assertIn("idx_tool_cat", before, "fixture did not build")
+
+            status = db.ensure_schema(conn)
+            after = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'")}
+            version = conn.execute(
+                "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+            conn.close()
+        finally:
+            tmp.cleanup()
+
+        self.assertNotIn("idx_tool_cat", after)
+        self.assertIn("idx_tool_name", after, "the drop took a live index with it")
+        self.assertIn("idx_tool_ts", after)
         self.assertEqual(status, "migrated")
         self.assertEqual(version, str(db.SCHEMA_VERSION))
 
