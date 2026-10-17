@@ -295,7 +295,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 507 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 510 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -305,7 +305,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 
 | Suite | Tests | Covers |
 |---|---:|---|
-| `test_sync.py` | 129 | transcript parsing, tool classification, the route-origin column (`requestModelId` → built-in / vendor / host / endpoint), incremental vs `--full` re-sync, crash recovery, unparsed-record accounting |
+| `test_sync.py` | 132 | transcript parsing, tool classification, the route-origin column (`requestModelId` → built-in / vendor / host / endpoint), incremental vs `--full` re-sync, crash recovery, unparsed-record accounting |
 | `test_tui.py` | 121 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness |
 | `test_usage.py` | 103 | the calendar-day windows (Today / 2 / 3 / 7 / 14 / 30 days / all) and their custom-range labels, the typed date/time normalisation (24-hour display, 12-hour still accepted on input), the token totals and provider grouping, the Dashboard queries, the drill-down queries (windowed per-entity summaries, plugin use counts, a single call's full row), the schema gate, and which indexes earn their keep |
 | `test_indexes.py` | 4 | the rule the two earlier index cuts relied on a hand-taken reading for: every statement the report surface really runs is captured and planned with `EXPLAIN QUERY PLAN`, and a declared index no plan names fails — plus the structural rule that caught the v9 cut, a key that is a strict prefix of a wider declared key |

@@ -1082,8 +1082,41 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
 # --- plugin usage backfill -------------------------------------------------
 
 
+def attribute_plugin_skills(conn: sqlite3.Connection) -> int:
+    """Fill `skill_usage.plugin` on rows the inventory can now name.
+
+    `plugin` is decided when the row is written, from the inventory snapshot of
+    that moment, and nothing revisits it. Three installed plugins *are* their own
+    skill — the manifest sits at the install root, `<installPath>/SKILL.md`,
+    instead of under `skills/` — and the inventory could not see that shape until
+    it learned to. So `docx` was recorded 8 times (2026-10-07, 2026-10-12) with
+    `plugin` NULL while the inventory has carried `docx -> docx` ever since, and
+    the Plugins panel counted none of those calls.
+
+    Name-based, like attribution at insert time, and NULL-only: a row that
+    already names an owner is never overwritten, and a skill no plugin owns (the
+    user's own library) stays NULL because no inventory row names it.
+    """
+    cur = conn.execute(
+        "UPDATE skill_usage SET plugin = ("
+        "  SELECT i.owner_plugin FROM inventory i"
+        "   WHERE i.kind = 'skill' AND i.name = skill_usage.skill"
+        "     AND i.source = 'plugin' AND i.owner_plugin <> '')"
+        " WHERE plugin IS NULL AND EXISTS ("
+        "  SELECT 1 FROM inventory i"
+        "   WHERE i.kind = 'skill' AND i.name = skill_usage.skill"
+        "     AND i.source = 'plugin' AND i.owner_plugin <> '')")
+    return cur.rowcount
+
+
 def backfill_plugin_usage(conn: sqlite3.Connection) -> int:
-    """Derive plugin_usage rows from skills/agents owned by a plugin."""
+    """Derive plugin_usage rows from skills/agents owned by a plugin.
+
+    Runs the owner fill first, so a skill whose owning plugin only became
+    visible to the inventory later still reaches the panel. Both steps are
+    idempotent, so this stays a per-sync catch-up rather than a one-shot.
+    """
+    attribute_plugin_skills(conn)
     n = 0
     for row in conn.execute(
         "SELECT skill, plugin, session_id, project, ts FROM skill_usage"

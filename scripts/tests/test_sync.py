@@ -1926,6 +1926,12 @@ class InventorySnapshotTest(unittest.TestCase):
                 " VALUES(?,?,?,'completed')", (f"c-{name}", name, now))
         self.conn.commit()
 
+    def plugin_of(self, skill):
+        """The owner `skill_usage` carries for this skill, as stored."""
+        row = self.conn.execute(
+            "SELECT plugin FROM skill_usage WHERE skill=?", (skill,)).fetchone()
+        return row[0] if row else None
+
     # -- Q1: symlinked skills ------------------------------------------------
 
     def test_a_symlinked_skill_is_found(self):
@@ -2045,6 +2051,50 @@ class InventorySnapshotTest(unittest.TestCase):
         self.make_plugin("xlsx", version="unknown", root_manifest=True)
         skill_owner, _agent_owner, _command_owner = self.scan()
         self.assertEqual(skill_owner["xlsx"], "xlsx")
+
+    # -- the owner fill ------------------------------------------------------
+
+    def test_a_historical_call_is_attributed_once_the_inventory_names_it(self):
+        """The 8 docx calls written before the inventory could see a plugin-root
+        skill: `plugin` stayed NULL because the map had no entry, and nothing
+        ever revisited the row. The fill is what makes them countable."""
+        self.make_plugin("docx", version="unknown", root_manifest=True)
+        self.scan()
+        self.use("skill", "docx")
+        self.assertIsNone(self.plugin_of("docx"), "fixture wrote an owner itself")
+
+        sync.backfill_plugin_usage(self.conn)
+
+        self.assertEqual(self.plugin_of("docx"), "docx")
+        rows = [tuple(r) for r in self.conn.execute(
+            "SELECT plugin, kind, target FROM plugin_usage")]
+        self.assertEqual(rows, [("docx", "skill", "docx")])
+
+    def test_a_skill_no_plugin_owns_is_left_null(self):
+        """The user's own library is not a plugin's: no inventory row names it,
+        so the fill must not invent an owner."""
+        self.make_plugin("docx", version="unknown", root_manifest=True)
+        self.make_skill("grilling")
+        self.scan()
+        self.use("skill", "grilling")
+
+        sync.backfill_plugin_usage(self.conn)
+
+        self.assertIsNone(self.plugin_of("grilling"))
+
+    def test_the_fill_never_overwrites_an_owner(self):
+        """A row that already names a plugin keeps it: the write-time answer is
+        evidence, the fill only supplies what was missing."""
+        self.make_plugin("docx", version="unknown", root_manifest=True)
+        self.scan()
+        self.use("skill", "docx")
+        self.conn.execute(
+            "UPDATE skill_usage SET plugin='elsewhere' WHERE skill='docx'")
+        self.conn.commit()
+
+        sync.backfill_plugin_usage(self.conn)
+
+        self.assertEqual(self.plugin_of("docx"), "elsewhere")
 
     def test_a_removed_plugin_takes_its_root_skill_with_it(self):
         """The snapshot has to answer both ways: a plugin that ships a root skill
