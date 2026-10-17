@@ -61,6 +61,18 @@ running `VACUUM`. Rows across all tables are now **≈ 50k** (`tool_calls` ≈ 2
 left as the reading of its own date: these rows record what a command printed on a day, not a number
 someone maintains.
 
+**VACUUMed on 2026-10-17**, the first time this store was compacted: the `freelist_count` above reads
+**0** by then — the parked pages of the v6 drop had been reused, not returned — and the file was
+**≈ 18.7 MiB (4,794 pages)**. `sqlite3 "$DB" "VACUUM"` (after `cbut backup`, snapshot
+`usage-20261017-075432-manual.db`, 19,636,224 B) took it to **≈ 17.4 MiB (4,465 pages)**, i.e. it gave
+back **≈ 1.3 MiB** that no freelist reading would have predicted: with no free pages to reclaim the
+space was *inside* the pages. So the earlier "not worth running for 2.2 MiB" is now a decision that was
+taken the other way, and the honest reading of why is that the freelist count is not the whole story
+about wasted space. Every table and every view hashed identical to the snapshot afterwards, `quick_check`
+and `integrity_check` are `ok` with no foreign-key violation, and `cbut health` printed the same lines.
+When to run it: after a schema change that drops something, or when the file's size stops matching the
+row count — not on a schedule, since it rewrites the whole file and needs room for a second copy.
+
 What the re-measurement also makes visible is that **the store is live**. Two reads fifteen minutes apart
 printed 49,470 and then 49,828 rows, and the file's mtime advanced between them — with `usage.db-wal` at
 **0 bytes** and **no new file in `backups/`**. Those two details are what say it was an ordinary
