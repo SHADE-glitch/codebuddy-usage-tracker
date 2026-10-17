@@ -377,13 +377,26 @@ def cmd_health(conn, args):
     print(f"  last activity  {ts(o['last_ts'])}")
     # The format-change signal. Printing the "0" case too, so the line itself
     # proves the check ran rather than merely being absent when nothing broke.
-    if o["unparsed_records"]:
+    rows = db.q_unparsed(conn)
+    if rows:
+        # Split the tally, because a total that mixes the three prose types this
+        # build declines (tens of thousands on any real database) with genuine
+        # drift cannot answer the question it is printed for. Each reason is
+        # marked, and the line under the table only calls out the drift.
+        expected, unexpected, unexpected_names = sync.split_unparsed(rows)
         print(f"  UNPARSED       {o['unparsed_records']} records "
-              f"across {o['unparsed_kinds']} reason(s) no handler claims:")
-        for row in db.q_unparsed(conn)[:8]:
-            print(f"                 {row['count']:>8}  {row['reason']}")
-        print("                 (a jump here right after a CodeBuddy upgrade "
-              "means its log format changed)")
+              f"across {o['unparsed_kinds']} reason(s) no handler claims "
+              f"({expected} known, {unexpected} not):")
+        for row in rows[:8]:
+            mark = "NEW" if not sync.unparsed_is_expected(row["reason"]) else "   "
+            print(f"                 {mark} {row['count']:>8}  {row['reason']}")
+        if unexpected:
+            print(f"                 ({unexpected} record(s) under a reason this build "
+                  "has never seen: " + ", ".join(unexpected_names) + " — that is "
+                  "the format moving. A known reason growing is not.)")
+        else:
+            print("                 (every reason here is one this build already "
+                  "declines on purpose, so nothing has moved)")
     else:
         print("  unparsed       0 — every record type was claimed")
 

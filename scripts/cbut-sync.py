@@ -107,13 +107,53 @@ HANDLED_RECORD_TYPES = frozenset({
     "function_call", "function_call_result", "message", "model-usage",
     "turn-metrics", "session-meta", "ai-title",
 })
-# Types present in real transcripts that claim no handler, measured on this
-# machine 2026-10-09: ``reasoning`` by the tens of thousands,
-# ``file-history-snapshot`` by the thousands, ``summary`` by the hundreds —
-# `cbut health` prints the exact figures for whoever owns this database.
-# They stay inside the unparsed count deliberately — an
-# allowlist quieting them would also hide the day one of them starts carrying
-# something we index. Anything new appears beside them in `cbut health`.
+# ``type`` values present in real transcripts that this build understands and
+# deliberately indexes nothing from, measured on this machine 2026-10-09:
+# ``reasoning`` by the tens of thousands, ``file-history-snapshot`` by the
+# thousands, ``summary`` by the hundreds.
+#
+# They stay *inside* the unparsed tally, because an allowlist that removed them
+# would also hide the day one of them starts carrying something we index. What
+# they get instead of removal is a **name**: a single total that mixes a
+# permanent 30,000 with real drift cannot do the one thing the number exists for
+# — say "the format moved" — and a bar that shouts every day is a bar nobody
+# reads. So every view splits it: `cbut health` marks each reason, and the TUI
+# status line raises its "!" only for a reason outside this set.
+UNCLAIMED_RECORD_TYPES = frozenset(
+    {"reasoning", "file-history-snapshot", "summary"})
+# The same three as they are spelled in the ``unparsed`` table.
+KNOWN_UNCLAIMED_REASONS = frozenset(f"type:{t}" for t in UNCLAIMED_RECORD_TYPES)
+
+
+def unparsed_is_expected(reason: str) -> bool:
+    """Whether `reason` is one this build already knows it does not index.
+
+    False means drift — a record type nothing here has been taught about — which
+    is what `cbut health` and the status line have to shout about. The other
+    reasons are never expected: `UNPARSEABLE_LINE` and `type:<missing>` are the
+    reader losing data rather than declining it, and so is anything under
+    ``unreadable_file:``.
+    """
+    return reason in KNOWN_UNCLAIMED_REASONS
+
+
+def split_unparsed(rows) -> tuple[int, int, list[str]]:
+    """Split `q_unparsed` rows into (expected, unexpected, unexpected reasons).
+
+    One helper rather than the same filter written into `cbut health` and the TUI
+    status line: two copies would be two answers to "is this drift?", and the
+    disagreement would be invisible, because both just show a number.
+    """
+    expected = unexpected = 0
+    names: list[str] = []
+    for row in rows:
+        n = row["count"]
+        if unparsed_is_expected(row["reason"]):
+            expected += n
+        else:
+            unexpected += n
+            names.append(row["reason"])
+    return expected, unexpected, names
 
 # --- classification tables -------------------------------------------------
 

@@ -1297,6 +1297,44 @@ class UnparsedAccountingTest(unittest.TestCase):
                          "…and its tokens are genuinely recorded")
         self.assertEqual(stats["unparsed_this_run"], 0)
 
+    def test_a_known_unclaimed_type_is_counted_but_is_not_drift(self):
+        """The three prose types are named, so "unparsed" can mean drift again.
+
+        They stay inside the tally — removing them would hide the day one of them
+        starts carrying something we index — and what they gain is a name, so every
+        view can tell a familiar reason from a new one. This pins the vocabulary the
+        views share; the views themselves are pinned where they print.
+        """
+        for reason in ("type:reasoning", "type:file-history-snapshot",
+                       "type:summary"):
+            self.assertTrue(sync.unparsed_is_expected(reason), reason)
+        # Losing data is never "expected", whatever else the build knows: these are
+        # the reader dropping something, not declining it.
+        for reason in ("unparseable_line", "type:<missing>",
+                       "unreadable_file:OSError", "type:watermark"):
+            self.assertFalse(sync.unparsed_is_expected(reason), reason)
+
+    def test_split_unparsed_separates_known_records_from_new_ones(self):
+        rows = [{"reason": "type:reasoning", "count": 22146},
+                {"reason": "type:summary", "count": 528},
+                {"reason": "type:watermark", "count": 3},
+                {"reason": "unparseable_line", "count": 2}]
+        expected, unexpected, names = sync.split_unparsed(rows)
+        self.assertEqual(expected, 22146 + 528)
+        self.assertEqual(unexpected, 5)
+        self.assertEqual(names, ["type:watermark", "unparseable_line"])
+
+    def test_no_type_is_both_claimed_and_declined(self):
+        """Two sets describing one question have to disagree about nothing.
+
+        A record type in both `HANDLED_RECORD_TYPES` and `UNCLAIMED_RECORD_TYPES`
+        would be indexed by a branch and described as deliberately not indexed,
+        which is two answers to "why is this not in the tables".
+        """
+        overlap = sync.HANDLED_RECORD_TYPES & sync.UNCLAIMED_RECORD_TYPES
+        self.assertEqual(overlap, set(),
+                         f"a type is both claimed and declined: {overlap}")
+
 
 class CrashSafetyTest(unittest.TestCase):
     """The offsets we store must survive a crash and a rewrite honestly."""

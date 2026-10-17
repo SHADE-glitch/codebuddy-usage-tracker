@@ -315,6 +315,38 @@ class HealthReportTest(unittest.TestCase):
         self.assertIn("UNPARSED", out)
         self.assertIn("type:NewThing", out)
 
+    def test_health_splits_the_tally_into_known_and_new(self):
+        """The total alone could not be read, which is why the split exists.
+
+        The three prose types this build declines run to tens of thousands of
+        records on any real database, so the line was permanent and alarming — and
+        a record type nothing here has been taught about looked exactly like it.
+        The check here is that the two cases read differently, not that either
+        number is pretty.
+        """
+        conn = db.open_db(self.db_path)
+        for reason, n in (("type:reasoning", 22146), ("type:summary", 528)):
+            conn.execute("INSERT INTO unparsed(reason, count) VALUES(?,?)",
+                         (reason, n))
+        conn.commit()
+        conn.close()
+        rc, out, err = self._run_health(self.db_path)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("(22674 known, 0 not)", out)
+        self.assertNotIn("NEW", out, "a known reason was marked as drift")
+        self.assertIn("nothing has moved", out)
+
+        conn = db.open_db(self.db_path)
+        conn.execute("INSERT INTO unparsed(reason, count) VALUES('type:watermark', 3)")
+        conn.commit()
+        conn.close()
+        rc, out, err = self._run_health(self.db_path)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("(22674 known, 3 not)", out)
+        self.assertIn("NEW", out)
+        self.assertIn("type:watermark", out)
+        self.assertIn("the format moving", out)
+
     def test_health_reports_a_missing_schema_version_table(self):
         # A database so old it has no meta table: the schema-version line must
         # report that in place, not abort the whole report.

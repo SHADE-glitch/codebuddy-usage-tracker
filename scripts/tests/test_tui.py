@@ -1901,6 +1901,53 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("Error", status)
             self.assertIn("tool calls", status)
 
+    # 81. the unparsed count says *which* reasons, so the "!" can mean drift again
+    async def test_the_status_line_only_shouts_about_a_reason_it_has_not_seen(self):
+        """The bar used to print one total, and that total could not be read.
+
+        The three prose types this build declines are tens of thousands of records
+        on any real database, so `! 29,989 unparsed` was on screen every single day
+        — and the one thing the number exists to say (a record type nothing here
+        has been taught about) looked exactly like it. This pins both halves: the
+        familiar reasons are still counted and still shown, and the alarm goes to
+        the reason that is new.
+        """
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [("m1", "s1", "m", 1, 1, 0, 0, now, 1)])
+        conn = db.open_db(self.db_path)
+        for reason, n in (("type:reasoning", 22146), ("type:summary", 528)):
+            conn.execute("INSERT INTO unparsed(reason, count) VALUES(?,?)",
+                         (reason, n))
+        conn.commit()
+        conn.close()
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            status = str(app.query_one("#status").content)
+            self.assertIn("22,674 records unparsed (2 known)", status)
+            self.assertNotIn("!", status,
+                             "a known reason raised the alarm the alarm is for")
+
+            conn = db.open_db(self.db_path)
+            conn.execute("INSERT INTO unparsed(reason, count) VALUES(?,?)",
+                         ("type:brand-new", 3))
+            conn.commit()
+            conn.close()
+            # `refresh_data` is the full refresh (every tab + the status bar) — the
+            # `r` binding also runs a sync first, and the tripwire refuses to let a
+            # test read the real host footprint, which is what the bar then reports.
+            # `_refresh_active_tab` is not enough either: it fills the visible tab
+            # and leaves the bar showing its previous line.
+            app.refresh_data()
+            await pilot.pause()
+            status = str(app.query_one("#status").content)
+            self.assertIn("!", status)
+            self.assertIn("3 records unparsed under a new reason: type:brand-new",
+                          status)
+            self.assertNotIn("22,674", status,
+                             "the alarm count is the new records, not the familiar "
+                             "ones it would otherwise be buried under")
+
     # 46/47. narrow terminals get two panels per row, very narrow ones stack
     async def test_usage_panels_go_two_up_before_they_stack(self):
         make_db(self.db_path, [])
