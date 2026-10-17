@@ -1136,3 +1136,43 @@ Cost     `UNCLAIMED_RECORD_TYPES` is a hand-kept list of record type names, and 
          Python; that is one row per reason (three, here), and it would not stay cheap if a host
          ever wrote one row per record.
 Commit   ec2ad52
+
+### D-049 · 2026-10-17 · perf
+Symptom  `TABLES_SQL` declared `idx_model_resp_model` on `model_responses(model)` — the leading
+         column of `idx_model_resp_model_ts` — so every insert paid for an index whose key a wider
+         one already starts with. The `v9` docstring first justified the cut with "no statement
+         this build runs reaches it", and that sentence is false: put the index back on a copy of
+         the live file and **3 of the 87 plans the report surface produces name it**
+         (`q_model_summary`'s `SEARCH … (model=?)` and the two per-model roll-ups'
+         `SCAN … USING INDEX`). So the reachability check that landed with the cut would have
+         passed this index, and the record that says it found the index was wrong about its own
+         method.
+Change   Keep the drop (a wider key answers every lookup the narrow one can) and give the real
+         reason a rule of its own in `scripts/tests/test_indexes.py`: an index whose key is a
+         **strict prefix** of another declared index's key on the same table can never win a plan,
+         and `PRAGMA index_info` answers that from the schema `ensure_schema` builds — no rows,
+         no DDL parsing. `_drop_dead_model_index`'s docstring, `measurements.md` §2, AGENTS.md
+         invariant 4 and the README's per-suite row now say what was measured rather than the
+         shortcut. The migration itself is unchanged: a bare `DROP INDEX`, undoable with one
+         `CREATE INDEX` line, no row re-read.
+Evidence L0 2026-10-17: `python3 -m unittest discover -s scripts/tests` 507 tests, OK (505 before
+         the two prefix cases), and `test_readme_counts` holds the README rows to the loader.
+         Read side measured on copies of the live file — all **87** statements the report surface
+         runs, planned in a fresh connection on each side: **3 plans differ**, all moving to
+         `idx_model_resp_model_ts` (one equality lookup, two covering scans that sort in a temp
+         B-tree either way); 300 timed runs of each query function read **12.15 against 13.19 ms**
+         (`q_model_summary`), **28.70 against 28.36 ms** (`q_model_tokens`) and **22.98 against
+         23.78 ms** (`q_usage_model_stats`), the sign flipping between rows. The guard's own
+         provocation: `CREATE INDEX idx_model_resp_model ON model_responses(model)` added to a
+         fresh schema makes `prefix_duplicates` return exactly `['idx_model_resp_model']`, and
+         the synthetic case pins that a wider key, the same key on another table and a different
+         column order are **not** reported. Write side and file size, from `measurements.md`:
+         one full insert pass over the real 27,114 rows 265.4 ms with the index against 232.4 ms
+         without, and 0.70 MiB of a 16.91 MiB file.
+Cost     Two rules, two blind spots: a redundant index that is not a prefix is only caught when no
+         plan names it, and a prefix duplicate is caught even if some plan names it — which is the
+         case here. The corpus is statements that pass through `db.open_db`, so a SQL string
+         executed on a connection built inside a helper is invisible to it, and that gap stays
+         safe only while every reader keeps using the one door. Re-adding the index means writing
+         the query the wider key cannot serve.
+Commit   3c28e40
