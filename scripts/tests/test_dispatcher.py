@@ -152,7 +152,8 @@ class DispatcherTest(unittest.TestCase):
 
     def test_help_lists_the_subcommands_that_actually_exist(self):
         out = self.run_cbut("help").stdout
-        for name in ("sync", "stats", "tools", "health", "backup", "restore"):
+        for name in ("sync", "stats", "tools", "health", "backup", "restore",
+                     "vacuum"):
             self.assertIn(name, out, f"cbut {name} works but help never mentions it")
         self.assertIn("eight tabs", out,
                       "the tab count in help drifted from the TUI again")

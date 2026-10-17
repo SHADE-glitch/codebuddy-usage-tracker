@@ -359,6 +359,73 @@ class HealthReportTest(unittest.TestCase):
         self.assertIn("schema version (missing)", out)
 
 
+class VacuumCliTest(unittest.TestCase):
+    """`cbut vacuum` — the one command that rewrites the whole file.
+
+    A dropped index parks its pages on the freelist instead of releasing them, so this is
+    the only thing that gets the space back, and the reading that measured it was a recipe
+    in `docs/maintenance/measurements.md` first. What a reader cannot check for themselves
+    is whether the rewrite kept the rows, so the command asserts it in its own output and
+    so does this class.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "usage.db"
+        seed_db(self.db_path)
+        # Rows and then no rows: the deletion is what leaves pages for a compaction to
+        # reclaim, which is the state a schema change also leaves behind.
+        conn = db.open_db(self.db_path)
+        conn.executemany(
+            "INSERT INTO tool_calls(call_id, session_id, project, tool_name, category,"
+            " ts, duration_ms, status) VALUES(?,?,?,?,?,?,?,?)",
+            [(f"filler-{i}", "s1", "/proj", "Read", "builtin", TS + i, 5,
+              "completed") for i in range(4000)])
+        conn.commit()
+        conn.execute("DELETE FROM tool_calls WHERE call_id LIKE 'filler-%'")
+        conn.commit()
+        # The deleted pages sit in `-wal` until something folds them back, and the main
+        # file is what both this case and the command compare.
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.close()
+        self.before = self.db_path.stat().st_size
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_vacuum_compacts_the_file_after_snapshotting_it(self):
+        rc, out, err = run("--db", self.db_path, "vacuum")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("reclaimed  ", out)
+        self.assertIn("quick_check ok", out)
+        self.assertIn("every row count is what it was", out)
+        self.assertLess(self.db_path.stat().st_size, self.before)
+        snapshots = sorted(db.backup_dir(self.db_path).glob("*pre-vacuum*.db"))
+        self.assertEqual(len(snapshots), 1, [p.name for p in snapshots])
+        self.assertIn(str(snapshots[0]), out)
+
+        # The row is still there, with the count the command promised it would keep.
+        conn = db.open_db(self.db_path, readonly=True)
+        try:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM tool_calls").fetchone()[0], 1)
+        finally:
+            conn.close()
+
+    def test_a_second_vacuum_has_nothing_to_reclaim(self):
+        run("--db", self.db_path, "vacuum")
+        compact = self.db_path.stat().st_size
+        rc, out, err = run("--db", self.db_path, "vacuum")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("nothing — the file was already compact", out)
+        self.assertEqual(self.db_path.stat().st_size, compact)
+
+    def test_vacuum_refuses_when_the_database_is_missing(self):
+        rc, out, err = run("--db", Path(self.tmp.name) / "absent.db", "vacuum")
+        self.assertEqual(rc, 1)
+        self.assertIn("no database at", err)
+
+
 class SnapshotCliTest(unittest.TestCase):
     """`cbut backup` / `cbut restore` — the two commands that work on the file."""
 

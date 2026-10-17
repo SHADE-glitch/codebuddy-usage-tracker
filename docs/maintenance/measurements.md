@@ -73,6 +73,12 @@ and `integrity_check` are `ok` with no foreign-key violation, and `cbut health` 
 When to run it: after a schema change that drops something, or when the file's size stops matching the
 row count — not on a schedule, since it rewrites the whole file and needs room for a second copy.
 
+Since 2026-10-17 that is a subcommand rather than a line to retype: **`cbut vacuum`** takes the snapshot
+this reading took by hand (`reason` `pre-vacuum`), runs the `VACUUM`, prints the file, pages and
+freelist on both sides, and then re-checks `quick_check` and every row count against its own "before".
+It still only runs when somebody asks, and the snapshot in front of it is the point — that is the step
+this recipe left to memory.
+
 What the re-measurement also makes visible is that **the store is live**. Two reads fifteen minutes apart
 printed 49,470 and then 49,828 rows, and the file's mtime advanced between them — with `usage.db-wal` at
 **0 bytes** and **no new file in `backups/`**. Those two details are what say it was an ordinary
@@ -248,8 +254,9 @@ that; the TUI runs one every 30 s in a worker thread.
 Roughly **0.8 MiB/day**, so **≈ 280 MiB/year** if the rate holds — that is the whole file divided by
 the span the data covers, an approximation that treats the database as if it started empty three weeks
 ago, which it roughly did. The transcripts it reads from are a separate, already-paid-for half GiB and
-growing. Nothing prunes today: no retention window, no `VACUUM`, `auto_vacuum=0`, and rows deleted from
-the transcripts are never reclaimed from the index. The decision this feeds is
+growing. Nothing prunes today: no retention window, `auto_vacuum=0`, nothing that compacts on its own
+(`cbut vacuum` exists, and is a deliberate act rather than a schedule — see the note in "The database"
+above), and rows deleted from the transcripts are never reclaimed from the index. The decision this feeds is
 **"is a few hundred MiB a year acceptable, and if not, what ages out?"** — answered in `AGENTS.md`
 terms, that is a data-retention policy question for the owner, not a silent default. Measure again
 before deciding; the numbers above are the "before".

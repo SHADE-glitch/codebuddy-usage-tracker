@@ -250,6 +250,7 @@ cbut export              # 💾  dump every table as JSON
 cbut health              # 🩺  database + data-source check
 cbut backup              # 💾  snapshot before a risky step (sync --full does this)
 cbut restore             # ⏪  list snapshots; `cbut restore NAME` rolls one back
+cbut vacuum              # 🧹  compact the file, reporting what came back (snapshot first)
 cbut format              # 🧾  the CodeBuddy fields and paths this tool depends on
 ```
 
@@ -294,7 +295,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 502 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 505 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -308,7 +309,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `test_tui.py` | 121 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness |
 | `test_usage.py` | 103 | the calendar-day windows (Today / 2 / 3 / 7 / 14 / 30 days / all) and their custom-range labels, the typed date/time normalisation (24-hour display, 12-hour still accepted on input), the token totals and provider grouping, the Dashboard queries, the drill-down queries (windowed per-entity summaries, plugin use counts, a single call's full row), the schema gate, and which indexes earn their keep |
 | `test_indexes.py` | 2 | the rule the two earlier index cuts relied on a hand-taken reading for: every statement the report surface really runs is captured and planned with `EXPLAIN QUERY PLAN`, and a declared index no plan names fails |
-| `test_stats.py` | 29 | the headless report CLI (`cbut stats`): the overview and the per-category tables, the model/token report and the cache columns it drops on a narrow terminal, `show`/`recent`/`inventory`/`export`, `health` (schema version, settings line, unparsed accounting), the `backup`→`restore` round trip, the generated `format` surface, and the empty-state `(none)` notice |
+| `test_stats.py` | 32 | the headless report CLI (`cbut stats`): the overview and the per-category tables, the model/token report and the cache columns it drops on a narrow terminal, `show`/`recent`/`inventory`/`export`, `health` (schema version, settings line, unparsed accounting), the `backup`→`restore` round trip, `vacuum` (snapshot first, reclaimed bytes, rows unchanged), the generated `format` surface, and the empty-state `(none)` notice |
 | `test_config.py` | 23 | the settings layer: defaults unchanged, file, env precedence and bounds, a broken file that stops `main()` before the TUI starts, the keys the app actually reads, and every key `cbut health` reports — with the environment hidden, so a configured shell cannot turn these into false failures |
 | `test_dispatcher.py` | 12 | `bin/cbut`: subcommand routing, venv resolution, help without a resolvable install |
 | `test_format_registry.py` | 10 | the CodeBuddy format registry and the parser agree, both directions |

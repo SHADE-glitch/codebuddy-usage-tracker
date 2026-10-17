@@ -8,6 +8,7 @@
 #                        headless reports (no TUI, stdlib only)
 #   cbut backup          snapshot the database before a risky step
 #   cbut restore         list snapshots, or restore one: cbut restore NAME
+#   cbut vacuum          compact the database file (snapshots first)
 #
 # Written in bash on purpose: it must still run and print a useful error when
 # the TUI venv is missing or broken, so it cannot depend on any Python.

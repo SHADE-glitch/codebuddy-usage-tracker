@@ -457,6 +457,85 @@ def cmd_restore(args) -> int:
     return 0
 
 
+def _file_state(conn, path) -> dict:
+    """What the file looked like, for comparing one rewrite against another."""
+    return {
+        "bytes": path.stat().st_size,
+        "pages": conn.execute("PRAGMA page_count").fetchone()[0],
+        "page_size": conn.execute("PRAGMA page_size").fetchone()[0],
+        "free": conn.execute("PRAGMA freelist_count").fetchone()[0],
+        "check": conn.execute("PRAGMA quick_check").fetchone()[0],
+        # Every count `cbut health` prints, so a rewrite that lost a row says so here
+        # instead of being found by a panel showing a number that moved for no reason.
+        "totals": db.overview(conn),
+    }
+
+
+def cmd_vacuum(args) -> int:
+    """Compact the database file, taking a snapshot first.
+
+    `VACUUM` rewrites the whole file, so it needs room for a second copy — and it is the
+    only way to get back the space a dropped index leaves behind: dropping one *parks*
+    its pages on the freelist, it does not release them. It shipped as a subcommand
+    rather than staying a recipe in `docs/maintenance/measurements.md` because the
+    step easiest to forget in that recipe is the snapshot in front of it.
+
+    The reading it came from, on the real store 2026-10-17: 19,636,224 B -> 18,284,544 B,
+    4,794 pages to 4,465 of 4 KiB, with `freelist_count` at 0 *before* it — the space was
+    slack inside the pages, so no freelist reading would have predicted it. Nothing is
+    re-indexed and nothing is re-read: the rows come out as they went in, which is what
+    the row counts and `quick_check` below are for.
+    """
+    path = Path(args.db)
+    if not path.exists():
+        print(f"no database at {path} — run: cbut sync", file=sys.stderr)
+        return 1
+    conn = db.open_db(path)
+    try:
+        # Fold the WAL back into the main file *before* anything is measured: the file
+        # size of a database whose newest pages are still in `-wal` is not the file this
+        # command is about, and reading it there is how a compaction looks like it grew.
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = _file_state(conn, path)
+        snapshot = db.snapshot(conn, reason="pre-vacuum")
+        conn.commit()          # VACUUM cannot run inside a transaction
+        conn.execute("VACUUM")
+        after = _file_state(conn, path)
+    except sqlite3.Error as exc:
+        print(f"could not compact {path}: {exc}", file=sys.stderr)
+        if "lock" in str(exc).lower() or "busy" in str(exc).lower():
+            print("  close the TUI (and stop the cbut-sync.timer) and retry",
+                  file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    # The file is only truncated to its new page count when the last connection lets go
+    # of it, so the final size is read after the close. Reading it before reports a
+    # compaction that reclaimed nothing while dropping pages.
+    after["bytes"] = path.stat().st_size
+
+    freed = before["bytes"] - after["bytes"]
+    print(f"compacted  {path}")
+    print(f"  before     {before['bytes']:,} B ({before['pages']:,} pages of "
+          f"{before['page_size']:,} B, {before['free']:,} on the freelist)")
+    print(f"  after      {after['bytes']:,} B ({after['pages']:,} pages, "
+          f"{after['free']:,} free)")
+    if freed:
+        print(f"  reclaimed  {freed:,} B ({freed / before['bytes']:.1%} of the file)")
+    else:
+        print("  reclaimed  nothing — the file was already compact")
+    print(f"  snapshot   {snapshot}")
+    if after["check"] != "ok" or after["totals"] != before["totals"]:
+        print(f"  WARNING    the file changed shape — quick_check reads "
+              f"{after['check']!r} and the row totals "
+              f"{'differ' if after['totals'] != before['totals'] else 'match'}\n"
+              f"             restore it:  cbut restore {snapshot.name}",
+              file=sys.stderr)
+        return 1
+    print("  verified   quick_check ok, and every row count is what it was")
+    return 0
+
+
 FORMAT_BEGIN = "<!-- BEGIN generated: cbut format -->"
 FORMAT_END = "<!-- END generated -->"
 
@@ -524,6 +603,7 @@ def main(argv=None) -> int:
     sp.add_argument("name")
     sp.add_argument("--limit", type=int, default=50)
     sub.add_parser("backup", help="snapshot the database before a risky step")
+    sub.add_parser("vacuum", help="compact the database file (snapshots first)")
     rp = sub.add_parser("restore", help="restore a snapshot (omit NAME to list)")
     rp.add_argument("name", nargs="?", default=None)
     fp = sub.add_parser("format",
@@ -539,6 +619,8 @@ def main(argv=None) -> int:
     # is missing or corrupt, which is when opening it read-only would fail.
     if args.cmd == "backup":
         return cmd_backup(args)
+    if args.cmd == "vacuum":
+        return cmd_vacuum(args)
     if args.cmd == "restore":
         return cmd_restore(args)
     if args.cmd == "format":
