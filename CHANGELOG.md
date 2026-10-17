@@ -1091,3 +1091,48 @@ Cost     The cut is cheap to reverse — one line, no migration — which is the
          red on prose — and both were only found by trying to make them fail. A guard is not
          evidence until it has been made to go red on the thing it claims to catch.
 Commit   9917a95
+
+### D-048 · 2026-10-17 · fix
+Symptom  The status line and `cbut health` reported one unparsed total, and that total could not be
+         read. Three record types this build understands and deliberately indexes nothing from —
+         `reasoning` (22,146 records on this database), `file-history-snapshot` (7,315) and
+         `summary` (528) — held 29,989 of the 29,989, so `! 29,989 unparsed` sat on screen every
+         day. A record type nothing here has been taught about would have looked exactly like it,
+         which is the one thing the number exists to say. The file already names this failure for
+         the `model-usage` echo — a number that cries wolf is not a signal — and then left three
+         types holding 100% of the count unclaimed.
+Change   Give them a name rather than removing them from the tally: removal would hide the day one
+         of them starts carrying something we index. `UNCLAIMED_RECORD_TYPES` sits beside
+         `HANDLED_RECORD_TYPES` in the format registry, `KNOWN_UNCLAIMED_REASONS` is the spelling
+         the `unparsed` table uses, and `split_unparsed` is the one filter `cbut health` and the
+         status line both call — two copies would be two answers to "is this drift?" and the
+         disagreement would be invisible, because both show a number. Health marks each reason
+         `NEW` or not and says which case it found; the status line raises its `!` only for a
+         reason outside the set, prints the familiar total without it otherwise, and counts the
+         *new* records in the alarm rather than the familiar ones it would otherwise be buried
+         under.
+Evidence L0 2026-10-17: the split was provoked both ways. Replacing the status line's
+         `if o.get("unparsed_unexpected"):` with `if False:` turns
+         `test_the_status_line_only_shouts_about_a_reason_it_has_not_seen` red; restoring it turns
+         it green. The same test then fails if the alarm count is the familiar total instead of
+         the new records, and `test_health_splits_the_tally_into_known_and_new` fails if a known
+         reason is marked `NEW`. Against the real database, `cbut health` prints
+         `29989 records across 3 reason(s) no handler claims (29989 known, 0 not)`, all three rows
+         unmarked, and `(every reason here is one this build already declines on purpose, so
+         nothing has moved)`; the same command against a fixture carrying `type:totally-new-thing`
+         (4) and `unparseable_line` (2) prints `(29989 known, 6 not)`, marks both rows `NEW`, and
+         names them under `that is the format moving`. Three unit cases pin the vocabulary itself:
+         the three expected types, the loss reasons that must never join them (`unparseable_line`,
+         `type:<missing>`, `unreadable_file:OSError`), `split_unparsed`'s arithmetic on a mixed
+         list, and that no type is in both `HANDLED_RECORD_TYPES` and `UNCLAIMED_RECORD_TYPES`.
+         README counts moved with the suite (test_sync 126 -> 129, test_tui 120 -> 121,
+         test_stats 28 -> 29) because `test_readme_counts` compares them to the loader.
+         `python3 -m unittest discover -s scripts/tests` 500 tests, OK (495 before this).
+Cost     `UNCLAIMED_RECORD_TYPES` is a hand-kept list of record type names, and the day CodeBuddy
+         renames one the views will say NEW — which is the correct answer, but it means a genuine
+         upstream rename and a genuine upstream addition look the same until somebody reads the
+         reason name. A type moved into that set without a matching entry here would silence a
+         real signal one commit at a time. The split also reads the whole `unparsed` table in
+         Python; that is one row per reason (three, here), and it would not stay cheap if a host
+         ever wrote one row per record.
+Commit   ec2ad52
