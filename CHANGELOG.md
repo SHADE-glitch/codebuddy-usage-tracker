@@ -1219,15 +1219,29 @@ Change   `q_plugins` takes `start_ts`/`end_ts` and puts them in the LEFT JOIN's 
          unwindowed so the state column describes the entity and not the range. `_fill_plugins`
          passes the pane's bounds. One case in `test_usage.py` pins windowed counts, a zero-use
          installed plugin still listed, and an unwindowed state.
+         The query half alone did not move the tab: `tab-plugins` was still absent from
+         `tab_range`, so `_bounds_for` returned `(None, None)`, `refresh_data` still called the
+         fill without bounds, and the range Select and the 📅 button kept their Plugins special
+         cases. The second half adds the 7d default, passes bounds from both call sites, drops
+         the three special cases and lets the drill-down follow the same bounds. Test 39 now
+         asserts the range control is visible there, the row survives at 0 outside the window
+         and reads 1 at all-time. The picker helper waits for `is_mounted` before returning: a
+         caller that assigns fields before `on_mount`/`_prefill` runs had them overwritten, which
+         surfaced as a later test failing on a date it had just typed.
 Evidence L0 2026-10-17: `python3 -m unittest discover -s scripts/tests` 511 passed (510 before
-         the new case). On the live database at a 7-day window `q_plugins` now returns
-         `docx uses=1 last=2026-10-12 12:17` and nothing else, which is the same row the Skills
-         tab shows for `docx`; unwindowed it still returns `docx 8` and `playwright-cli 4`. The
-         old behaviour is the same query without bounds, so the two readings come from one
-         statement.
+         the new case), and `test_tui` alone 121 passed. On the live database at a 7-day window
+         `q_plugins` now returns `docx uses=1 last=2026-10-12 12:17` and nothing else, which is
+         the same row the Skills tab shows for `docx`; unwindowed it still returns `docx 8` and
+         `playwright-cli 4`. The old behaviour is the same query without bounds, so the two
+         readings come from one statement. Cross-checked against the tabs: `docx` reads 1/1/1
+         (Skills list, its drill-down, its summary) and 1/1/1 under Plugins at 7d, 8 everywhere
+         at all-time; the Dashboard's `plugins` KPI is `COUNT(DISTINCT plugin)` (2 at all-time),
+         a different quantity from the tab's `uses` (12) by design.
 Cost     Two tabs can still disagree on *scope* (Skills lists skills, Plugins lists plugins), and
          the Plugins tab's `skills`/`agents`/`commands` columns remain inventory counts — how many
          the plugin ships, not how many were used — because the inventory has no per-item
          timestamps. Only `uses` and `last used` are windowed, which is exactly the pair the Skills
-         tab windows under the name `calls` / `last used`.
-Commit   57b2627
+         tab windows under the name `calls` / `last used`. And the first commit recorded here
+         described the fix as complete when the visible half was still missing; the entry was
+         corrected rather than given a second number, because it is one defect, not two.
+Commit   57b2627 58d2369
