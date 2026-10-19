@@ -188,7 +188,7 @@ tool runs from a checkout, so the version only needs to move when a documented c
   them from transcripts, and do not describe trace ingestion as part of v1. Wiring traces in is a
   design task: the tree holds both `.jsonl` and `.json` files and needs a session-linking decision
   before it can be counted honestly.
-- **Never commit runtime state or working notes** — `STANDARD.md` §4 and §2 hold the ignore
+- **Never commit runtime state or working notes** — `~/.agents/standards/STANDARD.md` §4 and §2 hold the ignore
   list and the process-draft location; this repo adds `usage.db` and generated systemd units
   in user paths to the ignored set. Those are working documents, not artifacts: the repository
   is public, and they contain real paths, real counts and open defects. If a check needs to
@@ -234,7 +234,7 @@ tool runs from a checkout, so the version only needs to move when a documented c
 
 ## Recording conventions
 
-Common CHANGELOG rules: `STANDARD.md` §3.
+Common CHANGELOG rules: `~/.agents/standards/STANDARD.md` §3.
 
 - The `feat` exclusion is one regex over the commit subject inside the check; it must not decay
   into a per-commit skip flag. Features are documented in the READMEs.
@@ -373,7 +373,7 @@ true.
 
 ## Listed on the GitHub profile
 
-See `STANDARD.md` §8 for the shared profile-listing triggers. This repo's own additions:
+See `~/.agents/standards/STANDARD.md` §8 for the shared profile-listing triggers. This repo's own additions:
 
 - **Purpose drift** — the profile's one-line description must still be true. The claims it copies —
   *"no network, no message bodies"*, "dev tooling" — are **promises**: if one stops holding, change
