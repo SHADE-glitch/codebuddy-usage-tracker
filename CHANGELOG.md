@@ -1245,3 +1245,13 @@ Cost     Two tabs can still disagree on *scope* (Skills lists skills, Plugins li
          described the fix as complete when the visible half was still missing; the entry was
          corrected rather than given a second number, because it is one defect, not two.
 Commit   57b2627 58d2369
+
+### D-052 · 2026-10-19 · chore
+
+Symptom  README.md said "the 334 tests above" in its layout table while the command block on the
+         same page said "Ran 511 tests"; AGENTS.md also cited the standard by bare filename.
+Change   Both mentions now say 511; the bare `STANDARD.md` references carry the full
+         `~/.agents/standards/STANDARD.md` path.
+Evidence 2026-10-19: `python3 -m unittest discover -s scripts/tests` — 511 tests, OK.
+Cost     None; wording only.
+Commit   27b4016
