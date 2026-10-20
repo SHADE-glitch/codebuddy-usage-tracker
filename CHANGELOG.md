@@ -1255,3 +1255,29 @@ Change   Both mentions now say 511; the bare `STANDARD.md` references carry the 
 Evidence 2026-10-19: `python3 -m unittest discover -s scripts/tests` — 511 tests, OK.
 Cost     None; wording only.
 Commit   27b4016
+
+### D-053 · 2026-10-20 · fix
+
+Symptom  The Tools tab's `state` column read `in use` beside a 0-call row (the label was all-time
+         while `calls` was windowed), a malformed transcript name containing a newline
+         (`REPO<…\n<… parameter name=`) rendered as a broken name, and a narrow terminal dropped
+         `state` before `last used`. Models and commands the host offers existed only after their
+         first call, because only tools/agents were discovered from `product.json`.
+Change   `db.entity_state` now takes the row's windowed call count, so the label agrees with the
+         row; `db.clean_cell` flattens control characters for both the TUI and the headless
+         reports; ingest rejects an unusable tool name as `invalid_tool_name` instead of storing
+         it; the narrow-terminal plan protects column 0 and the state column (and both MCP key
+         columns); `product.json` models/commands and `~/.codebuddy/models.json` customs are
+         inventoried, and the Tokens tab lists an available model with 0 requests and NULL
+         tokens. The six entity tabs are one registry (`ENTITY_TABS`), so a new kind no longer
+         needs six separate edits.
+Evidence L0 2026-10-20: `.venv/bin/python -m pytest scripts/tests -q` — 520 passed, 165
+         subtests passed; each new case fails when its fix is undone (window-state, clean-cell row
+         height, model-inventory zero row). L1 the same day against this machine's own database:
+         `cbut tools` prints `in use` only on rows with calls, and the four malformed names render
+         on one line.
+Cost     Existing databases keep the four malformed rows already indexed; they render flush now,
+         and `cbut sync --full` drops them. Route tiers (`default-model`, `fast-model`, …) appear
+         in Tokens as available models with 0 requests because `product.json` lists them as
+         models; that is the host's own catalogue, not a claim that each tier served a response.
+Commit   8dc91c8
