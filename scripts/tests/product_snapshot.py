@@ -3,8 +3,9 @@
 
 The snapshot exists so the drift guard has something to compare against on a
 machine with no CodeBuddy installed — CI, for one. It is *not* a copy of
-product.json: only the two keys `cbut-sync` reads are kept, so a fixture cannot
-quietly become a second description of an upstream file nobody here maintains.
+product.json: only the four catalogue keys `cbut-sync` reads are kept, so a
+fixture cannot quietly become a second description of an upstream file nobody
+here maintains.
 
 Run it after a CodeBuddy upgrade, in the same change that re-reads the surface:
 
@@ -27,9 +28,9 @@ import cbut_db as db  # noqa: E402
 SNAPSHOT = Path(__file__).resolve().parent / "fixtures" / "product.json.snapshot"
 
 HEADER = (
-    "Trimmed copy of the installed CodeBuddy package product.json: only the two "
-    "keys cbut-sync reads. Regenerate with scripts/tests/product_snapshot.py "
-    "after a CLI upgrade."
+    "Trimmed copy of the installed CodeBuddy package product.json: only the four "
+    "catalogue keys cbut-sync reads. Regenerate with "
+    "scripts/tests/product_snapshot.py after a CLI upgrade."
 )
 
 
@@ -39,6 +40,8 @@ def build(raw: dict) -> dict:
         "_comment": HEADER,
         sync.PRODUCT_TOOLS_FIELD: sorted(set(sync._catalog_names(raw.get(sync.PRODUCT_TOOLS_FIELD)))),
         sync.PRODUCT_AGENTS_FIELD: sorted(set(sync._catalog_names(raw.get(sync.PRODUCT_AGENTS_FIELD)))),
+        sync.PRODUCT_MODELS_FIELD: sorted(set(sync._catalog_ids(raw.get(sync.PRODUCT_MODELS_FIELD)))),
+        sync.PRODUCT_COMMANDS_FIELD: sorted(set(sync._catalog_names(raw.get(sync.PRODUCT_COMMANDS_FIELD)))),
     }
 
 
@@ -54,7 +57,8 @@ def main() -> int:
         print(f"{path} is not a JSON object — refusing to snapshot it", file=sys.stderr)
         return 1
     snapshot = build(raw)
-    for key in (sync.PRODUCT_TOOLS_FIELD, sync.PRODUCT_AGENTS_FIELD):
+    for key in (sync.PRODUCT_TOOLS_FIELD, sync.PRODUCT_AGENTS_FIELD,
+                sync.PRODUCT_MODELS_FIELD, sync.PRODUCT_COMMANDS_FIELD):
         if not snapshot[key]:
             print(f"{path} carries no {key} — refusing to snapshot an empty list",
                   file=sys.stderr)
@@ -62,7 +66,9 @@ def main() -> int:
     SNAPSHOT.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n",
                         encoding="utf-8")
     print(f"updated   {SNAPSHOT}  ({len(snapshot[sync.PRODUCT_TOOLS_FIELD])} tools, "
-          f"{len(snapshot[sync.PRODUCT_AGENTS_FIELD])} agents)  from {path}")
+          f"{len(snapshot[sync.PRODUCT_AGENTS_FIELD])} agents, "
+          f"{len(snapshot[sync.PRODUCT_MODELS_FIELD])} models, "
+          f"{len(snapshot[sync.PRODUCT_COMMANDS_FIELD])} commands)  from {path}")
     return 0
 
 

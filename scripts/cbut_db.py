@@ -431,21 +431,28 @@ ENTITY_STATE_INSTALLED = "installed"
 ENTITY_STATE_REMOVED = "removed"
 
 
-def entity_state(installed, ever_used) -> str:
+def entity_state(installed, ever_used, calls=None) -> str:
     """The three-state label for one row of an entity tab.
+
+    ``calls`` is the row's own count in the tab's current window. The label
+    follows that window: a tool called last month and not this week reads
+    ``installed`` here, because the row's ``calls`` cell reads 0 and a state
+    column that disagreed with its own row was the confusing half. ``ever_used``
+    remains the fallback for callers that have no windowed count (the all-time
+    headless reports), so the two surfaces still agree when they are asked the
+    same question.
 
     ``removed`` outranks ``in use`` deliberately: it is the half that is
     actionable, and "in use" for an entity that is no longer on disk reads as
     an invitation. A name that is installed and uncalled is ``installed``, not
     ``unused`` — the tab's own ``calls`` column already says whether it was
     called, and this one only carries what the usage tables cannot.
-
-    ``installed`` / ``ever_used`` are the CTE flags above, not the windowed
-    count, so the answer does not change when the user narrows the range.
     """
     if not installed:
         return ENTITY_STATE_REMOVED
-    return ENTITY_STATE_USED if ever_used else ENTITY_STATE_INSTALLED
+    if calls is None:
+        calls = ever_used
+    return ENTITY_STATE_USED if calls else ENTITY_STATE_INSTALLED
 
 VIEWS_SQL = f"""
 DROP VIEW IF EXISTS v_tools;
@@ -538,6 +545,22 @@ SCHEMA_SQL = TABLES_SQL + VIEWS_SQL
 
 
 # --- helpers ---------------------------------------------------------------
+
+# A transcript-derived name can contain a newline or a control character (a
+# malformed model-generated tool call did exactly that on this machine). Textual
+# renders a newline as a second line, so one such cell silently doubles a table
+# row's height and shifts every column after it — the display bug this sanitizer
+# exists for. It is applied at render time, not at ingest: the stored value stays
+# the transcript's own, and no cell can inject terminal control sequences into
+# the headless reports either.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
+
+
+def clean_cell(value) -> str:
+    """One-line, control-free text for a table cell; NULL renders as ``-``."""
+    if value is None:
+        return "-"
+    return _CONTROL_CHARS.sub(" ", str(value))
 
 
 def ensure_dir(path: Path) -> None:
@@ -1313,7 +1336,7 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
     inflated.
     """
     where, params = _time_filter(start_ts, end_ts)
-    return conn.execute(
+    used = (
         "SELECT model, provider,"
         " COUNT(*) AS responses,"
         " SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END) AS with_usage,"
@@ -1330,7 +1353,31 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
         # Grouped by (model, provider): a model name can be served by two routes
         # (a built-in id and a custom alias), and those must not merge.
         f" FROM model_responses{where}"
-        " GROUP BY model, provider ORDER BY responses DESC",
+        " GROUP BY model, provider")
+    # The list is installed ∪ seen-in-window, like every entity tab: the model
+    # catalogue is read from the host on each sync, and a model that has not
+    # answered in this tab's window still gets its own zero row instead of
+    # vanishing. ``owner_plugin`` carries the provider label for model rows (the
+    # only owner a model has). A pair already present in the window is not
+    # repeated; a model used through another route keeps both rows, because the
+    # two routes are different measurements.
+    available = (
+        "SELECT i.name AS model, NULLIF(i.owner_plugin, '') AS provider,"
+        " 0 AS responses, 0 AS with_usage,"
+        " NULL AS prompt_tokens, NULL AS completion_tokens,"
+        " NULL AS cache_read_input_tokens,"
+        " NULL AS cache_creation_input_tokens,"
+        " NULL AS prompt_cache_hit_tokens, NULL AS prompt_cache_miss_tokens,"
+        " NULL AS prompt_cache_write_tokens,"
+        " NULL AS total_tokens, NULL AS total_tokens_source,"
+        " NULL AS usage_total_tokens"
+        " FROM inventory i WHERE i.kind='model'"
+        " AND NOT EXISTS (SELECT 1 FROM used u WHERE u.model = i.name"
+        "  AND COALESCE(u.provider, '') = COALESCE(i.owner_plugin, ''))")
+    return conn.execute(
+        f"WITH used AS ({used}) SELECT * FROM ("
+        f" SELECT * FROM used UNION ALL {available}"
+        ") ORDER BY responses DESC, model, provider",
         params,
     ).fetchall()
 

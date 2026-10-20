@@ -107,7 +107,7 @@ because every tab is keyed by name.
 | 🤖 | **Agents** | subagent types by name, call count, last use |
 | 🧩 | **Plugins** | every plugin — installed **and** ever used — with its skills/agents/commands; all-time list, windowed counts, no version column |
 | 🔌 | **MCP** | MCP servers and tools, invocation counts |
-| 🔢 | **Tokens** | per-model **usage total**, requests, input, output, **API total**, cache hit/miss/write |
+| 🔢 | **Tokens** | per-model **usage total**, requests, input, output, **API total**, cache hit/miss/write — every model the host offers (0 requests, `-` tokens) and every model seen in the window |
 | 📊 | **Usage** | request log with summary panels (cc-switch-style columns) |
 
 Press <kbd>Enter</kbd> (or double-click) on any row for a **two-level drill-down**.
@@ -127,12 +127,19 @@ whose skill was used no longer reads `uses = 0`. Attribution is evidence-based: 
 credited to a plugin only when the plugin inventory maps that name to it.
 
 The last column of every entity tab is **state** — the one thing that separates "still
-here" from "never left": `in use` (installed, and called at least once at any point in
-history), `installed` (on disk right now, never called), `removed` (gone from disk, kept
-for its history, drawn dim). The installed side is a **snapshot rebuilt from disk on
-every sync**, so uninstalling something drops it from the installed column on the next
-sync without touching the counts it already earned. "Ever" is deliberately outside the
-time window: a tool last used last week still reads `in use` in a one-day window.
+here" from "never left": `in use` (installed, and called **inside this tab's window**),
+`installed` (on disk right now, no call in this window), `removed` (gone from disk, kept
+for its history, drawn dim). The label follows the same window as the row's `calls`
+cell, so a 0-call row never says `in use`; the all-time history stays in the counts and
+in `ever used`, not in this label. The installed side is a **snapshot rebuilt from disk
+on every sync**, so uninstalling something drops it from the installed column on the
+next sync without touching the counts it already earned. On a narrow terminal the plan
+drops `last used` or `avg` before it drops this column, and never drops the name.
+
+**Tokens is a list too.** Built-in models come from the installed package's
+`product.json`, custom ones from `~/.codebuddy/models.json`; a model that has not
+answered yet still gets a row with `0` requests and `-` in every token cell, sorted
+after the models that were used. Nothing about the list is typed into the code.
 
 > **API Total** = the provider's reported total when present, otherwise Input + Output.
 > **Usage Total** is a display-only metric (`Input + Output + cache hit`) that
@@ -140,6 +147,12 @@ time window: a tool last used last week still reads `in use` in a one-day window
 > Total. Never read it as the API total. Cache hit/miss/write are reported
 > **separately** and are never added into the API total. Fields absent from a response
 > are shown as `-`, never as a fabricated `0`.
+
+**A malformed name cannot break a row.** A tool name that is empty, over 200
+characters, or contains whitespace or a control character is counted as
+`invalid_tool_name` and is not stored as a call. Values that predate that rule are
+flattened for display in both the TUI and the headless reports, so a newline or escape
+sequence from a broken model call cannot split a table row or move the cursor.
 
 ### 📊 The Usage page
 
@@ -177,9 +190,11 @@ the transcripts on disk:
   that live in the eight tabs (Dashboard draws panels, not a table) and both detail screens
   (a row's history, a model's responses): nine in all, counted out of the source rather than
   estimated, and a test fails if a table ever appears without a plan. A name long enough to push
-  a column off the screen therefore costs columns, not legibility. Two columns is the floor: when
-  even a name and its first number do not fit an 80-cell terminal, the note says
-  `even these are cut` rather than implying the table fits.
+  a column off the screen therefore costs columns, not legibility. The name/key column(s) and the
+  entity `state` column are protected: a narrow terminal drops `last used` or `avg` first, so a
+  row never loses the answer to "is this still installed". Two columns is the floor: when even a
+  name and its first number do not fit an 80-cell terminal, the note says `even these are cut`
+  rather than implying the table fits.
 - **A cell that is far longer than it earns gets capped, at 28 characters by default** — the
   number is a setting (`name_cap`), and the cap is measured on this machine's data, where every
   entity name fits (tool 22, model 24, agent 20, plugin 19, skill 28)
@@ -296,7 +311,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 511 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 520 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -306,11 +321,11 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 
 | Suite | Tests | Covers |
 |---|---:|---|
-| `test_sync.py` | 132 | transcript parsing, tool classification, the route-origin column (`requestModelId` → built-in / vendor / host / endpoint), incremental vs `--full` re-sync, crash recovery, unparsed-record accounting |
-| `test_tui.py` | 121 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness |
-| `test_usage.py` | 104 | the calendar-day windows (Today / 2 / 3 / 7 / 14 / 30 days / all) and their custom-range labels, the typed date/time normalisation (24-hour display, 12-hour still accepted on input), the token totals and provider grouping, the Dashboard queries, the drill-down queries (windowed per-entity summaries, plugin use counts, a single call's full row), the schema gate, and which indexes earn their keep |
+| `test_sync.py` | 135 | transcript parsing, tool classification, the route-origin column (`requestModelId` → built-in / vendor / host / endpoint), incremental vs `--full` re-sync, crash recovery, unparsed-record accounting |
+| `test_tui.py` | 124 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness |
+| `test_usage.py` | 106 | the calendar-day windows (Today / 2 / 3 / 7 / 14 / 30 days / all) and their custom-range labels, the typed date/time normalisation (24-hour display, 12-hour still accepted on input), the token totals and provider grouping, the Dashboard queries, the drill-down queries (windowed per-entity summaries, plugin use counts, a single call's full row), the schema gate, and which indexes earn their keep |
 | `test_indexes.py` | 4 | the rule the two earlier index cuts relied on a hand-taken reading for: every statement the report surface really runs is captured and planned with `EXPLAIN QUERY PLAN`, and a declared index no plan names fails — plus the structural rule that caught the v9 cut, a key that is a strict prefix of a wider declared key |
-| `test_stats.py` | 32 | the headless report CLI (`cbut stats`): the overview and the per-category tables, the model/token report and the cache columns it drops on a narrow terminal, `show`/`recent`/`inventory`/`export`, `health` (schema version, settings line, unparsed accounting), the `backup`→`restore` round trip, `vacuum` (snapshot first, reclaimed bytes, rows unchanged), the generated `format` surface, and the empty-state `(none)` notice |
+| `test_stats.py` | 33 | the headless report CLI (`cbut stats`): the overview and the per-category tables, the model/token report and the cache columns it drops on a narrow terminal, `show`/`recent`/`inventory`/`export`, `health` (schema version, settings line, unparsed accounting), the `backup`→`restore` round trip, `vacuum` (snapshot first, reclaimed bytes, rows unchanged), the generated `format` surface, and the empty-state `(none)` notice |
 | `test_config.py` | 23 | the settings layer: defaults unchanged, file, env precedence and bounds, a broken file that stops `main()` before the TUI starts, the keys the app actually reads, and every key `cbut health` reports — with the environment hidden, so a configured shell cannot turn these into false failures |
 | `test_dispatcher.py` | 12 | `bin/cbut`: subcommand routing, venv resolution, help without a resolvable install |
 | `test_format_registry.py` | 10 | the CodeBuddy format registry and the parser agree, both directions |
@@ -336,7 +351,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 511 tests above |
+| `scripts/tests/` | the 520 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, and the size & performance baseline with the commands that produced it |
 | `systemd/` | optional daily sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

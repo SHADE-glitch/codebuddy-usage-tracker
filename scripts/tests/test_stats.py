@@ -129,6 +129,23 @@ class StatsCliTest(unittest.TestCase):
         self.assertIn("Read", out)
         self.assertIn("1.2s", out)
 
+    def test_a_newline_in_a_name_does_not_break_the_report(self):
+        """One malformed transcript name used to reach stdout verbatim. A
+        newline there splits the table row; a control character could move the
+        cursor. The report is cleaned by the same helper the TUI uses."""
+        conn = db.open_db(self.db_path)
+        conn.execute(
+            "INSERT INTO tool_calls(call_id, session_id, project, tool_name,"
+            " category, ts, duration_ms, status)"
+            " VALUES('cn','s1','/p','Bad\nName','builtin',?,1,'completed')",
+            (TS,))
+        conn.commit()
+        conn.close()
+        rc, out, err = run("--db", self.db_path, "tools")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("Bad Name", out)
+        self.assertNotIn("Bad\nName", out)
+
     def test_skills_table_lists_skills(self):
         rc, out, err = run("--db", self.db_path, "skills")
         self.assertEqual(rc, 0, err)

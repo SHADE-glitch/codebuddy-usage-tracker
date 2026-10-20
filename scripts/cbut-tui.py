@@ -17,6 +17,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cbut_db as db  # noqa: E402
@@ -37,16 +38,18 @@ except ImportError:  # pragma: no cover - exercised only without the dep
     HAVE_TEXTUAL = False
 
 
-def state_cell(row):
+def state_cell(row, calls):
     """The ``state`` cell for one entity row, dimmed when the entity is gone.
 
-    DataTable has no per-row style hook — ``add_row`` takes cells, and the only
-    row-level classes it renders are its own header/fixed/zebra ones — so the
-    dimming lands on the state cell itself. That is where the information is
-    anyway: a whole row greyed out would be a mood, and "removed" written in
-    plain text is a fact you can read in a screenshot.
+    ``calls`` is the row's count in this tab's window, so the label agrees with
+    the row it sits on: 0 calls reads ``installed``, not ``in use``. DataTable
+    has no per-row style hook — ``add_row`` takes cells, and the only row-level
+    classes it renders are its own header/fixed/zebra ones — so the dimming
+    lands on the state cell itself. That is where the information is anyway: a
+    whole row greyed out would be a mood, and "removed" written in plain text is
+    a fact you can read in a screenshot.
     """
-    label = db.entity_state(row["installed"], row["ever_used"])
+    label = db.entity_state(row["installed"], row["ever_used"], calls)
     return Text(label, style="dim") if label == db.ENTITY_STATE_REMOVED else label
 
 
@@ -88,7 +91,7 @@ def clip(text, width):
     Observed at 41 characters. Clipping keeps the columns aligned; the full name
     stays in the table on that entity's own tab.
     """
-    s = str(text)
+    s = db.clean_cell(text)
     return s if len(s) <= width else s[: width - 1] + "…"
 
 
@@ -127,10 +130,10 @@ TOKEN_COLUMNS = ("Model", "Provider", "Usage Total", "Requests", "Input",
 # and a plan that cannot name the columns it dropped is a silent truncation wearing a
 # guard's clothes.
 #
-# ``state`` (see `db.entity_state`) is last on purpose: the prefix plan drops the
-# tail first, and a narrow terminal should lose "last used" before it loses the
-# answer to "is this thing still installed" — the counts stay readable without it,
-# but the union in the name column does not.
+# ``state`` (see `db.entity_state`) is last, and the narrow-terminal plan protects
+# it: the tail drops first, so a narrow terminal loses "last used" or "avg" before
+# it loses the answer to "is this thing still installed". Column 0 is protected for
+# the same reason — a table without its name column cannot be read at all.
 # The header is the constant the label helper and the tests use, not a retyped
 # string: a renamed column would otherwise keep rendering under the old name here
 # while everything that agrees on the name moved.
@@ -185,6 +188,85 @@ _DETAIL_TOKEN_COLS = {
 }
 
 
+# --- entity-tab registry ---------------------------------------------------
+#
+# Six tabs differ only in their table id, columns, query, row builder and empty
+# message. Declaring that once is what keeps a new entity kind from needing six
+# separate edits (columns, pane, range, fill method, WIDE_TABLES entry and the
+# refresh list) — the shape that let the Plugins tab miss its window for a whole
+# round. Dashboard and Usage are deliberately not here: they draw panels, not a
+# table, and their layout is genuinely different.
+class EntityTab(NamedTuple):
+    pane: str
+    title: str
+    table_id: str
+    note_id: str
+    columns: tuple
+    query: str          # function name on ``cbut_db`` (resolved per call)
+    cells: object       # row -> list of cells
+    empty: str
+    key_kind: str
+    key_index: object = 0
+    default_range: str = "7d"
+
+
+def _tool_row(r):
+    return [r["tool_name"], f"{r['calls']:,}", f"{r['completed']:,}",
+            f"{r['failed']:,}", ms(r["avg_ms"]), ts(r["last_used"]),
+            state_cell(r, r["calls"])]
+
+
+def _skill_row(r):
+    return [r["skill"], f"{r['calls']:,}", f"{r['completed']:,}",
+            ts(r["last_used"]), state_cell(r, r["calls"])]
+
+
+def _agent_row(r):
+    return [r["agent_type"], f"{r['calls']:,}", ts(r["last_used"]),
+            state_cell(r, r["calls"])]
+
+
+def _plugin_row(r):
+    return [r["plugin"], f"{r['uses']:,}", f"{r['skills']:,}",
+            f"{r['agents']:,}", f"{r['commands']:,}",
+            state_cell(r, r["uses"])]
+
+
+def _mcp_row(r):
+    return [r["server"], r["tool"], f"{r['calls']:,}", f"{r['completed']:,}",
+            ts(r["last_used"]), state_cell(r, r["calls"])]
+
+
+def _token_row(r):
+    return [r["model"], db.provider_label(r["provider"]),
+            fmt_n(r["usage_total_tokens"]), f"{r['responses']:,}",
+            fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
+            fmt_n(r["total_tokens"]), fmt_n(r["prompt_cache_hit_tokens"]),
+            fmt_n(r["prompt_cache_miss_tokens"]),
+            fmt_n(r["prompt_cache_write_tokens"])]
+
+
+ENTITY_TABS = (
+    EntityTab("tab-tools", "Tools", "t-tools", "colnote-tools",
+              TOOLS_COLUMNS, "q_tools", _tool_row, "No tool calls yet", "tool"),
+    EntityTab("tab-skills", "Skills", "t-skills", "colnote-skills",
+              SKILLS_COLUMNS, "q_skills", _skill_row, "No skills used yet",
+              "skill"),
+    EntityTab("tab-agents", "Agents", "t-agents", "colnote-agents",
+              AGENTS_COLUMNS, "q_agents", _agent_row, "No agents used yet",
+              "agent"),
+    EntityTab("tab-plugins", "Plugins", "t-plugins", "colnote-plugins",
+              PLUGINS_COLUMNS, "q_plugins", _plugin_row, "No plugins installed",
+              "plugin"),
+    EntityTab("tab-mcp", "MCP", "t-mcp", "colnote-mcp",
+              MCP_COLUMNS, "q_mcp", _mcp_row, "No MCP calls yet", "mcp",
+              key_index=(0, 1)),
+    EntityTab("tab-tokens", "Tokens", "t-tokens", "colnote-tokens",
+              TOKEN_COLUMNS, "q_model_tokens", _token_row,
+              "No model responses yet", "model"),
+)
+
+
 def _call_detail_rows(row):
     """``(label, text)`` for every field of one call row, in row order.
 
@@ -207,7 +289,7 @@ def _call_detail_rows(row):
             text = fmt_n(value)
         else:
             text = str(value)
-        out.append((label, text))
+        out.append((label, db.clean_cell(text)))
     return out
 
 
@@ -792,6 +874,19 @@ if HAVE_TEXTUAL:
             clipped = ("…" + plain[-keep:]) if "/" in plain else (plain[:keep] + "…")
             return Text(clipped, style=text.style) if isinstance(text, Text) else clipped
 
+        @staticmethod
+        def _clean_cell(cell):
+            """One-line text for one cell, keeping a Text cell's style.
+
+            A newline in a transcript-derived name used to render as a second
+            line and double that row's height, shifting the columns after it.
+            The stored value is left alone; only what is painted is cleaned.
+            """
+            if isinstance(cell, Text):
+                plain = db.clean_cell(cell.plain)
+                return Text(plain, style=cell.style) if plain != cell.plain else cell
+            return db.clean_cell(cell)
+
         def _fill(self, table, rows, key_index=0, key_kind=None, key_rows=None):
             # Remember the highlighted row by its ROW KEY, not by index: a
             # re-sort between refreshes must not move the highlight onto a
@@ -811,8 +906,7 @@ if HAVE_TEXTUAL:
                 # that is already text is handed over as it is: the state column
                 # passes a styled Text, and str() on one would drop the style and
                 # leave a row saying "removed" as loudly as the live ones.
-                cells = [c if isinstance(c, (str, Text))
-                         else ("-" if c is None else str(c)) for c in r]
+                cells = [self._clean_cell(c) for c in r]
                 key = None
                 if key_kind:
                     # key_index may be a single index or a tuple of indices for
@@ -894,9 +988,7 @@ if HAVE_TEXTUAL:
                 return
             # Styled cells (the state column) survive to _fill; everything else
             # is flattened here, so width planning sees the text a cell prints.
-            raw = [[c if isinstance(c, (str, Text))
-                    else ("-" if c is None else str(c)) for c in r]
-                   for r in rows]
+            raw = [[self._clean_cell(c) for c in r] for r in rows]
             shown = [[self._cap_cell(c) for c in rr] for rr in raw]
             capped = any(a != b for rr, ss in zip(raw, shown) for a, b in zip(rr, ss))
             full = self._column_widths(labels, raw)
@@ -912,24 +1004,48 @@ if HAVE_TEXTUAL:
                 note.display = False
                 return
             widths = self._column_widths(labels, shown)
-            keep = len(labels)
-            while keep > self.MIN_SHOWN and sum(widths[:keep]) + self.CELL_COST * keep > budget:
-                keep -= 1
-            self._set_columns(table, labels[:keep])
-            self._fill_or_empty(table, [r[:keep] for r in shown],
+            indices = list(range(len(labels)))
+            # The first column names the row, and the state column answers "is
+            # this still here". Dropping either leaves a table that cannot be
+            # read, so a narrow terminal loses `last used`/`avg` first instead of
+            # silently losing the one column the union exists for. Other tables
+            # protect only column 0, which makes this the same tail-drop (prefix)
+            # plan they already had.
+            state_at = (labels.index(db.ENTITY_STATE_COLUMN)
+                        if db.ENTITY_STATE_COLUMN in labels else None)
+            # The row key's columns are protected too: the MCP key is
+            # (server, tool), and dropping `tool` would leave two rows that
+            # render the same and route to one history.
+            key_ids = (key_index if isinstance(key_index, (tuple, list))
+                       else (key_index,))
+            protected = ({i for i in key_ids if 0 <= i < len(labels)}
+                         | ({state_at} if state_at is not None else set()))
+
+            def used_width(idxs):
+                return sum(widths[i] for i in idxs) + self.CELL_COST * len(idxs)
+
+            while len(indices) > self.MIN_SHOWN and used_width(indices) > budget:
+                drop = next((pos for pos in range(len(indices) - 1, -1, -1)
+                             if indices[pos] not in protected), None)
+                if drop is None:
+                    break
+                del indices[drop]
+            hidden = [labels[i] for i in range(len(labels)) if i not in indices]
+            self._set_columns(table, [labels[i] for i in indices])
+            self._fill_or_empty(table, [[r[i] for i in indices] for r in shown],
                                 empty_msg, key_index, key_kind,
                                 key_rows=key_rows if key_rows is not None else rows)
             cap_note = f" · cells capped at {self.name_cap}" if capped else ""
-            if keep >= len(labels):
+            if not hidden:
                 # Nothing is hidden, so the only thing worth saying is that
                 # characters were cut — and the full value only comes back at the
                 # width named below, which is why it has to be said out loud.
                 note.update(f"cells capped at {self.name_cap}" if capped else "")
                 note.display = capped
                 return
-            cuts = sum(widths[:keep]) + self.CELL_COST * keep > budget
-            note.update(f"{keep} of {len(labels)} columns · hidden: "
-                        f"{', '.join(labels[keep:])} · widen to "
+            cuts = used_width(indices) > budget
+            note.update(f"{len(indices)} of {len(labels)} columns · hidden: "
+                        f"{', '.join(hidden)} · widen to "
                         f"{sum(full) + self.CELL_COST * len(labels) + chrome}"
                         + (" · even these are cut" if cuts else "")
                         + cap_note)
@@ -1212,11 +1328,9 @@ if HAVE_TEXTUAL:
         .dash-row.compact .usage-panel { width: 100%; margin: 0 0 1 0; }
         .dash-row { height: auto; margin: 0 0 1 0; }
         """
-        # Pane ids in display order. Used for wrap-around tab cycling.
-        TAB_IDS = [
-            "tab-dashboard", "tab-tools", "tab-skills", "tab-agents",
-            "tab-plugins", "tab-mcp", "tab-tokens", "tab-usage",
-        ]
+        # Pane ids in display order. Used for wrap-around tab cycling. Derived
+        # from the same registry that builds the panes, columns and fill calls.
+        TAB_IDS = ["tab-dashboard"] + [t.pane for t in ENTITY_TABS] + ["tab-usage"]
         # The tab shown on launch. The TopBar Select must start on this tab's
         # own range (see compose), or its mount-time Changed would overwrite
         # that tab's default before the user touches anything.
@@ -1267,9 +1381,8 @@ if HAVE_TEXTUAL:
             # count inside the range like every other tab's.
             self.tab_range = {
                 "tab-dashboard": "1d",
-                "tab-tools": "7d", "tab-skills": "7d", "tab-agents": "7d",
-                "tab-plugins": "7d",
-                "tab-mcp": "7d", "tab-tokens": "7d", "tab-usage": "1d",
+                **{t.pane: t.default_range for t in ENTITY_TABS},
+                "tab-usage": "1d",
             }
             self._last_refresh = None      # epoch ms
             self._last_sync = None         # epoch ms
@@ -1364,24 +1477,10 @@ if HAVE_TEXTUAL:
                         Static(id="dash-note"),
                         id="dash-box",
                     )
-                with TabPane("Tools", id="tab-tools"):
-                    yield Static(id="colnote-tools", classes="col-note")
-                    yield DataTable(id="t-tools", zebra_stripes=True)
-                with TabPane("Skills", id="tab-skills"):
-                    yield Static(id="colnote-skills", classes="col-note")
-                    yield DataTable(id="t-skills", zebra_stripes=True)
-                with TabPane("Agents", id="tab-agents"):
-                    yield Static(id="colnote-agents", classes="col-note")
-                    yield DataTable(id="t-agents", zebra_stripes=True)
-                with TabPane("Plugins", id="tab-plugins"):
-                    yield Static(id="colnote-plugins", classes="col-note")
-                    yield DataTable(id="t-plugins", zebra_stripes=True)
-                with TabPane("MCP", id="tab-mcp"):
-                    yield Static(id="colnote-mcp", classes="col-note")
-                    yield DataTable(id="t-mcp", zebra_stripes=True)
-                with TabPane("Tokens", id="tab-tokens"):
-                    yield Static(id="colnote-tokens", classes="col-note")
-                    yield DataTable(id="t-tokens", zebra_stripes=True)
+                for tab in ENTITY_TABS:
+                    with TabPane(tab.title, id=tab.pane):
+                        yield Static(id=tab.note_id, classes="col-note")
+                        yield DataTable(id=tab.table_id, zebra_stripes=True)
                 with TabPane("Usage", id="tab-usage"):
                     yield Vertical(
                         Horizontal(
@@ -1474,78 +1573,21 @@ if HAVE_TEXTUAL:
 
 
 
-        def _fill_tools(self, conn, start=None, end=None) -> None:
+        def _fill_entity(self, tab: EntityTab, conn, start=None, end=None) -> None:
+            """Fill one registry-declared entity table.
+
+            The query is looked up through the module on every call (never bound
+            at class-definition time), so a test can monkeypatch ``db.q_tools``
+            and this path sees the patched function.
+            """
+            rows = getattr(db, tab.query)(conn, start_ts=start, end_ts=end)
             self._fill_wide(
-                "t-tools",
-                [[r["tool_name"], f"{r['calls']:,}", f"{r['completed']:,}",
-                  f"{r['failed']:,}", ms(r["avg_ms"]), ts(r["last_used"]),
-                  state_cell(r)]
-                 for r in db.q_tools(conn, start_ts=start, end_ts=end)],
-                "No tool calls yet", key_kind="tool")
+                tab.table_id, [tab.cells(r) for r in rows], tab.empty,
+                key_index=tab.key_index, key_kind=tab.key_kind)
 
-        def _fill_skills(self, conn, start=None, end=None) -> None:
-            self._fill_wide(
-                "t-skills",
-                [[r["skill"], f"{r['calls']:,}", f"{r['completed']:,}",
-                  ts(r["last_used"]), state_cell(r)]
-                 for r in db.q_skills(conn, start_ts=start, end_ts=end)],
-                "No skills used yet", key_kind="skill")
-
-        def _fill_agents(self, conn, start=None, end=None) -> None:
-            self._fill_wide(
-                "t-agents",
-                [[r["agent_type"], f"{r['calls']:,}", ts(r["last_used"]),
-                  state_cell(r)]
-                 for r in db.q_agents(conn, start_ts=start, end_ts=end)],
-                "No agents used yet", key_kind="agent")
-
-        def _fill_plugins(self, conn, start=None, end=None) -> None:
-            # The *list* is all-time — the inventory carries no timestamps, and a
-            # plugin with no use in range must not vanish — but ``uses`` and
-            # ``last used`` are windowed, like every other tab. It used to ignore
-            # start/end, so the same call read 8 here and 1 under Skills at a
-            # 7-day window. Name is the row key, so Enter/double-click opens the
-            # plugin's own drill-down; version is not shown.
-            self._fill_wide(
-                "t-plugins",
-                [[r["plugin"], f"{r['uses']:,}", f"{r['skills']:,}",
-                  f"{r['agents']:,}", f"{r['commands']:,}", state_cell(r)]
-                 for r in db.q_plugins(conn, start_ts=start, end_ts=end)],
-                "No plugins installed", key_kind="plugin")
-
-        def _fill_mcp(self, conn, start=None, end=None) -> None:
-            # Row key is unique per (server, tool): v_mcp groups by both, so two
-            # tools under one server would otherwise collide and abort the mount.
-            self._fill_wide(
-                "t-mcp",
-                [[r["server"], r["tool"], f"{r['calls']:,}",
-                  f"{r['completed']:,}", ts(r["last_used"]), state_cell(r)]
-                 for r in db.q_mcp(conn, start_ts=start, end_ts=end)],
-                "No MCP calls yet", key_index=(0, 1), key_kind="mcp")
-
-        def _fill_tokens(self, conn, start=None, end=None) -> None:
-            # Reuses q_model_tokens; never re-parses transcripts and never mixes
-            # in sessions.tokens (tokenDelta). Total = API total (provider total
-            # when present). Usage Total is the display-only re-add of cache hit.
-            rows = [[r["model"], db.provider_label(r["provider"]),
-                     fmt_n(r["usage_total_tokens"]),
-                     f"{r['responses']:,}",
-                     fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
-                     fmt_n(r["total_tokens"]),
-                     fmt_n(r["prompt_cache_hit_tokens"]),
-                     fmt_n(r["prompt_cache_miss_tokens"]),
-                     fmt_n(r["prompt_cache_write_tokens"])]
-                    for r in db.q_model_tokens(conn, start_ts=start, end_ts=end)]
-            self._fill_wide("t-tokens", rows, "No model responses yet",
-                            key_kind="model")
-
-        # pane id -> the fill method for that tab (usage handled separately).
-        _PANE_FILL = {
-            "tab-dashboard": "_fill_dashboard",
-            "tab-tools": "_fill_tools", "tab-skills": "_fill_skills",
-            "tab-agents": "_fill_agents", "tab-plugins": "_fill_plugins",
-            "tab-mcp": "_fill_mcp", "tab-tokens": "_fill_tokens",
-        }
+        @staticmethod
+        def _entity_tab(pane: str):
+            return next((t for t in ENTITY_TABS if t.pane == pane), None)
 
         def refresh_data(self, conn=None) -> None:
             """Full refresh: every tab + the status bar.
@@ -1566,12 +1608,8 @@ if HAVE_TEXTUAL:
                 # Each tab is filled with its own window, so one tab's range
                 # never moves another's.
                 self._fill_dashboard(conn, *self._bounds_for("tab-dashboard"))
-                self._fill_tools(conn, *self._bounds_for("tab-tools"))
-                self._fill_skills(conn, *self._bounds_for("tab-skills"))
-                self._fill_agents(conn, *self._bounds_for("tab-agents"))
-                self._fill_plugins(conn, *self._bounds_for("tab-plugins"))
-                self._fill_mcp(conn, *self._bounds_for("tab-mcp"))
-                self._fill_tokens(conn, *self._bounds_for("tab-tokens"))
+                for tab in ENTITY_TABS:
+                    self._fill_entity(tab, conn, *self._bounds_for(tab.pane))
                 o = db.overview(conn)          # status bar stays all-time
                 # Split the unparsed tally on the connection that is already open,
                 # so the status line can tell a reason this build declines on
@@ -1672,10 +1710,12 @@ if HAVE_TEXTUAL:
             try:
                 if pane == "tab-usage":
                     self._refresh_usage(conn)
+                elif pane == "tab-dashboard":
+                    self._fill_dashboard(conn, *self._bounds_for(pane))
                 else:
-                    fn = self._PANE_FILL.get(pane)
-                    if fn:
-                        getattr(self, fn)(conn, *self._bounds_for(pane))
+                    tab = self._entity_tab(pane)
+                    if tab is not None:
+                        self._fill_entity(tab, conn, *self._bounds_for(pane))
             except sqlite3.Error as exc:
                 self._report_query_error(exc)
                 return
@@ -1729,12 +1769,7 @@ if HAVE_TEXTUAL:
         # keeps every column and shows no note, so registering one that does not need
         # the plan costs nothing.
         WIDE_TABLES = {
-            "t-tools": (TOOLS_COLUMNS, "colnote-tools", 2),
-            "t-skills": (SKILLS_COLUMNS, "colnote-skills", 2),
-            "t-agents": (AGENTS_COLUMNS, "colnote-agents", 2),
-            "t-plugins": (PLUGINS_COLUMNS, "colnote-plugins", 2),
-            "t-mcp": (MCP_COLUMNS, "colnote-mcp", 2),
-            "t-tokens": (TOKEN_COLUMNS, "colnote-tokens", 2),
+            **{t.table_id: (t.columns, t.note_id, 2) for t in ENTITY_TABS},
             "t-usage": (USAGE_COLUMNS, "colnote-usage", 4),
         }
 

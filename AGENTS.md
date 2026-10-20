@@ -104,7 +104,10 @@ tool runs from a checkout, so the version only needs to move when a documented c
   This rule is enforced by checks, not by good intentions — `scripts/tests/test_privacy.py`
   (an import allowlist over the production scripts; sentinel values scanned against **every text
   column of every table**; a tree hash proving `~/.codebuddy` is not written) and
-  `scripts/tests/test_format_registry.py` (the columns stay what the code reads). Two prose columns
+  `scripts/tests/test_format_registry.py`  (the columns stay what the code reads). A transcript-derived cell is flattened for
+  display (`db.clean_cell`) in both the TUI and the headless reports: a newline in a
+  malformed tool name used to split a table row. Ingest also rejects such a name as
+  `invalid_tool_name` rather than storing a row no table can render. Two prose columns
   — `agent_usage.description` and `sessions.title` — were live in v4 and are gone as of v5: the
   promise had drifted behind the code. Do not re-add a column that holds free text.
 - **Nothing leaves the machine.** No production script imports a network module, and the check
@@ -144,7 +147,11 @@ tool runs from a checkout, so the version only needs to move when a documented c
   installed" and a row's absence from `inventory` is the *only* signal that something is gone —
   which is why `installed`/`ever_used` are derived in the query layer rather than stored, and
   why `db.entity_state()` (not a per-front-end label) decides what the `state` column says.
-  Neither flag follows the time window; "ever used" means ever.
+  The `installed` flag is all-time, but the label follows the row's **windowed** call
+  count: a tool installed and not called in this tab's window reads `installed`, never
+  `in use` beside a 0. `ever_used` remains the all-time fallback for callers with no
+  window (the headless reports) and for `export`; it is not the label's input when a
+  window is present.
 - **Windows are whole local calendar days, not "now minus N hours".** `window_bounds` starts at
   local 00:00 (`"1d"` = today, `"2d"` = from yesterday's 00:00, …) and ends at the current time;
   each tab keeps its own window. Do not switch to rolling hours or a shared range — the
@@ -152,7 +159,12 @@ tool runs from a checkout, so the version only needs to move when a documented c
 - **A table never shows a half column.** Every `DataTable` in the app — nine: the seven that live in
   the eight tabs (Dashboard draws panels, not a table) plus one on each pushed detail screen — is
   filled through `_fill_wide`, which keeps the longest **prefix** of its
-  columns and names the dropped ones on the note line above the table. A cell past the right edge used
+  columns and names the dropped ones on the note line above the table. Two columns are
+  protected and can only be dropped when the table is already at its floor: column 0
+  (the name/key) and the entity `state` column. On an entity tab the shown set is
+  therefore "prefix + state", not a bare prefix — losing `state` while keeping `last
+  used` was the narrow-terminal bug this protects against. The MCP key is
+  `(server, tool)`, so both key columns are protected. A cell past the right edge used
   to be cut mid-label with no keyboard way to reach it, so "it scrolls" is not an acceptable answer.
   The mechanism lives in `WideTableMixin`; a host declares `WIDE_TABLES` = table id → (columns, note
   id, cells lost to its surroundings), and `on_mount` builds the columns **from that registry**, so a

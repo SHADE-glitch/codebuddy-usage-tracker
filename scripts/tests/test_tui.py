@@ -2425,25 +2425,35 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                                     self.assertEqual(flat, "")
                                 continue
                             dropped.append(t.id)
-                            # what remains is a prefix of the registry, every name
-                            # that went away is on the note, and the row is whole.
-                            self.assertEqual(labels, full[:len(labels)],
-                                             f"{t.id} shows columns out of order")
+                            # What remains keeps the registry's order; the
+                            # *state* column and the row key are protected, so
+                            # what is shown is a prefix plus those, never an
+                            # arbitrary re-ordering. Every name that went away is
+                            # on the note, and the row is whole.
+                            self.assertEqual(
+                                labels, [c for c in full if c in labels],
+                                f"{t.id} shows columns out of order")
+                            if db.ENTITY_STATE_COLUMN in full and len(labels) > app.MIN_SHOWN:
+                                self.assertIn(db.ENTITY_STATE_COLUMN, labels,
+                                              f"{t.id} dropped state instead of an "
+                                              "optional column")
                             need = sum(c.content_width for c in t.columns.values()) \
                                 + 2 * len(labels)
                             flat = " ".join(" ".join(
                                 "".join(s.text for s in note.render_line(y))
                                 for y in range(note.region.height)).split())
-                            for hidden in full[len(labels):]:
-                                self.assertIn(hidden, flat,
-                                              f"{hidden} is gone and unnamed")
+                            hidden = [c for c in full if c not in labels]
+                            for name in hidden:
+                                self.assertIn(name, flat,
+                                              f"{name} is gone and unnamed")
                             self.assertIn(f"{len(labels)} of {len(full)}", flat,
                                           "the note's numbers are not the table's")
                             if need > t.region.width:
-                                # Only legal at the floor: two name columns wider than
-                                # the screen cannot be cut further, so the note has to
-                                # say so instead of the table pretending it fits.
-                                self.assertLessEqual(len(labels), app.MIN_SHOWN,
+                                # Only legal at the floor: the protected columns
+                                # (the row key plus state) are wider than the
+                                # screen, so the note has to say so instead of the
+                                # table pretending it fits.
+                                self.assertLessEqual(len(labels), app.MIN_SHOWN + 1,
                                                      f"{t.id} stops above the floor")
                                 self.assertIn("even these are cut", flat,
                                               f"{t.id} is still cut and does not say so")
@@ -2543,9 +2553,11 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             app.query_one(tui.TabbedContent).active = "tab-mcp"
             await pilot.pause()
             t = app.query_one("#t-mcp", tui.DataTable)
-            self.assertEqual([str(c.label) for c in t.columns.values()],
-                             ["server", "tool"],
+            labels = [str(c.label) for c in t.columns.values()]
+            self.assertEqual(labels[:2], ["server", "tool"],
                              "the plan cut into the two columns the row key is built from")
+            self.assertIn(db.ENTITY_STATE_COLUMN, labels,
+                          "state was dropped while the key columns survived")
             t.move_cursor(row=1)
             await pilot.pause()
             key = list(t.rows.keys())[1]
@@ -2756,11 +2768,21 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         still be true of the tables it knew about.
         """
         tree = ast.parse((SCRIPTS / "cbut-tui.py").read_text(encoding="utf-8"))
-        built = {kw.value.value for node in ast.walk(tree)
-                 if isinstance(node, ast.Call)
-                 and getattr(node.func, "id", None) == "DataTable"
-                 for kw in node.keywords
-                 if kw.arg == "id" and isinstance(kw.value, ast.Constant)}
+        built = set()
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and getattr(node.func, "id", None) == "DataTable"):
+                continue
+            for kw in node.keywords:
+                if kw.arg != "id":
+                    continue
+                if isinstance(kw.value, ast.Constant):
+                    built.add(kw.value.value)
+                elif (isinstance(kw.value, ast.Attribute)
+                      and kw.value.attr == "table_id"):
+                    # Entity tables are built from the registry; the registry is
+                    # what the test is checking, so name every one of them here.
+                    built |= {t.table_id for t in tui.ENTITY_TABS}
         registered = (set(TrackerApp.WIDE_TABLES) | set(tui.HistoryScreen.WIDE_TABLES)
                       | set(tui.ModelResponsesScreen.WIDE_TABLES))
         self.assertGreaterEqual(len(built), 9,
@@ -3007,7 +3029,75 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             # the installed-but-uncalled half of the distinction
             self.assertNotIsInstance(gone, str)
 
-    # 78. a styled cell keeps its style through the name_cap
+    # 78. the state column survives the narrow plan
+    async def test_the_state_column_survives_a_narrow_terminal(self):
+        now = self._noon_ms()
+        make_db(self.db_path, [])
+        insert_tool_calls(self.db_path, [
+            ("c1", "s1", "/p", "a-really-long-tool-name-for-the-plan",
+             "builtin", now - 60_000, 1, "completed")])
+        conn = db.open_db(self.db_path)
+        conn.execute("INSERT INTO inventory(kind, name, source)"
+                     " VALUES('tool','a-really-long-tool-name-for-the-plan','builtin')")
+        conn.commit()
+        conn.close()
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=(60, 24)) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            table = app.query_one("#t-tools", tui.DataTable)
+            labels = [str(c.label) for c in table.columns.values()]
+            self.assertIn(db.ENTITY_STATE_COLUMN, labels,
+                          "state was the first column dropped, which is the bug")
+            note = app.query_one("#colnote-tools", tui.Static)
+            flat = " ".join("".join(s.text for s in note.render_line(y))
+                            for y in range(note.region.height)).split()
+            self.assertIn("last", flat, "the note did not name what it hid")
+            self.assertIn("used", flat, "the note did not name what it hid")
+
+    # 79. a newline in a transcript-derived name is a display bug, not a layout
+    async def test_a_control_character_in_a_name_renders_on_one_line(self):
+        now = self._noon_ms()
+        make_db(self.db_path, [])
+        insert_tool_calls(self.db_path, [
+            ("c1", "s1", "/p", "REPO\n<parameter name=", "builtin",
+             now - 60_000, 1, "completed")])
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=(120, 24)) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            table = app.query_one("#t-tools", tui.DataTable)
+            cells = [str(c) for c in table.get_row_at(0)]
+            self.assertEqual(cells[0], "REPO <parameter name=")
+            self.assertNotIn("\n", "".join(cells))
+            # header + one row: a newline in a cell used to add a line
+            self.assertEqual(table.virtual_size.height, table.row_count + 1)
+
+    # 80. the Tokens tab lists an available model that was never called
+    async def test_tokens_lists_an_available_model_with_zero_rows(self):
+        now = self._noon_ms()
+        make_db(self.db_path, [("m1", "s1", "used-model", 10, 2, 0, 0,
+                                now - 60_000, 1)])
+        conn = db.open_db(self.db_path)
+        conn.execute("INSERT INTO inventory(kind, name, owner_plugin, source)"
+                     " VALUES('model','available-model','builtin','builtin')")
+        conn.commit()
+        conn.close()
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tokens"
+            await pilot.pause()
+            table = app.query_one("#t-tokens", tui.DataTable)
+            rows = {str(r[0]): r for r in all_rows(table)}
+            self.assertIn("available-model", rows)
+            available = rows["available-model"]
+            self.assertEqual(str(available[3]), "0")       # Requests
+            self.assertEqual(str(available[2]), "-")       # Usage Total
+
+    # 78b. a styled cell keeps its style through the name_cap
     def test_a_styled_cell_survives_the_name_cap(self):
         """name_cap=8 is inside the documented range, and "installed" is 9.
 

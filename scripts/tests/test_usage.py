@@ -560,6 +560,23 @@ class WindowedQueryTest(unittest.TestCase):
         alltime = {r["model"]: r for r in db.q_model_tokens(self.conn)}
         self.assertEqual(set(alltime), {"mA", "mB"})
 
+    def test_q_model_tokens_lists_an_available_model_with_zero_rows(self):
+        """The Tokens tab is a list too: a model the host offers must appear
+        even before its first response, with 0 requests and NULL tokens (never
+        a fabricated 0), sorted after every used model."""
+        self._model("a", "used", 10, 2, self.NOW - HOUR)
+        self.conn.execute(
+            "INSERT INTO inventory(kind, name, owner_plugin, source)"
+            " VALUES('model','available','builtin','builtin')")
+        self.conn.commit()
+        rows = db.q_model_tokens(self.conn)
+        self.assertEqual([r["model"] for r in rows], ["used", "available"])
+        zero = rows[-1]
+        self.assertEqual(zero["provider"], "builtin")
+        self.assertEqual(zero["responses"], 0)
+        self.assertIsNone(zero["prompt_tokens"])
+        self.assertIsNone(zero["total_tokens"])
+
     # -- _time_filter helpers ---------------------------------------------
 
     def test_time_filter_none_none_is_no_filter(self):
@@ -744,7 +761,9 @@ class EntityStateTest(unittest.TestCase):
             "plugin": (db.q_plugins, "plugin"),
             "mcp": (db.q_mcp, "server"),
         }[kind]
-        return {r[key]: db.entity_state(r["installed"], r["ever_used"])
+        count_key = "uses" if kind == "plugin" else "calls"
+        return {r[key]: db.entity_state(r["installed"], r["ever_used"],
+                                        r[count_key])
                 for r in fetch(self.conn)}
 
     def test_a_name_with_history_and_no_inventory_row_is_removed(self):
@@ -792,19 +811,32 @@ class EntityStateTest(unittest.TestCase):
 
     # -- the two things that are easy to get wrong -------------------------
 
-    def test_the_state_does_not_follow_the_window(self):
-        # ``calls`` is windowed, ``ever_used`` is not. An entity last used a
-        # week ago is still a used entity inside a one-day window; calling it
-        # "installed" because the window is quiet would describe the range, not
-        # the entity.
+    def test_the_state_follows_the_window(self):
+        # ``calls`` is windowed, and the label follows it: an entity last used a
+        # week ago is installed but quiet inside a one-day window. The old
+        # all-time label read "in use" beside a 0-call row, which is the display
+        # the Tools tab was reported for.
         self._installed("tool", "Old")
         self._used("tool", "Old", ts=self.NOW - 7 * self.DAY)
         self.conn.commit()
         win = db.q_tools(self.conn, start_ts=self.NOW - self.DAY, end_ts=self.NOW)
         row = {r["tool_name"]: r for r in win}["Old"]
         self.assertEqual(row["calls"], 0)
-        self.assertEqual(db.entity_state(row["installed"], row["ever_used"]),
+        self.assertEqual(db.entity_state(row["installed"], row["ever_used"],
+                                         row["calls"]),
+                         db.ENTITY_STATE_INSTALLED)
+        alltime = {r["tool_name"]: r for r in db.q_tools(self.conn)}["Old"]
+        self.assertEqual(db.entity_state(alltime["installed"],
+                                         alltime["ever_used"], alltime["calls"]),
                          db.ENTITY_STATE_USED)
+
+    def test_an_uninstalled_entity_stays_removed_even_with_calls_in_range(self):
+        self._used("tool", "gone", ts=self.NOW - HOUR)
+        self.conn.commit()
+        row = {r["tool_name"]: r for r in db.q_tools(self.conn)}["gone"]
+        self.assertEqual(db.entity_state(row["installed"], row["ever_used"],
+                                         row["calls"]),
+                         db.ENTITY_STATE_REMOVED)
 
     def test_a_name_on_both_sides_is_counted_once(self):
         # The CTE used to emit one row per side, so the LEFT JOIN matched every

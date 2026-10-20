@@ -58,12 +58,16 @@ def _rendered_width(headers, rows) -> int:
     widths = [len(h) for h in headers]
     for r in rows:
         for i, c in enumerate(r):
-            widths[i] = max(widths[i], len("" if c is None else str(c)))
+            widths[i] = max(widths[i],
+                            len("" if c is None else db.clean_cell(c)))
     return sum(widths) + 2 * (len(headers) - 1)
 
 
 def table(headers, rows, aligns=None):
-    rows = [[("" if c is None else str(c)) for c in r] for r in rows]
+    # A transcript-derived name can carry a newline or a terminal escape; the
+    # headless report is rendered by the same cleaner the TUI uses, so one bad
+    # name cannot break either surface.
+    rows = [[("" if c is None else db.clean_cell(c)) for c in r] for r in rows]
     widths = [len(h) for h in headers]
     for r in rows:
         for i, c in enumerate(r):
@@ -130,14 +134,14 @@ def cmd_stats(conn, args):
                   "last_used", "installed", "ever_used"])
     print(table(["tool", "calls", "ok", "fail", "avg", "last used", "state"],
                 [[r[0], r[1], r[2], r[3], ms(r[4]), ts(r[5]),
-                  db.entity_state(r[6], r[7])] for r in rows]))
+                  db.entity_state(r[6], r[7], r[1])] for r in rows]))
     print()
 
     print("Skills")
     rows = _rows(db.q_skills(conn),
                  ["skill", "calls", "last_used", "installed", "ever_used"])
     print(table_or(["skill", "calls", "last used", "state"],
-                   [[r[0], r[1], ts(r[2]), db.entity_state(r[3], r[4])]
+                   [[r[0], r[1], ts(r[2]), db.entity_state(r[3], r[4], r[1])]
                     for r in rows], empty="  (none)"))
     print()
 
@@ -145,7 +149,7 @@ def cmd_stats(conn, args):
     rows = _rows(db.q_agents(conn),
                  ["agent_type", "calls", "last_used", "installed", "ever_used"])
     print(table_or(["agent", "calls", "last used", "state"],
-                   [[r[0], r[1], ts(r[2]), db.entity_state(r[3], r[4])]
+                   [[r[0], r[1], ts(r[2]), db.entity_state(r[3], r[4], r[1])]
                     for r in rows], empty="  (none)"))
     print()
 
@@ -154,8 +158,8 @@ def cmd_stats(conn, args):
                  ["plugin", "uses", "skills", "agents", "commands",
                   "installed", "ever_used"])
     print(table(["plugin", "uses", "skills", "agents", "cmds", "state"],
-                [[r[0], r[1], r[2], r[3], r[4], db.entity_state(r[5], r[6])]
-                 for r in rows]))
+                [[r[0], r[1], r[2], r[3], r[4],
+                  db.entity_state(r[5], r[6], r[1])] for r in rows]))
     print()
 
     print("MCP")
@@ -163,8 +167,8 @@ def cmd_stats(conn, args):
                  ["server", "tool", "calls", "last_used", "installed", "ever_used"])
     if rows:
         print(table(["server", "tool", "calls", "last used", "state"],
-                    [[r[0], r[1], r[2], ts(r[3]), db.entity_state(r[4], r[5])]
-                     for r in rows]))
+                    [[r[0], r[1], r[2], ts(r[3]),
+                      db.entity_state(r[4], r[5], r[2])] for r in rows]))
     else:
         print("  (no MCP tool invocations recorded)")
 
@@ -176,7 +180,7 @@ def cmd_tools(conn, args):
     print(table(["tool", "calls", "ok", "fail", "pend", "avg", "last used",
                  "proj", "state"],
                 [[r[0], r[1], r[2], r[3], r[4], ms(r[5]), ts(r[6]), r[7],
-                  db.entity_state(r[8], r[9])] for r in rows]))
+                  db.entity_state(r[8], r[9], r[1])] for r in rows]))
 
 
 def cmd_skills(conn, args):
@@ -185,7 +189,7 @@ def cmd_skills(conn, args):
                   "installed", "ever_used"])
     print(table_or(["skill", "calls", "ok", "last used", "proj", "state"],
                    [[r[0], r[1], r[2], ts(r[3]), r[4],
-                     db.entity_state(r[5], r[6])] for r in rows]))
+                     db.entity_state(r[5], r[6], r[1])] for r in rows]))
 
 
 def cmd_agents(conn, args):
@@ -194,7 +198,7 @@ def cmd_agents(conn, args):
                   "installed", "ever_used"])
     print(table_or(["agent", "calls", "last used", "proj", "state"],
                    [[r[0], r[1], ts(r[2]), r[3],
-                     db.entity_state(r[4], r[5])] for r in rows]))
+                     db.entity_state(r[4], r[5], r[1])] for r in rows]))
 
 
 def cmd_mcp(conn, args):
@@ -203,7 +207,7 @@ def cmd_mcp(conn, args):
                   "installed", "ever_used"])
     print(table_or(["server", "tool", "calls", "ok", "last used", "state"],
                    [[r[0], r[1], r[2], r[3], ts(r[4]),
-                     db.entity_state(r[5], r[6])] for r in rows]))
+                     db.entity_state(r[5], r[6], r[2])] for r in rows]))
 
 
 # Per-model table: (header, q_model_tokens key). Order matters — the trailing
@@ -281,7 +285,7 @@ def cmd_plugins(conn, args):
     print(table(["plugin", "uses", "skills", "agents", "cmds", "last used",
                  "state"],
                 [[r[0], r[1], r[2], r[3], r[4], ts(r[5]),
-                  db.entity_state(r[6], r[7])] for r in rows]))
+                  db.entity_state(r[6], r[7], r[1])] for r in rows]))
 
 
 def cmd_show(conn, args):
@@ -356,16 +360,17 @@ def cmd_health(conn, args):
     # line that says which of the two was read. Resolved again here rather than
     # remembered: health reports the state of the machine now, not of the last sync.
     sync = db.load_sync()
-    tools, agents, catalog = sync.builtin_catalog()
-    if catalog is not None:
-        catalog_line = f"product.json @ {catalog}"
+    catalog = sync.product_catalog()
+    if catalog.path is not None:
+        catalog_line = f"product.json @ {catalog.path}"
     else:
         found = sync.resolve_product_json()
         catalog_line = "fallback constants (" + (
             f"{found} carries no catalogue" if found is not None
             else "product.json unresolved") + ")"
     print(f"  {'builtin catalog':<15} {catalog_line} — "
-          f"{len(tools)} tools, {len(agents)} agents")
+          f"{len(catalog.tools)} tools, {len(catalog.agents)} agents, "
+          f"{len(catalog.models)} models, {len(catalog.commands)} commands")
     projects = db.CODEBUDDY_DIR / "projects"
     n_files = len(list(projects.glob("**/*.jsonl"))) if projects.is_dir() else 0
     tracked = conn.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0]

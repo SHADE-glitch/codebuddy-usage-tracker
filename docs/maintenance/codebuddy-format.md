@@ -21,10 +21,11 @@ cbut format --write      # refresh the block in this file after changing the reg
 - **`_meta` fields**: `baggage`
 - **message content-block fields**: `text`
 - **tool argument names**: `agent_type`, `args`, `command`, `skill`, `subagent_type`, `toolName`, `tool_name`
-- **inventory JSON keys**: `agents`, `installPath`, `mcpServers`, `models`, `name`, `plugins`, `tools`, `url`, `version`
+- **inventory JSON keys**: `agents`, `commands`, `id`, `installPath`, `mcpServers`, `models`, `name`, `plugins`, `tools`, `url`, `vendor`, `version`
 - **Tool names that drive classification**: `Skill`, `Agent`, prefix `mcp__` with separator `__`
 - **Meta tools (wrap another tool)**: `DeferExecuteTool`, `ListMcpResources`, `ReadMcpResource`, `ToolSearch`, `WaitForMcpServers`
-- **Tolerant name tables** (an unknown name still indexes): 35 builtin tools, 17 builtin agents, default agent type `general-purpose`
+- **Tolerant name tables** (an unknown name still indexes): 35 builtin tools, 17 builtin agents, 0 builtin models, 0 builtin commands, default agent type `general-purpose`
+- **Tool-name validity**: empty, over 200 characters, or containing whitespace/control characters is counted as `invalid_tool_name` and not stored as a call
 - **Builtin catalogue source**: fallback constants (product.json unresolved) — the installed `codebuddy` package's `product.json`, found by resolving the executable on `PATH` and walking up; `CBUT_PRODUCT_JSON` overrides the search. Membership follows the package, so a name it drops stops being inventoried; `kind` (active/internal) stays this tool's taxonomy
 - **Markers parsed out of text**: `<command-name>\s*/?([^<\s]+)\s*</command-name>` · `codebuddy\.session_id=([^,\s]+)`
 - **On-disk layout, relative to `~/.codebuddy`**:

@@ -23,6 +23,7 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cbut_db as db  # noqa: E402
@@ -87,7 +88,10 @@ TRANSCRIPT_LINE_SEP = b"\n"
 PRODUCT_JSON = "product.json"
 PRODUCT_TOOLS_FIELD = "tools"
 PRODUCT_AGENTS_FIELD = "agents"
+PRODUCT_MODELS_FIELD = "models"
+PRODUCT_COMMANDS_FIELD = "commands"
 PRODUCT_NAME_FIELD = "name"
+PRODUCT_ID_FIELD = "id"
 # The executable on PATH that leads to the package root.
 PRODUCT_CLI_NAME = "codebuddy"
 
@@ -99,6 +103,14 @@ MCP_TOOL_SEP = "__"
 
 CMD_RE = re.compile(r"<command-name>\s*/?([^<\s]+)\s*</command-name>")
 BAGGAGE_SID_RE = re.compile(r"codebuddy\.session_id=([^,\s]+)")
+
+# A tool name is one token. A real call never contains whitespace or a control
+# character, and one that does (a model-generated malformed call produced
+# `REPO<...\n<... parameter name=`) is not a name any panel can render: a newline
+# in a DataTable cell doubles the row's height and shifts every column after it.
+# Such a record is counted under its own reason and is not written as a call.
+TOOL_NAME_MAX = 200
+tool_name_chars_re = re.compile(r"[\s\x00-\x1f\x7f-\x9f]")
 
 # ``type`` values a handler claims in ``_handle_record``. The test derives the
 # same set from the dispatch chain, so a branch without a registration — or a
@@ -264,9 +276,11 @@ TOOL_ARG_FIELDS = frozenset({
 # models.json (whose "models"[].id/url give the custom routes their host).
 INVENTORY_JSON_FIELDS = frozenset({
     "mcpServers", "plugins", "installPath", "version", "models", "url",
-    # product.json, the builtin catalogue. Read by name, so the field has to be
-    # registered or the registry stops describing the parser.
-    PRODUCT_TOOLS_FIELD, PRODUCT_AGENTS_FIELD, PRODUCT_NAME_FIELD,
+    "vendor",
+    # product.json, the builtin catalogue. Read by name/id, so the fields have to
+    # be registered or the registry stops describing the parser.
+    PRODUCT_TOOLS_FIELD, PRODUCT_AGENTS_FIELD, PRODUCT_MODELS_FIELD,
+    PRODUCT_COMMANDS_FIELD, PRODUCT_NAME_FIELD, PRODUCT_ID_FIELD,
 })
 
 CODEBUDDY_FIELDS = (RECORD_FIELDS | PROVIDER_FIELDS | BAGGAGE_FIELDS
@@ -279,6 +293,7 @@ CODEBUDDY_FIELDS = (RECORD_FIELDS | PROVIDER_FIELDS | BAGGAGE_FIELDS
 # for a record no branch claimed, UNPARSEABLE_LINE for a complete line that is
 # not JSON, and "unreadable_file:<OSError>" for a file that could not be opened.
 UNPARSEABLE_LINE = "unparseable_line"
+INVALID_TOOL_NAME = "invalid_tool_name"
 
 
 def _session_id(rec) -> str | None:
@@ -343,8 +358,18 @@ def resolve_product_json() -> Path | None:
     return None
 
 
-def builtin_catalog() -> tuple[frozenset, dict, Path | None]:
-    """Return ``(tool names, agent name -> kind, product.json path or None)``.
+class ProductCatalog(NamedTuple):
+    """What the installed package says exists, one field per entity tab."""
+
+    tools: frozenset
+    agents: dict
+    models: frozenset
+    commands: frozenset
+    path: Path | None
+
+
+def product_catalog() -> ProductCatalog:
+    """Read the installed package's catalogue of tools, agents, models, commands.
 
     The installed package decides **membership** — which names exist at all —
     because that is what moves with the install: product.json carries ``cli``
@@ -353,10 +378,15 @@ def builtin_catalog() -> tuple[frozenset, dict, Path | None]:
     carry is ``kind``: active-vs-internal is this tool's taxonomy, and
     BUILTIN_AGENTS supplies it, defaulting to "active".
 
+    Models come from the package's ``models`` array, keyed by ``id`` (the value
+    a transcript actually names); commands come from ``commands``, keyed by
+    ``name``. Older packages may omit either array — an empty set is the honest
+    answer, and the usage tables still list every name ever seen.
+
     The checked-in fallback constants exist so a machine without a resolvable
-    package still gets a catalogue instead of empty panels. ``cbut health``
-    prints which of the two was used, so a stale fallback cannot quietly
-    masquerade as the real list.
+    package still gets a tools/agents catalogue instead of empty panels. ``cbut
+    health`` prints which of the two was used, so a stale fallback cannot
+    quietly masquerade as the real list.
     """
     path = resolve_product_json()
     if path is not None:
@@ -366,8 +396,22 @@ def builtin_catalog() -> tuple[frozenset, dict, Path | None]:
             names = _catalog_names(raw.get(PRODUCT_AGENTS_FIELD))
             if tools and names:
                 agents = {n: BUILTIN_AGENTS.get(n, "active") for n in names}
-                return tools, agents, path
-    return frozenset(BUILTIN_TOOLS), dict(BUILTIN_AGENTS), None
+                models = frozenset(_catalog_ids(raw.get(PRODUCT_MODELS_FIELD)))
+                commands = frozenset(
+                    _catalog_names(raw.get(PRODUCT_COMMANDS_FIELD)))
+                return ProductCatalog(tools, agents, models, commands, path)
+    return ProductCatalog(frozenset(BUILTIN_TOOLS), dict(BUILTIN_AGENTS),
+                          frozenset(), frozenset(), None)
+
+
+def builtin_catalog() -> tuple[frozenset, dict, Path | None]:
+    """``(tool names, agent name -> kind, product.json path or None)``.
+
+    Kept as the three-value view most callers want; :func:`product_catalog` is
+    the complete one and the only place the package is resolved.
+    """
+    catalog = product_catalog()
+    return catalog.tools, catalog.agents, catalog.path
 
 
 def _catalog_names(entries) -> list[str]:
@@ -381,6 +425,19 @@ def _catalog_names(entries) -> list[str]:
         elif isinstance(entry, dict) and isinstance(entry.get(PRODUCT_NAME_FIELD), str):
             names.append(entry[PRODUCT_NAME_FIELD])
     return names
+
+
+def _catalog_ids(entries) -> list[str]:
+    """Ids out of a product.json array (models are keyed by ``id``)."""
+    if not isinstance(entries, list):
+        return []
+    ids = []
+    for entry in entries:
+        if isinstance(entry, str):
+            ids.append(entry)
+        elif isinstance(entry, dict) and isinstance(entry.get(PRODUCT_ID_FIELD), str):
+            ids.append(entry[PRODUCT_ID_FIELD])
+    return ids
 
 
 # --- inventory (what is installed / available) -----------------------------
@@ -436,9 +493,37 @@ def collect_inventory() -> tuple[list[tuple], dict, Path | None]:
     # owner_plugin is part of the primary key, so use an empty string (not NULL)
     # for "no owner" — SQLite treats NULLs as distinct in a unique index, which
     # would let duplicates accumulate across runs.
-    tools, agents, product_path = builtin_catalog()
-    rows += [("tool", n, "", None, None, "builtin") for n in sorted(tools)]
-    rows += [("agent", n, "", None, None, "builtin") for n in sorted(agents)]
+    catalog = product_catalog()
+    product_path = str(catalog.path) if catalog.path is not None else None
+    rows += [("tool", n, "", None, None, "builtin")
+             for n in sorted(catalog.tools)]
+    rows += [("agent", n, "", None, None, "builtin")
+             for n in sorted(catalog.agents)]
+    # Models and commands are catalogue entries too. A model row's owner is its
+    # route label (``owner_plugin`` is the only owner slot inventory has), so a
+    # builtin model sits under ``builtin`` and a custom one under its vendor/host.
+    rows += [("model", n, PROVIDER_BUILTIN, None, product_path, "builtin")
+             for n in sorted(catalog.models)]
+    rows += [("command", n, "", None, product_path, "builtin")
+             for n in sorted(catalog.commands)]
+
+    # Custom provider definitions: models.json is where the host keeps them, and
+    # the same file already names the url host used for the route label. Only
+    # id/url/vendor are read (never the apiKey beside them).
+    models_path = root / MODELS_FILE
+    custom = _load_json(models_path) or {}
+    custom_entries = custom.get("models") if isinstance(custom, dict) else None
+    for entry in custom_entries or []:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        host = url_host(entry.get("url"))
+        provider = (_vendor_for_host(host) or host
+                    or entry.get("vendor") or "custom")
+        rows.append(("model", model_id, provider, None, str(models_path),
+                     "user"))
 
     # MCP servers
     mcp_path = root / MCP_FILE
@@ -535,6 +620,17 @@ def scan_inventory(conn: sqlite3.Connection) -> tuple[dict, dict, dict]:
 
 
 # --- transcript indexing ---------------------------------------------------
+
+
+def valid_tool_name(name) -> bool:
+    """Whether ``name`` can be stored and rendered as a tool name.
+
+    Empty names, names over :data:`TOOL_NAME_MAX` and names carrying whitespace
+    or control characters are rejected together: each one is a transcript shape
+    no tool call should have, and each one renders as a broken row.
+    """
+    return (isinstance(name, str) and 0 < len(name) <= TOOL_NAME_MAX
+            and not tool_name_chars_re.search(name))
 
 
 def _mcp_from_name(name: str):
@@ -948,6 +1044,10 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
         provider = rec.get("providerData") or {}
         model = provider.get("model")
         call_id = rec.get("callId") or rec.get("id")
+        if not valid_tool_name(name):
+            if unparsed is not None:
+                _bump(unparsed, INVALID_TOOL_NAME)
+            return
         category, pair = _classify(name, args)
 
         conn.execute(
@@ -1155,7 +1255,8 @@ def backfill_plugin_usage(conn: sqlite3.Connection) -> int:
 # --- documentation ---------------------------------------------------------
 
 
-def format_doc(tools=None, agents=None, source: Path | None = None) -> str:
+def format_doc(tools=None, agents=None, models=None, commands=None,
+               source: Path | None = None) -> str:
     """Render the format registry as markdown (``cbut format``).
 
     Every value is read back out of the constants rather than retyped, so the
@@ -1170,11 +1271,13 @@ def format_doc(tools=None, agents=None, source: Path | None = None) -> str:
     resolves the live catalogue; ``test_maintenance_docs`` pins the fallback so
     the checked-in file describes the checked-in registry.
     """
-    if tools is None or agents is None:
-        _tools, _agents, resolved = builtin_catalog()
-        tools = _tools if tools is None else tools
-        agents = _agents if agents is None else agents
-        source = source or resolved
+    if any(v is None for v in (tools, agents, models, commands)):
+        catalog = product_catalog()
+        tools = catalog.tools if tools is None else tools
+        agents = catalog.agents if agents is None else agents
+        models = catalog.models if models is None else models
+        commands = catalog.commands if commands is None else commands
+        source = source or catalog.path
     origin = "product.json" if source else "fallback constants"
     where = f" (`{source}`)" if source else " (product.json unresolved)"
 
@@ -1204,7 +1307,11 @@ def format_doc(tools=None, agents=None, source: Path | None = None) -> str:
         row("Meta tools (wrap another tool)", META_TOOLS),
         f"- **Tolerant name tables** (an unknown name still indexes): "
         f"{len(tools)} builtin tools, {len(agents)} builtin agents, "
+        f"{len(models)} builtin models, {len(commands)} builtin commands, "
         f"default agent type `{DEFAULT_AGENT_TYPE}`\n",
+        f"- **Tool-name validity**: empty, over {TOOL_NAME_MAX} characters, or "
+        "containing whitespace/control characters is counted as "
+        f"`{INVALID_TOOL_NAME}` and not stored as a call\n",
         f"- **Builtin catalogue source**: {origin}{where} — the installed "
         f"`{PRODUCT_CLI_NAME}` package's `{PRODUCT_JSON}`, found by resolving "
         "the executable on `PATH` and walking up; `CBUT_PRODUCT_JSON` overrides "

@@ -184,6 +184,29 @@ class IndexerTest(unittest.TestCase):
         self.index(off)
         self.assertEqual(self.count("tool_calls"), 2)
 
+    def test_a_malformed_tool_name_is_counted_and_not_stored(self):
+        """A name with a newline is not a tool call, and it is not a name any
+        table can render: a real one on this machine was
+        ``REPO<...\n<... parameter name=``, produced by a broken model call.
+        It is counted under its own reason instead of stored."""
+        write_records(self.tr, [
+            {"type": "function_call", "name": "REPO\n<parameter name=",
+             "callId": "bad", "sessionId": "s1", "cwd": "/p", "timestamp": 10},
+            {"type": "function_call", "name": "Bash", "callId": "good",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 11},
+        ])
+        unparsed = {}
+        sync.index_file(self.conn, self.tr, 0, {}, {}, {}, unparsed)
+        for reason, n in unparsed.items():
+            db.note_unparsed(self.conn, reason, n)
+        self.conn.commit()
+        self.assertEqual(self.count("tool_calls"), 1)
+        row = self.conn.execute(
+            "SELECT count FROM unparsed WHERE reason=?",
+            (sync.INVALID_TOOL_NAME,)).fetchone()
+        self.assertIsNotNone(row, "the rejected name was not counted")
+        self.assertEqual(row[0], 1)
+
     def test_partial_trailing_line_not_consumed(self):
         with open(self.tr, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(
@@ -245,6 +268,56 @@ class IndexerTest(unittest.TestCase):
         names = {r["name"] for r in self.conn.execute(
             "SELECT name FROM inventory WHERE kind='skill' AND source='user'")}
         self.assertEqual(names, {"add-tests", "api-contract"})
+
+    def test_catalogue_models_and_commands_are_inventoried(self):
+        """The package's own arrays decide the Tokens and inventory lists.
+
+        Before this, models and commands existed only when something used
+        them; a model the host offers but nobody had called was invisible.
+        """
+        snapshot = json.loads((
+            Path(__file__).resolve().parent / "fixtures"
+            / "product.json.snapshot").read_text(encoding="utf-8"))
+        root = self._cb_root()
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = root
+        try:
+            sync.scan_inventory(self.conn)
+        finally:
+            sync.db.CODEBUDDY_DIR = old
+        models = {r[0] for r in self.conn.execute(
+            "SELECT name FROM inventory WHERE kind='model'")}
+        commands = {r[0] for r in self.conn.execute(
+            "SELECT name FROM inventory WHERE kind='command'")}
+        self.assertEqual(models, set(snapshot["models"]))
+        self.assertEqual(commands, set(snapshot["commands"]))
+        provider = self.conn.execute(
+            "SELECT owner_plugin FROM inventory WHERE kind='model'"
+            " AND name=?", (sorted(models)[0],)).fetchone()[0]
+        self.assertEqual(provider, "builtin")
+
+    def test_custom_models_are_inventoried_with_their_route_label(self):
+        """``models.json`` is the host's custom-provider list; the url host is
+        the same label a response would get (``Volcano Ark``), and a model
+        without a url still gets an honest ``custom`` owner instead of NULL.
+        """
+        root = self._cb_root()
+        (root / "models.json").write_text(json.dumps({"models": [
+            {"id": "custom-ark",
+             "url": "https://ark.cn-beijing.volces.com/api/coding/v3"},
+            {"id": "custom-nourl"},
+        ]}), encoding="utf-8")
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = root
+        try:
+            sync.scan_inventory(self.conn)
+        finally:
+            sync.db.CODEBUDDY_DIR = old
+        owners = {r[0]: r[1] for r in self.conn.execute(
+            "SELECT name, owner_plugin FROM inventory WHERE kind='model'"
+            " AND source='user'")}
+        self.assertEqual(owners["custom-ark"], "Volcano Ark")
+        self.assertEqual(owners["custom-nourl"], "custom")
 
     def test_user_agents_are_inventoried(self):
         # ~/.codebuddy/agents/<name>.md was never scanned, so an installed agent
