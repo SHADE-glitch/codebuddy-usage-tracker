@@ -86,7 +86,7 @@ Installed.
   cbut sync       index new CodeBuddy logs (run this first)
   cbut stats      usage summary, no TUI required
 
-Optional daily sync (so the index stays current without opening the TUI):
+Optional background sync every 15 minutes (so the index stays current without opening the TUI):
   mkdir -p ~/.config/systemd/user
   cp "$REPO_DIR/systemd/cbut-sync."* ~/.config/systemd/user/
   systemctl --user daemon-reload

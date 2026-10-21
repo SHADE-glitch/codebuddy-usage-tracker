@@ -44,7 +44,7 @@
 
 - 🧰 **八个视图，一条命令** —— Dashboard、工具、skill、agent、插件、MCP、token、用量。
 - 📜 **完整历史，即刻可得** —— 回填磁盘上已有的全部会话。
-- 🔑 **以名字为准，什么都不丢** —— 每个 tab 都同时列出你**用过**的和已安装的，仅以名字为主键：改名、升级或被删除的对象都保留历史，同名但来自不同归属的合并成一行。
+- 🔑 **以名字为准，什么都不丢** —— 每个 tab 都同时列出你**用过**的和已安装的，仅以名字为主键：改名、升级或被删除的对象都保留历史，同名但来自不同归属的合并成一行。TUI 默认只显示用过的一半；按 <kbd>a</kbd>（每个 tab 独立）把「已安装但没用过」的行带回来。
 - 🪶 **被动只读** —— 无 hook、无插件、不改 CodeBuddy 源码。
 - 🗃️ **单个本地 SQLite 文件** —— 不联网、不上传、无遥测。
 - ⚡ **快速增量同步** —— 约 300 个会话 / 420 MB 约 5 秒完成；之后只读新增字节。
@@ -60,7 +60,7 @@
 CodeBuddy 其实**已经在写**你需要的数据，只是**从不展示**。它保存了：
 
 - 📜 **会话转录**：`~/.codebuddy/projects/<cwd>/<session>.jsonl`，每次工具调用是一条 `function_call` 记录（含名称、参数、状态、时间戳）；
-- 🔭 **OpenTelemetry 轨迹**：`~/.codebuddy/traces/<pid>/trace_*.jsonl`（`function` / `agent` / `generation` span）；
+- 🔭 **OpenTelemetry 轨迹**：`~/.codebuddy/traces/<pid>/trace_*.jsonl`，外加轨迹完成时整体落盘的 `trace_<id>.json`（`function` / `agent` / `generation` span）；
 
 对外却只提供会话级的 `/cost` 和 `/context`，**没有**跨会话、按工具 / 按 skill / 按插件的统计。`cbut` 补的就是这个缺口。
 
@@ -102,6 +102,8 @@ CodeBuddy 其实**已经在写**你需要的数据，只是**从不展示**。�
 任意一行按 <kbd>Enter</kbd>（或双击）进入**两级下钻**。第一页先给出该对象**在所属 tab 窗口内**的汇总（各种次数与合计），下面是它的最近调用；在某条调用上再按 <kbd>Enter</kbd>，打开这条调用的**全部字段**（时间、项目、会话、状态、耗时、各种 id，模型响应还含 token / 缓存明细）。除 Dashboard 与 Usage 外的实体 tab 都支持 —— 工具、skill、agent、插件、MCP 工具、模型。任何 tab 在没有数据时都会显示明确的空状态提示，而不是一片空白。
 
 **每个 tab 都列出「用过的 ∪ 已安装的」的并集，以名字为主键，按调用次数排序。** 被删除的 skill、被卸载的插件、被改名的 agent 都保留自己的行和计数；同名但来自两个插件的合并成一行。**Plugins** 统计归属到插件的每一次调用 —— 包括它的 skill、agent 和斜杠命令 —— 所以某个插件的 skill 被用过之后，不会再显示 `uses = 0`。归属是**有据可依**的：只有当插件清单把某个名字映射到该插件时，才会计入。
+
+TUI 默认**只显示用过的那一半** —— 本 tab 窗口内 0 次调用的行会被藏起来，按 <kbd>a</kbd>（每个 tab 独立）把「已安装但没用过」的一半放回来（Tokens 本来就只统计用过的，没有这个开关）。<kbd>/</kbd> 打开名称过滤，边输入边收窄：<kbd>Enter</kbd> 应用并把焦点交回表格，<kbd>Esc</kbd> 清空取消。Usage 请求日志分页 —— <kbd>PgDn</kbd>/<kbd>PgUp</kbd> 翻页。
 
 每个实体 tab 的最后一列是 **state（状态）** —— 它是唯一能把「还在」和「早没了」分开的东西：`in use`（已安装，且**在本 tab 的窗口内**被调用过）、`installed`（此刻在磁盘上，但这个窗口内没调用）、`removed`（已从磁盘消失，只保留历史，显示为暗色）。标签跟随与行内 `calls` 相同的窗口，所以 0 次调用永远不会配一个 `in use`；全时段历史留在计数和 `ever used` 里，不在这个标签里。已安装这一侧是**每次同步都从磁盘重建的快照**，所以卸载一个东西之后，下一次同步它就会从「已安装」这列消失，而它已经挣到的计数一分不少。窄终端会先收起 `last used` 或 `avg`，不会收起这一列，也不会收起名字列。
 
@@ -169,7 +171,7 @@ python3 scripts/cbut-stats.py stats
 
 ### 🔄 可选：不开 TUI 也让索引保持最新
 
-[`systemd/`](systemd) 里带了两个用户级 unit，装上后每天跑一次 `cbut sync --quiet`。下面这四
+[`systemd/`](systemd) 里带了两个用户级 unit，装上后每 15 分钟跑一次 `cbut sync --quiet`。下面这四
 行就是 `install.sh` 安装成功时最后打印的那段：
 
 ```bash
@@ -179,7 +181,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now cbut-sync.timer
 ```
 
-`Persistent=true` 会把关机期间错过的运行补上，唤醒时刻随机抖动最多 15 分钟，服务以
+`Persistent=true` 会把关机期间错过的运行补上，服务以
 `Nice=10` 运行 —— 不会和你的会话抢 CPU。用 `systemctl --user status cbut-sync.timer` 查看。
 
 ## 🧭 用法
@@ -192,6 +194,8 @@ cbut stats               # 📊  各类总览
 cbut tools|skills|agents|plugins|mcp
 cbut models              # 🔢  按模型 token：in/out/total + 缓存 hit/miss/write
 cbut show tool Bash      # 🔍  某个对象的最近调用
+cbut sessions            # 🗂  每个会话一行，最新在前
+cbut show model <名称>   # 🔍  某个模型的最近响应
 cbut recent              # 🕒  最近的工具调用
 cbut inventory           # 📦  已安装清单，已用 vs 未用
 cbut export              # 💾  导出所有表为 JSON
@@ -239,7 +243,7 @@ sync_secs = 30       # TUI 自动同步定时器
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 528 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 550 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -248,9 +252,14 @@ python3 -m unittest discover -s scripts/tests     # Ran 528 tests ... OK
 
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
-| `test_sync.py` | 137 | 转录解析、工具归类、路由出处列（`requestModelId` → 内置 / 厂商 / 主机 / 端点）、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
-| `test_tui.py` | 127 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、每 tab 独立的日期选择器（日历翻月/跨年、当前目标卡片、能整行放下的预设与快选快捷项、输入框读写的 24 小时时钟、小时网格、微调步进选择器、切 tab 后顶栏跨度仍完整）、两级下钻（窗口内汇总头、Enter 打开单条全字段、长值折行不裁剪、插件路径）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、单元格上限与它背后的设置项、状态栏诚实性 |
-| `test_usage.py` | 109 | 自然日窗口（今天 / 2 / 3 / 7 / 14 / 30 天 / 全部）与自定义范围的标签、日期时间的宽松输入归一化（24 小时显示、输入仍兼容 12 小时）、token 汇总与提供方分组、Dashboard 查询、下钻查询（窗口内按实体汇总、插件使用计数、单条调用的整行）、结构版本门禁、索引值不值得留 |
+| `test_sync.py` | 140 | 转录解析、工具归类、路由出处列（`requestModelId` → 内置 / 厂商 / 主机 / 端点）、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数、整程同步锁、OTel agent 轨迹读取器（流式与完结文件按
+  spanId 合并；会话关联、状态只升不降） |
+| `test_traces.py` | 11 | 轨迹读取端到端：span 结果只落一次、
+  `cli`/`ptc` 拒收、running 占位升级且重放不降级、
+  完结文件用 `trace.sessionId` 补上流式拿不到的会话、重读幂等、
+  `_run` 集成 |
+| `test_tui.py` | 131 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、每 tab 独立的日期选择器（日历翻月/跨年、当前目标卡片、能整行放下的预设与快选快捷项、输入框读写的 24 小时时钟、小时网格、微调步进选择器、切 tab 后顶栏跨度仍完整）、两级下钻（窗口内汇总头、Enter 打开单条全字段、长值折行不裁剪、插件路径）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、单元格上限与它背后的设置项、状态栏诚实性、默认只显示用过的（每 tab `a` 开关）、`/` 名称过滤（Enter 应用、Esc 取消）、Usage 请求日志翻页、同名模型的提供方后缀 |
+| `test_usage.py` | 113 | 自然日窗口（今天 / 2 / 3 / 7 / 14 / 30 天 / 全部）与自定义范围的标签、日期时间的宽松输入归一化（24 小时显示、输入仍兼容 12 小时）、token 汇总与提供方分组、Dashboard 查询、下钻查询（窗口内按实体汇总、插件使用计数、单条调用的整行）、结构版本门禁、索引值不值得留、无界面会话列表（窗口、最新在前、limit） |
 | `test_indexes.py` | 4 | 前两次切索引只能靠一次手写读数的那条规则：报告面真的会跑的每条语句都被抓下来用 `EXPLAIN QUERY PLAN` 过一遍，声明了却没有任何计划点名的索引一律失败——外加 v9 那次真正用上的结构规则：键是另一个已声明索引键的严格前缀 |
 | `test_stats.py` | 33 | 无界面报告 CLI（`cbut stats`）：总览与各分类表、按模型的 token 报告及窄终端下被丢弃的 cache 列、`show`/`recent`/`inventory`/`export`、`health`（结构版本、设置行、未识别计数）、`backup`→`restore` 往返、`vacuum`（先快照、回收字节数、行数不变）、生成的 `format` 表面，以及空数据时的 `(none)` 提示 |
 | `test_config.py` | 23 | 设置层：默认值没变、文件、env 优先级与取值边界、坏文件会让 `main()` 在启动 TUI 前就退出、app 真的读了哪些键，以及 `cbut health` 把每个键都报出来——环境变量会被藏起来，所以一台配置过的机器也不会把这些用例变成假失败 |
@@ -275,11 +284,11 @@ python3 -m unittest discover -s scripts/tests     # Ran 528 tests ... OK
 | `install.sh` | 建 venv（有 `uv` 就用）并把 `~/.local/bin/cbut` 做成符号链接。可重复执行；目标不是符号链接时，不加 `--force` 拒绝覆盖 |
 | `scripts/cbut_db.py` | SQLite 结构，以及各入口共用的查询辅助 |
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
-| `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
+| `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
 | `scripts/tests/` | 上面那 528 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、以及体积与性能的固定度量法和基线 |
-| `systemd/` | 可选的每日同步 service + timer |
+| `systemd/` | 可选的 15 分钟同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
 
 沙箱安装可以改路径：入口用 `CBUT_SCRIPTS` 与 `CBUT_VENV`，数据用 `CBUT_DB` 与

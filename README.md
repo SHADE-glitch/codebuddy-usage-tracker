@@ -44,7 +44,7 @@
 
 - 🧰 **Eight views, one command** — a dashboard, tools, skills, agents, plugins, MCP, tokens, usage.
 - 📜 **Full history, instantly** — backfills every session already on disk.
-- 🔑 **Keyed by name — nothing ever disappears** — every tab lists what you have **ever** used *and* what is installed, keyed by name alone: a renamed, updated or removed entity keeps its history, and the same name from two owners is one merged row.
+- 🔑 **Keyed by name — nothing ever disappears** — every tab lists what you have **ever** used *and* what is installed, keyed by name alone: a renamed, updated or removed entity keeps its history, and the same name from two owners is one merged row. The TUI shows the used half by default; <kbd>a</kbd> brings the installed-but-unused rows back, per tab.
 - 🪶 **Passive & read-only** — no hook, no plugin, no CodeBuddy source changes.
 - 🗃️ **One local SQLite file** — no network, no upload, no telemetry.
 - ⚡ **Fast incremental sync** — ~5 s to index ~300 sessions / ~420 MB; only new bytes after that.
@@ -62,6 +62,8 @@ CodeBuddy already **writes** the raw data you need — it just never **shows** i
 - 📜 **session transcripts** in `~/.codebuddy/projects/<cwd>/<session>.jsonl`
   (every tool call is a `function_call` record with name, arguments, status, timestamps);
 - 🔭 **OpenTelemetry spans** in `~/.codebuddy/traces/<pid>/trace_*.jsonl`
+, plus the whole-trace `trace_<id>.json` written when a trace
+  completes
   (`function` / `agent` / `generation` spans);
 
 …yet only exposes session-level `/cost` and `/context`. There is **no** cross-session,
@@ -125,6 +127,12 @@ count; a name that appears under two plugins is merged into one. **Plugins** cou
 invocation attributed to a plugin — its skills, agents and slash commands — so a plugin
 whose skill was used no longer reads `uses = 0`. Attribution is evidence-based: a name is
 credited to a plugin only when the plugin inventory maps that name to it.
+
+The TUI shows that union **used-only by default** — a row with 0 calls in the tab's
+window is hidden, and <kbd>a</kbd> toggles the installed-but-unused half back in,
+per tab (Tokens is usage-only and has no toggle). <kbd>/</kbd> opens a name filter
+that narrows as you type: <kbd>Enter</kbd> applies it and hands focus back to the
+table, <kbd>Esc</kbd> clears it. The Usage request log paginates — <kbd>PgDn</kbd>/<kbd>PgUp</kbd> page through it.
 
 The last column of every entity tab is **state** — the one thing that separates "still
 here" from "never left": `in use` (installed, and called **inside this tab's window**),
@@ -241,7 +249,7 @@ python3 scripts/cbut-stats.py stats
 ### 🔄 Optional: keep the index fresh without opening the TUI
 
 Two user units ship in [`systemd/`](systemd). Installing them runs
-`cbut sync --quiet` once a day — these are the same four lines `install.sh` prints at the
+`cbut sync --quiet` every 15 minutes — these are the same four lines `install.sh` prints at the
 end of a successful install:
 
 ```bash
@@ -251,9 +259,8 @@ systemctl --user daemon-reload
 systemctl --user enable --now cbut-sync.timer
 ```
 
-`Persistent=true` catches up a run missed while the machine was off, the wake-up is
-jittered by up to 15 minutes, and the service runs at `Nice=10` — so it never competes
-with your session for CPU. Check it with `systemctl --user status cbut-sync.timer`.
+`Persistent=true` catches up a run missed while the machine was off, and the
+service runs at `Nice=10` — so it never competes with your session for CPU. Check it with `systemctl --user status cbut-sync.timer`.
 
 ## 🧭 Usage
 
@@ -265,6 +272,8 @@ cbut stats               # 📊  overview of all categories
 cbut tools|skills|agents|plugins|mcp
 cbut models              # 🔢  per-model tokens: in/out/total + cache hit/miss/write
 cbut show tool Bash      # 🔍  recent calls for one entity
+cbut sessions            # 🗂  one row per session, newest first
+cbut show model <name>   # 🔍  recent responses for one model
 cbut recent              # 🕒  latest tool calls
 cbut inventory           # 📦  what is installed, used vs unused
 cbut export              # 💾  dump every table as JSON
@@ -316,7 +325,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 528 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 550 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -326,9 +335,18 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 
 | Suite | Tests | Covers |
 |---|---:|---|
-| `test_sync.py` | 137 | transcript parsing, tool classification, the route-origin column (`requestModelId` → built-in / vendor / host / endpoint), incremental vs `--full` re-sync, crash recovery, unparsed-record accounting |
-| `test_tui.py` | 127 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness |
-| `test_usage.py` | 109 | the calendar-day windows (Today / 2 / 3 / 7 / 14 / 30 days / all) and their custom-range labels, the typed date/time normalisation (24-hour display, 12-hour still accepted on input), the token totals and provider grouping, the Dashboard queries, the drill-down queries (windowed per-entity summaries, plugin use counts, a single call's full row), the schema gate, and which indexes earn their keep |
+| `test_sync.py` | 140 | transcript parsing, tool classification, the route-origin column (`requestModelId` → built-in / vendor / host / endpoint), incremental vs `--full` re-sync, crash recovery, unparsed-record accounting, the whole-run sync lock, the
+  OTel agent-span trace reader (stream and final files merge on the spanId key;
+  session link, status upgrades) |
+| `test_traces.py` | 11 | the trace reader end to end: span
+  outcomes stored once, `cli`/`ptc` declined, a
+  running placeholder upgraded and never downgraded on replay, the final file's
+  `trace.sessionId` linking what the stream could not, re-reads
+  idempotent, the full `_run` integration |
+| `test_tui.py` | 131 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness, the used-only default with the per-tab `a` toggle, the `/` name filter (Enter applies, Esc cancels), the
+  Usage request-log pagination, provider suffixes on shared model names |
+| `test_usage.py` | 113 | the calendar-day windows (Today / 2 / 3 / 7 / 14 / 30 days / all) and their custom-range labels, the typed date/time normalisation (24-hour display, 12-hour still accepted on input), the token totals and provider grouping, the Dashboard queries, the drill-down queries (windowed per-entity summaries, plugin use counts, a single call's full row), the schema gate, and which indexes earn their keep, the headless session list (window,
+  newest-first order, limit) |
 | `test_indexes.py` | 4 | the rule the two earlier index cuts relied on a hand-taken reading for: every statement the report surface really runs is captured and planned with `EXPLAIN QUERY PLAN`, and a declared index no plan names fails — plus the structural rule that caught the v9 cut, a key that is a strict prefix of a wider declared key |
 | `test_stats.py` | 33 | the headless report CLI (`cbut stats`): the overview and the per-category tables, the model/token report and the cache columns it drops on a narrow terminal, `show`/`recent`/`inventory`/`export`, `health` (schema version, settings line, unparsed accounting), the `backup`→`restore` round trip, `vacuum` (snapshot first, reclaimed bytes, rows unchanged), the generated `format` surface, and the empty-state `(none)` notice |
 | `test_config.py` | 23 | the settings layer: defaults unchanged, file, env precedence and bounds, a broken file that stops `main()` before the TUI starts, the keys the app actually reads, and every key `cbut health` reports — with the environment hidden, so a configured shell cannot turn these into false failures |
@@ -354,11 +372,11 @@ at an old number, fails the suite.
 | `install.sh` | creates the venv (`uv` when available) and symlinks `~/.local/bin/cbut`. Idempotent; refuses to replace a non-symlink unless `--force` |
 | `scripts/cbut_db.py` | SQLite schema and the query helpers every entry point shares |
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
-| `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
+| `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
 | `scripts/tests/` | the 528 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, and the size & performance baseline with the commands that produced it |
-| `systemd/` | optional daily sync service + timer |
+| `systemd/` | optional 15-minute sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
 
 Both paths are overridable for a sandboxed install: `CBUT_SCRIPTS` and `CBUT_VENV` for the

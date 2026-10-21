@@ -26,7 +26,7 @@ CLI). Three layers, in dependency order:
    Imported by the TUI, the stats CLI and the tests.
 3. `scripts/cbut-tui.py` (Textual) and `scripts/cbut-stats.py` (headless CLI).
 
-**There are two writers, not one.** `cbut sync` is the only thing that indexes transcripts, but the
+**There are two writers, not one.** `cbut sync` is the only thing that indexes the logs (transcripts and OTel traces), but the
 TUI also writes: `on_mount` runs `db.migrate()` (a read-write connection, DDL included) and its
 30-second auto-sync worker calls the same indexer the CLI does. Anything that assumes "the TUI is
 read-only" is wrong — reason about locks and migrations accordingly. The headless CLI is read-only
@@ -139,7 +139,7 @@ tool runs from a checkout, so the version only needs to move when a documented c
   A response that carries no `requestModelId` has no stored route; the panels read it as
   `builtin` through `db._PROVIDER_DISPLAY_EXPR`, so a model is not split into a `Built-in`
   and a `-` row. That is a display rule: the stored column stays NULL.
-- **Tokens is usage-only.** Every other panel lists installed ∪ ever used; a model is
+- **Tokens is usage-only.** Every other panel's query unions installed ∪ ever used; a model is
   different, because its catalogue is a package snapshot and its custom entries are route
   ids, not models. A row exists only for a (model, provider) that answered, which also means
   history survives a catalogue upgrade (`glm-5.1` leaving `product.json`). `inventory` still
@@ -152,6 +152,9 @@ tool runs from a checkout, so the version only needs to move when a documented c
   `(model, provider)` and exists only when it answered (see the Tokens rule above). A renamed, updated or removed entity keeps its history; a name
   that appears under several owners is merged into one row. Under a time window only the counts
   shrink — the list stays full. Add a new panel by name, never by a per-run surrogate id.
+  The TUI then shows that union **used-only by default**: a row with 0 calls in the tab's
+  window is hidden and `a` toggles the installed-unused half back, per tab;
+  the headless reports and `export` always print the full union.
   **`inventory` is a snapshot of what is installed right now**, rebuilt from disk in one
   transaction on every sync (`collect_inventory` → `replace_inventory`; a failed scan leaves
   the previous snapshot untouched rather than half-replacing it). So the union is not "ever
