@@ -185,11 +185,14 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- multipliers. A missing field is stored as NULL (never a fabricated 0) and is
 -- named in `missing`; `usage_available` is 0 when the response carried no usage.
 --
--- In real transcripts prompt_tokens is partitioned as
+-- In real transcripts prompt_tokens is *approximately* partitioned as
 --   prompt_tokens = prompt_cache_hit_tokens
 --                 + prompt_cache_miss_tokens
 --                 + prompt_cache_write_tokens
 -- (all three are *parts* of the input; they are never added on top of it).
+-- Measured on this machine 2026-10-21 the identity misses by 0.2% (9.38M of
+-- 4.33B): a few records carry input outside the three parts, so treat it as
+-- a sanity check, not an exact equation.
 -- cache_read/creation_input_tokens are a separate, usually-zero legacy pair and
 -- are never summed with prompt_cache_*.
 CREATE TABLE IF NOT EXISTS model_responses (
@@ -1120,6 +1123,29 @@ def q_plugins(conn, start_ts=None, end_ts=None):
         " GROUP BY n.name ORDER BY uses DESC, n.name",
         params,
     ).fetchall()
+
+
+def q_sessions(conn, limit=None, start_ts=None, end_ts=None):
+    """Recent sessions, newest first, windowed on the session's own start.
+
+    A session belongs to the day it started, so the window tests
+    `started_at` and the row still shows its real `ended_at` — a
+    session that ran past midnight is not cut in half. `tokens` is the
+    turn-metrics tokenDelta context metric (never the model prompt/completion
+    totals) and `duration_ms` sums the turn durations, so it reads as
+    time the session was actively working. Rows are keyed by session id; the
+    subagent transcripts of one session are already folded into it.
+    """
+    conds = _time_conds(start_ts, end_ts, col="started_at")
+    where = (" WHERE " + " AND ".join(c for c, _ in conds)) if conds else ""
+    sql = (
+        "SELECT session_id, project, model, started_at, ended_at, tokens,"
+        " duration_ms FROM sessions" + where + " ORDER BY started_at DESC"
+    )
+    params = [p for _, p in conds]
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return conn.execute(sql, params).fetchall()
 
 
 def q_recent(conn, limit=30):

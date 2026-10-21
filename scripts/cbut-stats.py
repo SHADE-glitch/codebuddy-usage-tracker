@@ -291,6 +291,26 @@ def cmd_plugins(conn, args):
 
 
 def cmd_show(conn, args):
+    if args.kind == "model":
+        # The model drill-down is a response list, not a call list: the row
+        # key is the model name and the rows are its (model, provider)
+        # responses, both routes shown so a name served two ways is not
+        # silently merged.
+        found = db.q_model_responses(conn, model=args.name, limit=args.limit)
+        if not found:
+            print(f"no recorded responses for model {args.name!r}")
+            return
+        print(f"model {args.name} — {len(found)} recent responses")
+        print(table(["when", "provider", "in", "out", "total", "cache hit",
+                     "cache miss", "cache write", "session"],
+                    [[ts(r["ts"]), db.provider_label(r["provider"]),
+                      fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
+                      fmt_n(r["total_tokens"]),
+                      fmt_n(r["prompt_cache_hit_tokens"]),
+                      fmt_n(r["prompt_cache_miss_tokens"]),
+                      fmt_n(r["prompt_cache_write_tokens"]),
+                      (r["session_id"] or "")[:8]] for r in found]))
+        return
     rows = _rows(db.q_history(conn, args.kind, args.name, args.limit),
                  ["ts", "project", "session_id", "status", "duration_ms"])
     if not rows:
@@ -299,6 +319,17 @@ def cmd_show(conn, args):
     print(f"{args.kind} {args.name} — {len(rows)} recent calls")
     print(table(["when", "project", "session", "status", "dur"],
                 [[ts(r[0]), r[1] or "-", (r[2] or "")[:8], r[3] or "-", ms(r[4])] for r in rows]))
+
+
+def cmd_sessions(conn, args):
+    """Recent sessions, newest first. tokens is the context metric."""
+    rows = db.q_sessions(conn, limit=args.limit)
+    print(table_or(
+        ["started", "ended", "project", "model", "ctx tok", "active"],
+        [[ts(r["started_at"]), ts(r["ended_at"]), r["project"] or "-",
+          r["model"] or "-", fmt_n(r["tokens"]), ms(r["duration_ms"])]
+         for r in rows],
+        empty="  (no sessions indexed yet)"))
 
 
 def cmd_recent(conn, args):
@@ -590,8 +621,8 @@ COMMANDS = {
     "stats": cmd_stats, "tools": cmd_tools, "skills": cmd_skills,
     "agents": cmd_agents, "mcp": cmd_mcp, "plugins": cmd_plugins,
     "models": cmd_models,
-    "show": cmd_show, "recent": cmd_recent, "inventory": cmd_inventory,
-    "export": cmd_export, "health": cmd_health,
+    "show": cmd_show, "recent": cmd_recent, "sessions": cmd_sessions,
+    "inventory": cmd_inventory, "export": cmd_export, "health": cmd_health,
 }
 
 
@@ -603,10 +634,11 @@ def main(argv=None) -> int:
     for name in ("stats", "health", "plugins", "inventory", "export"):
         p = sub.add_parser(name)
         p.add_argument("--kind", default=None, help="inventory only: filter by kind")
-    for name in ("tools", "skills", "agents", "mcp", "recent", "models"):
+    for name in ("tools", "skills", "agents", "mcp", "recent", "models",
+                 "sessions"):
         sub.add_parser(name).add_argument("--limit", type=int, default=30)
     sp = sub.add_parser("show")
-    sp.add_argument("kind", choices=["tool", "skill", "agent", "mcp"])
+    sp.add_argument("kind", choices=["tool", "skill", "agent", "mcp", "model"])
     sp.add_argument("name")
     sp.add_argument("--limit", type=int, default=50)
     sub.add_parser("backup", help="snapshot the database before a risky step")

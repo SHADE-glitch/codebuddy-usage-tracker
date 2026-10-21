@@ -1797,5 +1797,67 @@ class DrilldownQueryTest(unittest.TestCase):
         self.assertEqual(row["total_tokens_source"], "derived")
 
 
+class SessionsQueryTest(unittest.TestCase):
+    """q_sessions windows on the session's own start and sorts newest first.
+
+    The other q_* queries key by NAME and only shrink counts under a
+    window; sessions is row-per-id, so a window here really drops rows.
+    The window tests started_at only: a session that ran past the
+    window's end still shows its real ended_at and is never cut in half.
+    """
+
+    NOW = 2_000_000_000_000
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.p = Path(self.tmp.name) / "s.db"
+        self.conn = db.open_db(self.p)
+        db.ensure_schema(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _session(self, sid, start, tokens=10):
+        self.conn.execute(
+            "INSERT INTO sessions(session_id, project, started_at, ended_at,"
+            " model, tokens, duration_ms)"
+            " VALUES(?, '/p', ?, ?, 'm', ?, 1000)",
+            (sid, start, start + 5 * HOUR, tokens))
+
+    def test_rows_are_sorted_newest_first_by_start(self):
+        self._session("old", self.NOW - 100 * HOUR)
+        self._session("new", self.NOW - 1 * HOUR)
+        self._session("mid", self.NOW - 24 * HOUR)
+        self.conn.commit()
+        rows = db.q_sessions(self.conn)
+        self.assertEqual([r["session_id"] for r in rows],
+                         ["new", "mid", "old"])
+
+    def test_a_window_keeps_whole_sessions_that_started_inside(self):
+        # started inside, ran past midnight of the window: kept whole.
+        self._session("spanning", self.NOW - 1 * HOUR)
+        # started outside but ended inside: dropped, not cut in half.
+        self._session("early", self.NOW - 48 * HOUR)
+        self.conn.commit()
+        rows = db.q_sessions(self.conn, start_ts=self.NOW - 24 * HOUR,
+                             end_ts=self.NOW)
+        self.assertEqual([r["session_id"] for r in rows], ["spanning"])
+        self.assertEqual(rows[0]["ended_at"], self.NOW - 1 * HOUR + 5 * HOUR)
+
+    def test_the_window_is_half_open(self):
+        self._session("at_start", self.NOW - 24 * HOUR)
+        self._session("at_end", self.NOW)
+        self.conn.commit()
+        rows = db.q_sessions(self.conn, start_ts=self.NOW - 24 * HOUR,
+                             end_ts=self.NOW)
+        self.assertEqual([r["session_id"] for r in rows], ["at_start"])
+
+    def test_limit_keeps_the_newest_rows(self):
+        for i, h in enumerate((30, 20, 10)):
+            self._session("s%d" % i, self.NOW - h * HOUR)
+        self.conn.commit()
+        rows = db.q_sessions(self.conn, limit=2)
+        self.assertEqual([r["session_id"] for r in rows], ["s2", "s1"])
 if __name__ == "__main__":
     unittest.main()
