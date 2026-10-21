@@ -11,6 +11,8 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -2330,6 +2332,79 @@ class InventorySnapshotTest(unittest.TestCase):
         for _ in range(3):
             self.scan()
         self.assertEqual(self.names("skill"), {"stable"})
+
+
+class SyncLockTest(unittest.TestCase):
+    """Two syncs at once must not double the accumulator tables.
+    'sessions' adds its tokenDelta again and 'unparsed' bumps its counts
+    again on every pass -- nothing in their rows identifies a repeat. The
+    whole-run flock serializes writers; these tests pin that the sidecar
+    exists beside the database, that a second writer genuinely waits, and
+    that the serialized path counts one turn once.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "t.db"
+        self.root = Path(self.tmp.name) / "cb"
+        (self.root / "projects" / "p").mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+    def _run(self):
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = self.root
+        try:
+            return sync.run(quiet=True, db_path=self.db_path)
+        finally:
+            sync.db.CODEBUDDY_DIR = old
+
+    def _write_turn(self):
+        rec = {"type": "turn-metrics", "timestamp": 1000, "tokenDelta": 100,
+               "durationMs": 1000, "cwd": "/p",
+               "_meta": {"baggage": "codebuddy.session_id=S"}}
+        (self.root / "projects" / "p" / "s.jsonl").write_text(
+            json.dumps(rec) + "\n", encoding="utf-8")
+    def test_the_sidecar_lives_beside_the_database(self):
+        fd = sync._acquire_sync_lock(self.db_path)
+        try:
+            self.assertIsNotNone(fd)
+            self.assertTrue(Path(str(self.db_path) + ".lock").exists(),
+                            "the lock must be a sidecar beside the db")
+        finally:
+            sync._release_sync_lock(fd)
+        again = sync._acquire_sync_lock(self.db_path)
+        self.assertIsNotNone(again, "a released lock must be acquirable")
+        sync._release_sync_lock(again)
+    def test_a_second_writer_blocks_until_the_first_releases(self):
+        fd = sync._acquire_sync_lock(self.db_path)
+        got = []
+        worker = threading.Thread(
+            target=lambda: got.append(sync._acquire_sync_lock(self.db_path)))
+        worker.start()
+        try:
+            time.sleep(0.3)
+            self.assertEqual(got, [],
+                             "the second writer must wait while the lock is held")
+        finally:
+            sync._release_sync_lock(fd)
+        worker.join(timeout=5)
+        self.assertEqual(len(got), 1, "the waiter must acquire after release")
+        sync._release_sync_lock(got[0])
+    def test_serialized_runs_count_one_turn_once(self):
+        self._write_turn()
+        self._run()
+        self.assertTrue(Path(str(self.db_path) + ".lock").exists(),
+                        "run() must hold the lock for the whole pass")
+        self._run()
+        conn = db.open_db(self.db_path)
+        try:
+            row = conn.execute("SELECT tokens FROM sessions"
+                               " WHERE session_id='S'").fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row["tokens"], 100,
+                         "two serialized syncs must count the turn once")
 
 
 if __name__ == "__main__":

@@ -93,9 +93,12 @@ FORBIDDEN_ROOTS = {
 # rich 15.0.0: no socket, ssl, http or urllib import anywhere in the package. The
 # TUI already imports textual, which cannot work without rich installed.
 ALLOWED_ROOTS = {
-    "argparse", "datetime", "importlib", "json", "os", "pathlib", "re",
+    "argparse", "datetime", "fcntl", "importlib", "json", "os", "pathlib", "re",
     "shutil", "sqlite3", "sys", "time", "tomllib", "typing", "cbut_db", "__future__",
 }
+# `fcntl` (cbut-sync.py only): the whole-run sync lock. A C builtin with
+# no import closure of its own — no module, network or process reach.
+
 ALLOWED_BY_FILE = {"cbut-tui.py": ALLOWED_ROOTS | {"textual", "rich"}}
 
 # Sentinel argument *values*. Each sits in a slot the parser genuinely has to

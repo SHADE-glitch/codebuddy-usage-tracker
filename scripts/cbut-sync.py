@@ -3,8 +3,16 @@
 
 Passive reader: walks ``~/.codebuddy/projects/**/*.jsonl`` (session
 transcripts), classifies every tool call into one of the five tracked
-categories, and upserts it into SQLite. Incremental: each file remembers how
-many bytes were already parsed, so re-runs only read the tail.
+categories, and upserts it into SQLite. It also walks
+``/.codebuddy/traces/`` for the OTel agent spans the
+transcripts never carry (the internal agents — ``autoModeClassifier``,
+``summaryGenerator``, ...), recording them into ``agent_usage`` with
+``source='span'``. Incremental: each file remembers how many bytes were
+already parsed, so re-runs only read the tail. The whole run holds an
+exclusive lock on a sidecar ``.lock`` file, so two syncs (a TUI worker and
+the systemd timer, say) serialize instead of reading the same appended bytes
+twice — the accumulator tables (``sessions``, ``unparsed``) have no dedup key
+and would silently double.
 
     python3 scripts/cbut-sync.py            # incremental
     python3 scripts/cbut-sync.py --full     # wipe tracker tables, re-index all
@@ -16,12 +24,14 @@ Standard library only.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
 import sqlite3
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -57,7 +67,15 @@ DIR_PROJECTS = "projects"
 DIR_SKILLS = "skills"
 DIR_AGENTS = "agents"
 DIR_PLUGINS = "plugins"
+DIR_TRACES = "traces"
 TRANSCRIPT_GLOB = "**/*.jsonl"
+# The OTel tree: `traces/<pid>/trace_<id>.jsonl` is the live span stream
+# (append-only, and no session id anywhere in it); `traces/<pid>/trace_<id>.json`
+# is the whole trace written once when the trace *completes*, and only that file
+# carries `trace.sessionId`. The two describe the same spans — a spanId is
+# globally unique, so the primary key dedups whichever is read first.
+TRACE_STREAM_GLOB = "*/trace_*.jsonl"
+TRACE_FINAL_GLOB = "*/trace_*.json"
 # The manifest that makes a directory a skill. It is joined onto each entry
 # rather than globbed: ``**/SKILL.md`` does not descend into a *symlinked*
 # directory, and ~/.codebuddy/skills is symlinks, so a recursive glob saw none
@@ -78,7 +96,37 @@ PLUGIN_SUBDIRS = ((DIR_SKILLS, "skill"), (DIR_AGENTS, "agent"),
 
 # A transcript is newline-delimited JSON. The same separator decides where an
 # incremental offset is allowed to resume: one byte mid-line is a rewritten file.
+# The trace stream is framed the same way and is read through the same reader.
 TRANSCRIPT_LINE_SEP = b"\n"
+
+# --- trace span registry (the OTel tree) ------------------------------------
+#
+# Only agent spans are indexed: the internal agents the transcripts never
+# carry. The stream also holds tool and generation spans whose calls the
+# transcripts already count — indexing those here would double every call.
+TRACE_STREAM_TYPES = frozenset({"span_start", "span_end"})
+# Stream records this build understands and declines to index: the trace-level
+# bookkeeping carries no per-span data. Claimed so the unparsed count stays a
+# format-drift signal instead of padding itself with a permanent total.
+TRACE_DECLINED_TYPES = frozenset({"trace_start", "trace_update", "trace_end"})
+# Top-level keys of the whole-trace .json (written once at trace end), and
+# the key that carries a span object in a stream record.
+TRACE_FINAL_KEYS = frozenset({"trace", "spans", "span"})
+# Span fields read beyond the ones already registered for transcripts
+# (`type`, `name`, `status`). `error` is deliberately
+# unread: it is free text, and the metadata-only rule forbids storing it.
+# `parentId` is unread on purpose: the runtime's own roots are told
+# apart by NAME (internal agents also appear as top-level traces, so the
+# parent pointer is not the discriminator). `endedAt` is unread: the
+# row keeps the span's start and its reported duration.
+TRACE_SPAN_FIELDS = frozenset({"spanId", "agentName", "startedAt", "duration"})
+# Agent spans named here are the runtime's own roots, not agent invocations:
+# `cli` is the session's root span (the CLI loop itself) and `ptc`
+# is the REPL tool runtime. Counting them would put a permanent row on the
+# Agents tab for something that runs for every session by construction.
+NON_AGENT_SPANS = frozenset({"cli", "ptc"})
+# Span status -> the call-outcome vocabulary the panels already speak.
+SPAN_STATUS = {"ok": "completed", "error": "incomplete"}
 
 # The builtin catalogue, read from the installed CodeBuddy package rather than
 # retyped here. NOT under ~/.codebuddy — it ships inside the npm package, at
@@ -316,7 +364,8 @@ CODEBUDDY_FIELDS = (RECORD_FIELDS | PROVIDER_FIELDS | BAGGAGE_FIELDS
                     | CONTENT_BLOCK_FIELDS | TOOL_RESULT_FIELDS
                     | TOOL_ARG_FIELDS
                     | INVENTORY_JSON_FIELDS | RAW_USAGE_FIELDS
-                    | NESTED_USAGE_FIELDS)
+                    | NESTED_USAGE_FIELDS
+                    | TRACE_SPAN_FIELDS | TRACE_FINAL_KEYS)
 
 
 def _session_id(rec) -> str | None:
@@ -756,26 +805,23 @@ def _bump(counts: dict, key: str, n: int = 1) -> None:
     counts[key] = counts.get(key, 0) + n
 
 
-def index_file(conn: sqlite3.Connection, path: Path, offset: int,
-               skill_owner: dict, agent_owner: dict, command_owner: dict,
-               unparsed=None, model_hosts=None) -> int:
-    """Index appended bytes of one transcript. Returns the new offset.
+def _read_incremental(path: Path, offset: int) -> tuple[list, int, int]:
+    """``(records, consumed, bad_lines)`` for the newline-framed tail of a file.
 
     Only *fully-consumed* bytes are reported back to the caller, so the tail
     of a partially-written line is retried next run instead of being skipped
     forever. A final line that lacks a trailing newline but already parses as
-    complete JSON is consumed immediately.
-
-    This never touches ``sessions``: one session spans its main transcript
-    *plus* every subagent transcript, so a single file's contribution to the
-    accumulated ``turn-metrics`` totals cannot be cleared in isolation. A stale
-    offset is handled by a whole-DB rebuild in :func:`run` instead.
+    complete JSON is consumed immediately. A *complete* line that is not JSON
+    is counted in ``bad_lines``; the tail of a half-written line is not — it
+    stays unconsumed and is retried. Shared by the transcript reader and the
+    trace-stream reader: two copies of the framing would eventually disagree
+    about where an offset is allowed to resume.
     """
     with open(path, "rb") as fh:
         fh.seek(offset)
         chunk = fh.read()
     if not chunk:
-        return offset
+        return [], offset, 0
 
     # Everything up to and including the last newline is complete lines; the
     # remainder is only consumed if it is a complete JSON record on its own.
@@ -796,12 +842,8 @@ def index_file(conn: sqlite3.Connection, path: Path, offset: int,
         try:
             recs.append(json.loads(raw))
         except ValueError:
-            # A *complete* line that is not JSON. The tail of a half-written
-            # line is not counted here — it stays unconsumed and is retried.
             bad_lines += 1
             continue
-    if bad_lines and unparsed is not None:
-        _bump(unparsed, UNPARSEABLE_LINE, bad_lines)
     consumed = offset + len(complete)
     if tail.strip():
         try:
@@ -809,11 +851,130 @@ def index_file(conn: sqlite3.Connection, path: Path, offset: int,
             consumed += len(tail)          # the final line was complete
         except ValueError:
             pass                           # partial line -> retry next run
+    return recs, consumed, bad_lines
 
+
+def index_file(conn: sqlite3.Connection, path: Path, offset: int,
+               skill_owner: dict, agent_owner: dict, command_owner: dict,
+               unparsed=None, model_hosts=None) -> int:
+    """Index appended bytes of one transcript. Returns the new offset.
+
+    This never touches ``sessions``: one session spans its main transcript
+    *plus* every subagent transcript, so a single file's contribution to the
+    accumulated ``turn-metrics`` totals cannot be cleared in isolation. A stale
+    offset is handled by a whole-DB rebuild in :func:`run` instead.
+    """
+    recs, consumed, bad_lines = _read_incremental(path, offset)
+    if bad_lines and unparsed is not None:
+        _bump(unparsed, UNPARSEABLE_LINE, bad_lines)
     for rec in recs:
         _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
                        unparsed, model_hosts)
     return consumed
+
+
+def _iso_ms(value) -> int | None:
+    """An ISO-8601 stamp (`2026-10-16T08:21:14.179Z`) -> epoch ms, else None."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return int(datetime.fromisoformat(value).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def _record_agent_span(conn, span, session_id) -> str:
+    """Persist one agent span into ``agent_usage``; the verdict as a string.
+
+    `"stored"` when a row was written, `"declined"` when the span
+    is not an agent invocation (a generation/tool span, or one of the runtime
+    roots in NON_AGENT_SPANS), `"invalid"` when an agent span carries a
+    name no table can render.
+
+    The stream carries ``span_start`` (no status, no duration yet) and
+    ``span_end`` (both). A span is keyed by its ``spanId``, so the stream and
+    the whole-trace ``.json`` — which describe the same spans — dedup onto one
+    row regardless of which is read first. Status is upgraded, never
+    downgraded: a placeholder from a ``span_start`` must not overwrite the
+    verdict an earlier read took from a ``span_end`` or from the ``.json``.
+    The session id comes only from the ``.json`` (the stream carries none)
+    and is COALESCEd in for the same reason.
+    """
+    if not isinstance(span, dict) or span.get("type") != "agent":
+        return "declined"
+    name = span.get("agentName") or span.get("name")
+    if name in NON_AGENT_SPANS:
+        return "declined"
+    call_id = span.get("spanId")
+    if not valid_tool_name(name) or not call_id:
+        return "invalid"
+    conn.execute(
+        "INSERT INTO agent_usage"
+        "(call_id, agent_type, kind, source, session_id, project, ts,"
+        " status, duration_ms)"
+        " VALUES(?,?,?,'span',?,NULL,?,?,?)"
+        " ON CONFLICT(call_id) DO UPDATE SET"
+        "   agent_type = excluded.agent_type,"
+        "   kind = excluded.kind,"
+        "   session_id = COALESCE(excluded.session_id, session_id),"
+        "   ts = COALESCE(excluded.ts, ts),"
+        "   status = CASE WHEN excluded.status IS NULL"
+        "             THEN agent_usage.status ELSE excluded.status END,"
+        "   duration_ms = COALESCE(excluded.duration_ms, duration_ms)",
+        (call_id, name, BUILTIN_AGENTS.get(name, "active"), session_id,
+         _iso_ms(span.get("startedAt")), SPAN_STATUS.get(span.get("status")),
+         span.get("duration")),
+    )
+    return "stored"
+
+
+def index_trace_stream(conn: sqlite3.Connection, path: Path, offset: int,
+                       unparsed=None) -> int:
+    """Index appended span records of one trace stream. Returns the new offset.
+
+    Framing is the transcript's, so the same incremental reader does the tail
+    handling. Only agent spans are indexed (see the registry above).
+    """
+    recs, consumed, bad_lines = _read_incremental(path, offset)
+    if bad_lines and unparsed is not None:
+        _bump(unparsed, UNPARSEABLE_LINE, bad_lines)
+    for rec in recs:
+        rtype = rec.get("type")
+        if rtype in TRACE_STREAM_TYPES:
+            verdict = _record_agent_span(conn, rec.get("span"), None)
+            if verdict == "invalid" and unparsed is not None:
+                _bump(unparsed, INVALID_TOOL_NAME)
+        elif rtype in TRACE_DECLINED_TYPES:
+            pass                       # trace-level bookkeeping, claimed
+        elif unparsed is not None:
+            _bump(unparsed, f"type:{rtype}" if rtype else "type:<missing>")
+    return consumed
+
+
+def index_final_trace(conn: sqlite3.Connection, path: Path,
+                      unparsed=None) -> int:
+    """Index the whole-trace ``.json``; returns the number of spans stored.
+
+    Written once when the trace completes, and the only place a trace's
+    ``sessionId`` exists — the session link the stream cannot provide. Read
+    whole on every sync: keyed by spanId, so the re-read is idempotent and no
+    sync_state row is needed. The file is written whole rather than appended
+    to, so treating it as a stream would trip the rewrite reset on every
+    touched trace and force a full rebuild each time.
+    """
+    data = _load_json(path)
+    if not isinstance(data, dict):
+        if unparsed is not None:
+            _bump(unparsed, UNPARSEABLE_LINE)
+        return 0
+    trace = data.get("trace")
+    sid = trace.get("sessionId") if isinstance(trace, dict) else None
+    spans = data.get("spans")
+    n = 0
+    for span in spans if isinstance(spans, list) else []:
+        if _record_agent_span(conn, span, sid) == "stored":
+            n += 1
+    return n
 
 
 def _nested_cache_hit(raw):
@@ -1349,6 +1510,15 @@ def format_doc(tools=None, agents=None, models=None, commands=None,
         row("Record types a handler claims", HANDLED_RECORD_TYPES),
         row("Record types treated as a model response", MODEL_RESPONSE_TYPES),
         row("Transcript record fields", RECORD_FIELDS),
+        row("`trace` stream record types claimed by span handlers",
+            TRACE_STREAM_TYPES),
+        row("`trace` stream record types declined (trace envelope)",
+            TRACE_DECLINED_TYPES),
+        row("`trace` final-file keys", TRACE_FINAL_KEYS),
+        row("`trace` span fields", TRACE_SPAN_FIELDS),
+        row("agent-span roots never stored (infrastructure)",
+            NON_AGENT_SPANS),
+        pairs("span outcome → status", sorted(SPAN_STATUS.items())),
         row("`providerData` fields", PROVIDER_FIELDS),
         row("`providerData.rawUsage` fields", RAW_USAGE_FIELDS),
         row("`rawUsage` nested cache path (fallback for the hit above)",
@@ -1380,8 +1550,13 @@ def format_doc(tools=None, agents=None, models=None, commands=None,
         "- **Markers parsed out of text**: "
         f"`{CMD_RE.pattern}` · `{BAGGAGE_SID_RE.pattern}`\n",
         "- **On-disk layout, relative to `~/.codebuddy`**:\n"
-        f"  - `{DIR_PROJECTS}` / `{TRANSCRIPT_GLOB}` — transcripts, the only "
-        "ingested log tree\n"
+        f"  - `{DIR_PROJECTS}` / `{TRANSCRIPT_GLOB}` — transcripts, the usage "
+        "record\n"
+        f"  - `{DIR_TRACES}` / `{TRACE_STREAM_GLOB}` — agent-span streams, read "
+        "incrementally like transcripts\n"
+        f"  - `{TRACE_FINAL_GLOB}` — the whole trace written at completion, the "
+        "only record carrying `trace.sessionId`: a stream-only span stays "
+        "session-less\n"
         f"  - `{DIR_SKILLS}` — a direct child holding `{SKILL_MANIFEST}` is a "
         f"skill; one category level below is still read, as is `{SKILL_MANIFEST_GLOB}` "
         "for anything deeper. Symlinked entries are followed exactly one level: "
@@ -1459,15 +1634,52 @@ def _needs_reset(path: Path, st, row) -> bool:
     )
 
 
-def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
-    conn = db.open_db(db_path)
+def _acquire_sync_lock(db_path) -> int | None:
+    """Hold an exclusive flock for the whole run; None when fcntl is not there.
+
+    Two writers indexing the same appended bytes double the accumulator
+    tables — ``sessions`` adds its tokenDelta again and ``unparsed`` bumps its
+    counts again, while every keyed table dedups by primary key. A blocking
+    flock serializes the syncs: the second waits, then re-reads from the
+    recorded offsets and finds nothing new. The lock is a sidecar
+    ``<db>.lock`` beside the database, never a file under ~/.codebuddy.
+    """
     try:
-        return _run(conn, full=full, quiet=quiet)
+        db_path = Path(db_path)
+        db.ensure_dir(db_path)
+        fd = os.open(str(db_path) + ".lock", os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)     # blocks: syncs serialize
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _release_sync_lock(fd) -> None:
+    if fd is None:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
-        # The TUI calls this from a worker thread every 30 seconds, so an
-        # exception that skipped the close would leak a read-write connection on
-        # every failed poll rather than once per process.
-        conn.close()
+        os.close(fd)
+
+
+def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
+    lock_fd = _acquire_sync_lock(db_path)
+    try:
+        conn = db.open_db(db_path)
+        try:
+            return _run(conn, full=full, quiet=quiet)
+        finally:
+            # The TUI calls this from a worker thread every 30 seconds, so an
+            # exception that skipped the close would leak a read-write
+            # connection on every failed poll rather than once per process.
+            conn.close()
+    finally:
+        _release_sync_lock(lock_fd)
 
 
 def _run(conn, full: bool = False, quiet: bool = False) -> dict:
@@ -1485,7 +1697,13 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
     model_hosts = load_model_hosts(db.CODEBUDDY_DIR)
 
     projects = db.CODEBUDDY_DIR / DIR_PROJECTS
-    files = sorted(projects.glob(TRANSCRIPT_GLOB)) if projects.is_dir() else []
+    files = ([(p, "transcript") for p in sorted(projects.glob(TRANSCRIPT_GLOB))]
+             if projects.is_dir() else [])
+    traces = db.CODEBUDDY_DIR / DIR_TRACES
+    if traces.is_dir():
+        # The live span streams go through the same sync_state machinery as
+        # the transcripts: append-only, offset-resumable, rewrite-detectable.
+        files += [(p, "trace") for p in sorted(traces.glob(TRACE_STREAM_GLOB))]
 
     # Pre-pass: if ANY file's stored offset is stale (shrunk, rewritten, or no
     # longer on a line boundary), rebuild the whole DB. One session spans its
@@ -1493,7 +1711,7 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
     # contribution cannot be subtracted in isolation; clearing sync_state +
     # sessions makes the main loop re-read every file from zero exactly once, so
     # the accumulated turn-metrics totals are rebuilt (never lost or doubled).
-    for path in files:
+    for path, _kind in files:
         try:
             st = path.stat()
         except OSError:
@@ -1512,9 +1730,9 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
             conn.commit()
             break
 
-    n_files = n_records = n_unparsed = 0
+    n_files = n_records = n_unparsed = n_finals = 0
     unparsed = {}
-    for path in files:
+    for path, kind in files:
         try:
             st = path.stat()
         except OSError:
@@ -1535,9 +1753,12 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
             # cleared sync_state, so no row survives to this point).
         unparsed.clear()
         try:
-            new_offset = index_file(conn, path, offset,
-                                    skill_owner, agent_owner, command_owner,
-                                    unparsed, model_hosts)
+            if kind == "trace":
+                new_offset = index_trace_stream(conn, path, offset, unparsed)
+            else:
+                new_offset = index_file(conn, path, offset,
+                                        skill_owner, agent_owner, command_owner,
+                                        unparsed, model_hosts)
         except OSError as exc:
             # One unreadable transcript must not abort the whole index — but it is
             # counted rather than skipped quietly, and no offset is stored, so the
@@ -1563,6 +1784,18 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
         n_files += 1
         conn.commit()
 
+    # The whole-trace files: re-read whole on every run (idempotent on
+    # spanId). They are written once at trace end, not appended to, so they
+    # never enter sync_state and never trip the rewrite reset.
+    final_unparsed = {}
+    if traces.is_dir():
+        for path in sorted(traces.glob(TRACE_FINAL_GLOB)):
+            n_finals += index_final_trace(conn, path, final_unparsed)
+        conn.commit()
+    for reason, n in final_unparsed.items():
+        db.note_unparsed(conn, reason, n)
+        n_unparsed += n
+
     n_records = backfill_plugin_usage(conn)
     stats = {
         "files_indexed": n_files,
@@ -1578,6 +1811,10 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
         "tool_calls": conn.execute("SELECT COUNT(*) FROM tool_calls").fetchone()[0],
         "skills": conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0],
         "agents": conn.execute("SELECT COUNT(*) FROM agent_usage").fetchone()[0],
+        "agent_spans": conn.execute(
+            "SELECT COUNT(*) FROM agent_usage WHERE source='span'"
+        ).fetchone()[0],
+        "trace_finals": n_finals,
         "mcp": conn.execute("SELECT COUNT(*) FROM mcp_usage").fetchone()[0],
         "sessions": conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0],
         "commands": conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0],
@@ -1604,8 +1841,9 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
     if not quiet:
         print(f"indexed {stats['files_indexed']}/{stats['files_total']} files")
         print(f"  tool_calls={stats['tool_calls']}  skills={stats['skills']}  "
-              f"agents={stats['agents']}  mcp={stats['mcp']}  "
-              f"sessions={stats['sessions']}  commands={stats['commands']}")
+              f"agents={stats['agents']} ({stats['agent_spans']} span)  "
+              f"mcp={stats['mcp']}  sessions={stats['sessions']}  "
+              f"commands={stats['commands']}")
         print(f"  model_responses={stats['model_responses']} "
               f"(with usage {stats['model_responses_with_usage']})  "
               f"prompt_tokens={stats['model_prompt_tokens']:,}  "

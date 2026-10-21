@@ -15,6 +15,14 @@ cbut format --write      # refresh the block in this file after changing the reg
 - **Record types a handler claims**: `ai-title`, `function_call`, `function_call_result`, `message`, `model-usage`, `session-meta`, `turn-metrics`
 - **Record types treated as a model response**: `function_call`, `message`, `model-usage`
 - **Transcript record fields**: `_meta`, `arguments`, `callId`, `content`, `cwd`, `durationMs`, `id`, `name`, `output`, `providerData`, `sessionId`, `status`, `timestamp`, `tokenDelta`, `type`
+- **`trace` stream record types claimed by span handlers**: `span_end`, `span_start`
+- **`trace` stream record types declined (trace envelope)**: `trace_end`, `trace_start`, `trace_update`
+- **`trace` final-file keys**: `span`, `spans`, `trace`
+- **`trace` span fields**: `agentName`, `duration`, `spanId`, `startedAt`
+- **agent-span roots never stored (infrastructure)**: `cli`, `ptc`
+- **span outcome → status**:
+  - `error` → `incomplete`
+  - `ok` → `completed`
 - **`providerData` fields**: `conversationRequestId`, `messageId`, `model`, `rawUsage`, `requestModelId`, `toolResult`
 - **`providerData.rawUsage` fields**: `cache_creation_input_tokens`, `cache_read_input_tokens`, `completion_tokens`, `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, `prompt_cache_write_tokens`, `prompt_tokens`, `total_tokens`
 - **`rawUsage` nested cache path (fallback for the hit above)**: `cached_tokens`, `prompt_tokens_details`
@@ -30,7 +38,9 @@ cbut format --write      # refresh the block in this file after changing the reg
 - **Builtin catalogue source**: fallback constants (product.json unresolved) — the installed `codebuddy` package's `product.json`, found by resolving the executable on `PATH` and walking up; `CBUT_PRODUCT_JSON` overrides the search. Membership follows the package, so a name it drops stops being inventoried; `kind` (active/internal) stays this tool's taxonomy
 - **Markers parsed out of text**: `<command-name>\s*/?([^<\s]+)\s*</command-name>` · `codebuddy\.session_id=([^,\s]+)`
 - **On-disk layout, relative to `~/.codebuddy`**:
-  - `projects` / `**/*.jsonl` — transcripts, the only ingested log tree
+  - `projects` / `**/*.jsonl` — transcripts, the usage record
+  - `traces` / `*/trace_*.jsonl` — agent-span streams, read incrementally like transcripts
+  - `*/trace_*.json` — the whole trace written at completion, the only record carrying `trace.sessionId`: a stream-only span stays session-less
   - `skills` — a direct child holding `SKILL.md` is a skill; one category level below is still read, as is `**/SKILL.md` for anything deeper. Symlinked entries are followed exactly one level: `glob("**")` does not cross a symlink, which is how the whole symlinked tree went missing at once
   - `agents` / `*.md` — user agents
   - `mcp.json` — MCP servers
