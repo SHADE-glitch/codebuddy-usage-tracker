@@ -1281,3 +1281,32 @@ Cost     Existing databases keep the four malformed rows already indexed; they r
          in Tokens as available models with 0 requests because `product.json` lists them as
          models; that is the host's own catalogue, not a claim that each tier served a response.
 Commit   8dc91c8
+
+### D-054 · 2026-10-21 · fix
+
+Symptom  Selecting **All time** on the Tokens tab raised `DuplicateKey`: the row key was the model
+         name alone, and a response whose `requestModelId` was absent produced a second row with
+         the same name as the built-in one. The list also carried rows nobody had called —
+         `default-model` / `fast-model` route tiers from `product.json`, and `ark-code-latest` /
+         `kilo-auto/free` route ids from `models.json` whose answers are recorded under the real
+         model (`deepseek-v4-1-flash`). D-053's Cost said those rows were the catalogue; they were
+         not measurements.
+Change   Tokens is usage-only and keyed by `(model, provider)`: one row per pair that answered,
+         no catalogue union. `models.json` is no longer inventoried as models; it is still read by
+         `load_model_hosts` for the route label. A stored NULL provider is displayed as `Built-in`
+         (`_PROVIDER_DISPLAY_EXPR`) in Tokens, Usage and the drill-down, without rewriting the
+         column. The drill-down (`q_model_responses` / `q_model_summary`, `ModelResponsesScreen`)
+         filters on the same pair, so two routes serving one name open different screens. The
+         Tokens row key is built from the raw columns (`key_columns`), not from the display cells.
+Evidence L0 2026-10-21: `.venv/bin/python -m unittest discover -s scripts/tests` — 523 tests, OK;
+         each new case fails when its half is undone (duplicate-key/all-time, usage-only list,
+         catalogue turnover keeping history, provider merge, drill-down scope). L1 the same day
+         against this machine's own database: All time returns 11 rows with 11 unique keys (was a
+         crash), the first Tokens row opens 200 Volcano Ark responses, and no inventory-only model
+         appears. `cbut inventory` still lists the built-in catalogue.
+Cost     An installed-but-unused model no longer appears in Tokens (the previous table's feature,
+         withdrawn by request); `cbut inventory --kind model` is where that catalogue still lives.
+         The NULL-to-`Built-in` merge is a display rule — the `provider` column keeps its NULL, and
+         `q_call_detail` still shows it as unknown for that one call. The catalogue snapshot was
+         refreshed in `3e08c20`, a separate chore for the installed CLI's tool rename.
+Commit   87e985e
