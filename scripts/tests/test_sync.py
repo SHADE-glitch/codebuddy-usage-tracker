@@ -207,6 +207,33 @@ class IndexerTest(unittest.TestCase):
         self.assertIsNotNone(row, "the rejected name was not counted")
         self.assertEqual(row[0], 1)
 
+    def test_a_result_stamped_before_its_call_has_no_duration(self):
+        """The two records disagree about their order, so there is no duration.
+
+        CodeBuddy wrote the result record first for 2,540 of this machine's
+        45,262 calls (2026-10-21), and `result.ts - call.ts` turned that into a
+        negative duration that every AVG averaged in: Read read 719ms against a
+        true 826ms. Unknown is NULL, and AVG skips NULL; a 0 would drag the mean
+        down the other way and a positive number would be invented."""
+        write_records(self.tr, [
+            {"type": "function_call", "name": "Read", "callId": "back",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 2000},
+            {"type": "function_call_result", "callId": "back",
+             "status": "completed", "timestamp": 1900},
+            {"type": "function_call", "name": "Read", "callId": "fwd",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 3000},
+            {"type": "function_call_result", "callId": "fwd",
+             "status": "completed", "timestamp": 3400},
+        ])
+        self.index()
+        got = {r["call_id"]: r["duration_ms"] for r in self.conn.execute(
+            "SELECT call_id, duration_ms FROM tool_calls")}
+        self.assertEqual(got, {"back": None, "fwd": 400})
+        self.assertEqual(self.conn.execute(
+            "SELECT CAST(AVG(duration_ms) AS INTEGER) FROM tool_calls"
+        ).fetchone()[0], 400,
+            "the negative row was averaged in instead of skipped")
+
     def test_a_refused_call_whose_name_no_catalogue_holds_is_withdrawn(self):
         """Code Mode refuses every name it does not expose directly. For a real
         tool (Bash, REPL) that is the model calling from the wrong layer and the
@@ -1418,6 +1445,10 @@ class UnparsedAccountingTest(unittest.TestCase):
         for reason in ("type:reasoning", "type:file-history-snapshot",
                        "type:summary"):
             self.assertTrue(sync.unparsed_is_expected(reason), reason)
+        # A model emitting a name no tool has is understood and recurring, not
+        # the format moving: counted as drift it put a permanent "!" on the
+        # status line, which is the bar-nobody-reads failure the split prevents.
+        self.assertTrue(sync.unparsed_is_expected(sync.INVALID_TOOL_NAME))
         # Losing data is never "expected", whatever else the build knows: these are
         # the reader dropping something, not declining it.
         for reason in ("unparseable_line", "type:<missing>",

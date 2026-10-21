@@ -112,6 +112,20 @@ BAGGAGE_SID_RE = re.compile(r"codebuddy\.session_id=([^,\s]+)")
 TOOL_NAME_MAX = 200
 tool_name_chars_re = re.compile(r"[\s\x00-\x1f\x7f-\x9f]")
 
+# cbut's own vocabulary in the ``unparsed`` table — NOT CodeBuddy fields.
+# ``cbut health`` and the TUI status line print these verbatim: "type:<name>"
+# for a record no branch claimed, UNPARSEABLE_LINE for a complete line that is
+# not JSON, and "unreadable_file:<OSError>" for a file that could not be opened.
+UNPARSEABLE_LINE = "unparseable_line"
+INVALID_TOOL_NAME = "invalid_tool_name"
+
+# Code Mode's own answer to a name it does not expose directly: "X is not a
+# direct tool — it is a REPL sandbox global". A call carrying it never reached a
+# tool. The marker sits on the *result*, so it can only be judged when the result
+# record arrives — see `_withdraw_refused_call`.
+REFUSED_CALL_MARKER = "is not a direct tool"
+
+
 # ``type`` values a handler claims in ``_handle_record``. The test derives the
 # same set from the dispatch chain, so a branch without a registration — or a
 # registration without a branch — fails.
@@ -133,8 +147,13 @@ HANDLED_RECORD_TYPES = frozenset({
 # status line raises its "!" only for a reason outside this set.
 UNCLAIMED_RECORD_TYPES = frozenset(
     {"reasoning", "file-history-snapshot", "summary"})
-# The same three as they are spelled in the ``unparsed`` table.
-KNOWN_UNCLAIMED_REASONS = frozenset(f"type:{t}" for t in UNCLAIMED_RECORD_TYPES)
+# The same three as they are spelled in the ``unparsed`` table, plus one reason
+# that is not a record type at all: a call whose name cannot be a tool
+# (``INVALID_TOOL_NAME``). It is a model artifact rather than the log format
+# moving, it recurs, and counting it as drift put a permanent "!" on the status
+# line — the same bar-nobody-reads failure this split exists to prevent.
+KNOWN_UNCLAIMED_REASONS = (frozenset(f"type:{t}" for t in UNCLAIMED_RECORD_TYPES)
+                           | {INVALID_TOOL_NAME})
 
 
 def unparsed_is_expected(reason: str) -> bool:
@@ -144,7 +163,8 @@ def unparsed_is_expected(reason: str) -> bool:
     is what `cbut health` and the status line have to shout about. The other
     reasons are never expected: `UNPARSEABLE_LINE` and `type:<missing>` are the
     reader losing data rather than declining it, and so is anything under
-    ``unreadable_file:``.
+    ``unreadable_file:``. `INVALID_TOOL_NAME` *is* expected: a model emitting a
+    name no tool has is understood, recurring, and not the format moving.
     """
     return reason in KNOWN_UNCLAIMED_REASONS
 
@@ -297,19 +317,6 @@ CODEBUDDY_FIELDS = (RECORD_FIELDS | PROVIDER_FIELDS | BAGGAGE_FIELDS
                     | TOOL_ARG_FIELDS
                     | INVENTORY_JSON_FIELDS | RAW_USAGE_FIELDS
                     | NESTED_USAGE_FIELDS)
-
-# cbut's own vocabulary in the ``unparsed`` table — NOT CodeBuddy fields.
-# ``cbut health`` and the TUI status line print these verbatim: "type:<name>"
-# for a record no branch claimed, UNPARSEABLE_LINE for a complete line that is
-# not JSON, and "unreadable_file:<OSError>" for a file that could not be opened.
-UNPARSEABLE_LINE = "unparseable_line"
-INVALID_TOOL_NAME = "invalid_tool_name"
-
-# Code Mode's own answer to a name it does not expose directly: "X is not a
-# direct tool — it is a REPL sandbox global". A call carrying it never reached a
-# tool. The marker sits on the *result*, so it can only be judged when the result
-# record arrives — see `_withdraw_refused_call`.
-REFUSED_CALL_MARKER = "is not a direct tool"
 
 
 def _session_id(rec) -> str | None:
@@ -1136,20 +1143,22 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
             return
         status = rec.get("status")
         rts = rec.get("timestamp")
-        conn.execute(
-            "UPDATE tool_calls SET status=?,"
-            " duration_ms = CASE WHEN ts IS NOT NULL AND ? IS NOT NULL"
-            "   THEN ? - ts ELSE duration_ms END"
-            " WHERE call_id=?",
-            (status, rts, rts, call_id),
-        )
-        for table in ("skill_usage", "agent_usage", "mcp_usage"):
+        # A duration is a *difference*, so the two timestamps have to agree about
+        # their order first. They do not always: CodeBuddy writes the result
+        # record before the call record for some calls (measured 2026-10-21:
+        # 2,540 of 45,262 rows, worst -5,070 ms), and subtracting them produced a
+        # negative duration that every AVG then averaged in. A negative one is not
+        # a short call, it is the two records disagreeing, so it is stored as NULL
+        # and the averages skip it.
+        for table in ("tool_calls", "skill_usage", "agent_usage", "mcp_usage"):
             conn.execute(
                 f"UPDATE {table} SET status=?,"
-                " duration_ms = CASE WHEN ts IS NOT NULL AND ? IS NOT NULL"
-                "   THEN ? - ts ELSE duration_ms END"
+                " duration_ms = CASE"
+                "   WHEN ts IS NULL OR ? IS NULL THEN duration_ms"
+                "   WHEN ? >= ts THEN ? - ts"
+                "   ELSE NULL END"
                 " WHERE call_id=?",
-                (status, rts, rts, call_id),
+                (status, rts, rts, rts, call_id),
             )
 
     elif rtype in ("session-meta", "ai-title"):

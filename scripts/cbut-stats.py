@@ -39,7 +39,9 @@ def ts(v):
 
 
 def ms(v):
-    if v is None:
+    # Negative: the call and result records disagree about their order (see
+    # db._null_negative_durations); "-" rather than a believable "-4611ms".
+    if v is None or v < 0:
         return "-"
     if v < 1000:
         return f"{v}ms"

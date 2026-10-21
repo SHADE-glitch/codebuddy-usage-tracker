@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # --- locations -------------------------------------------------------------
 
@@ -862,12 +862,35 @@ def _drop_dead_model_index(conn: sqlite3.Connection) -> bool:
     return True
 
 
-MIGRATIONS = (
-    ("model_responses cache and total columns", _migrate_model_responses),
+def _null_negative_durations(conn: sqlite3.Connection) -> bool:
+    """v10: a duration is a *difference*, so a negative one is not a measurement.
+
+    CodeBuddy writes a result record's ``timestamp`` before the call record's for
+    some calls — measured on this machine 2026-10-21: 2,540 of 45,262 rows, worst
+    −5,070 ms — and the old ingest stored ``result.ts - call.ts`` as-is. A negative
+    value is not a short call, it is the two records disagreeing: every ``AVG``
+    averaged it in (Read read 719 ms against a true 826 ms, Grep 814 against 979)
+    and the call-detail screen printed ``-4611ms``.
+
+    Ingest now stores NULL for those, and this repairs the databases indexed
+    before it. NULL rather than 0: the duration is unknown, not instant, and
+    ``AVG`` skips NULL while a 0 would drag the mean down the other way. A
+    re-read cannot undo it — the ingest rule and this step agree.
+    """
+    changed = 0
+    for table in ("tool_calls", "skill_usage", "agent_usage", "mcp_usage"):
+        cur = conn.execute(
+            f"UPDATE {table} SET duration_ms = NULL WHERE duration_ms < 0")
+        changed += cur.rowcount or 0
+    return changed > 0
+
+
+MIGRATIONS = (    ("model_responses cache and total columns", _migrate_model_responses),
     ("prose columns removed", _drop_prose_columns),
     ("dead session indexes dropped", _drop_dead_session_indexes),
     ("dead tool-category index dropped", _drop_dead_category_index),
     ("dead model index dropped", _drop_dead_model_index),
+    ("negative durations nulled", _null_negative_durations),
 )
 
 
@@ -1789,6 +1812,7 @@ def q_usage_activity(conn, start_ts=None, end_ts=None) -> dict:
         "SELECT COUNT(*) AS calls,"
         " SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,"
         " SUM(CASE WHEN status='incomplete' THEN 1 ELSE 0 END) AS incomplete,"
+        " SUM(CASE WHEN status IS NULL THEN 1 ELSE 0 END) AS pending,"
         " CAST(AVG(duration_ms) AS INTEGER) AS avg_ms,"
         " COUNT(DISTINCT session_id) AS sessions,"
         " COUNT(DISTINCT project) AS projects"

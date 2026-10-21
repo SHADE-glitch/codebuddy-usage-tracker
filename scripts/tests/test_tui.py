@@ -1562,8 +1562,38 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             t = app.query_one("#t-tools", tui.DataTable)
             row = all_rows(t)[0]
-            self.assertEqual(row[0], "toolX")
-            self.assertEqual(row[4], "-")   # NULL avg, not ""
+            # Read the cell by its header, not its index: a column inserted
+            # ahead of `avg` (pend was) silently moved what this assertion was
+            # looking at, and it passed on a different cell.
+            header = [str(c.label) for c in t.columns.values()]
+            cell = dict(zip(header, row))
+            self.assertEqual(cell["tool"], "toolX")
+            self.assertEqual(cell["avg"], "-")   # NULL avg, not ""
+
+    # 35b. a call that never came back is counted, not lost between ok and fail
+    async def test_a_call_with_no_result_record_is_counted_as_pending(self):
+        """ok + fail fell short of calls, and nothing said why.
+
+        A call with no result record is a session killed mid-call: not a
+        failure, not a success, and until `pend` existed it was simply absent
+        from the row it belonged to. The headless `cbut tools` had shown the
+        column all along, so the two surfaces disagreed about the same table."""
+        now = self._noon_ms()
+        make_db(self.db_path, [])
+        insert_tool_calls(self.db_path, [
+            ("c1", "s1", "/p", "Bash", "builtin", now - 60_000, 100, "completed"),
+            ("c2", "s1", "/p", "Bash", "builtin", now - 50_000, 200, "incomplete"),
+            ("c3", "s1", "/p", "Bash", "builtin", now - 40_000, None, None)])
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            t = app.query_one("#t-tools", tui.DataTable)
+            header = [str(c.label) for c in t.columns.values()]
+            cell = dict(zip(header, all_rows(t)[0]))
+            self.assertEqual(cell["pend"], "1")
+            self.assertEqual(
+                int(cell["ok"]) + int(cell["fail"]) + int(cell["pend"]),
+                int(cell["calls"]), "the three outcomes must account for every call")
 
     # 36. cursor is restored by ROW KEY, so a re-sort keeps the same entity
     async def test_cursor_restored_by_row_key(self):
@@ -1820,6 +1850,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             ("c1", "s1", "/p", "Bash", "builtin", now - 3600_000, 40, "completed"),
             ("c2", "s1", "/p", "Bash", "builtin", now - 3500_000, 60, "completed"),
             ("c3", "s1", "/p", "Read", "builtin", now - 3400_000, None, "incomplete"),
+            # A session killed mid-call: no result record, so no status. It is
+            # the third outcome, and Completed + Incomplete + Pending has to
+            # reach the Tool calls KPI or the panel is quietly short.
+            ("c4", "s1", "/p", "Edit", "builtin", now - 3300_000, None, None),
         ])
         app = self._pinned_app(now)
         async with app.run_test() as pilot:
@@ -1831,6 +1865,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             # runtime panel
             self.assertIn("2", str(app.query_one("#dash-rt-completed").content))
             self.assertIn("1", str(app.query_one("#dash-rt-incomplete").content))
+            pend = str(app.query_one("#dash-rt-pending").content)
+            self.assertTrue(pend.rstrip().endswith("1"), pend)
+            kpi = str(app.query_one("#dash-kpi-tools").content)
+            self.assertTrue(kpi.rstrip().endswith("4"), kpi)
             self.assertIn("50", str(app.query_one("#dash-rt-avg").content))  # (40+60)/2
             # leaderboards pick the entities with calls
             self.assertIn("alpha", str(app.query_one("#dash-models").content))
@@ -2026,6 +2064,28 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(all_rows(t)[0][1], "m")     # the real row returns
             self.assertNotIn("No requests",
                              str(app.query_one("#usage-note").content))
+
+    # 49b. a cut-short request log names the cut instead of implying it is whole
+    async def test_a_truncated_request_log_says_how_many_it_is_showing(self):
+        """The table holds 100 rows; the window had 120.
+
+        A silently shortened list is the row-level version of the half column
+        the wide plan refuses to render — a reader cannot tell "that is all"
+        from "that is the first page"."""
+        now = self._noon_ms()
+        make_db(self.db_path, [
+            (f"m{i}", "s1", "alpha", 10, 5, 0, 0, now - 60_000, 1)
+            for i in range(120)
+        ])
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-usage"
+            await pilot.pause()
+            note = str(app.query_one("#usage-note").content)
+            self.assertIn("showing 100 of 120", note)
+            self.assertEqual(
+                len(all_rows(app.query_one("#t-usage", tui.DataTable))), 100)
 
     # 50. a quiet window draws a baseline instead of a blank, and says so
     async def test_dashboard_activity_is_never_a_blank_region(self):

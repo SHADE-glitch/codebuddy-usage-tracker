@@ -662,24 +662,32 @@ class WindowedQueryTest(unittest.TestCase):
             ("r1", "s1", "/pA", "T", "builtin", self.NOW - HOUR, 100, "completed"),
             ("r2", "s1", "/pA", "T", "builtin", self.NOW - 2 * HOUR, 300, "completed"),
             ("r3", "s2", "/pB", "T", "builtin", self.NOW - 3 * HOUR, None, "incomplete"),
+            # A call with no result record: killed mid-call. It is a third
+            # outcome, not a failure, and it has to be counted somewhere or
+            # Completed + Incomplete + Pending stops adding up to calls.
+            ("r4", "s2", "/pB", "T", "builtin", self.NOW - 4 * HOUR, None, None),
             ("old", "s3", "/pC", "T", "builtin", self.NOW - 100 * HOUR, 50, "completed"),
         ])
         self.conn.commit()
         a = db.q_usage_activity(self.conn, self._recent(), self.NOW)
-        self.assertEqual(a["calls"], 3)
+        self.assertEqual(a["calls"], 4)
         self.assertEqual(a["completed"], 2)
         self.assertEqual(a["incomplete"], 1)
+        self.assertEqual(a["pending"], 1)
+        self.assertEqual(a["completed"] + a["incomplete"] + a["pending"],
+                         a["calls"], "the three outcomes must account for every call")
         self.assertEqual(a["avg_ms"], 200)        # (100 + 300 + NULL) / 2
         self.assertEqual(a["sessions"], 2)        # s1, s2 (old s3 is outside)
         self.assertEqual(a["projects"], 2)        # /pA, /pB
         allt = db.q_usage_activity(self.conn)     # both bounds None = all-time
-        self.assertEqual(allt["calls"], 4)
+        self.assertEqual(allt["calls"], 5)
         self.assertEqual(allt["sessions"], 3)
 
     def test_q_usage_activity_empty(self):
         self.assertEqual(db.q_usage_activity(self.conn),
                          {"calls": 0, "completed": None, "incomplete": None,
-                          "avg_ms": None, "sessions": 0, "projects": 0})
+                          "pending": None, "avg_ms": None, "sessions": 0,
+                          "projects": 0})
 
     def test_q_usage_daily_buckets_by_local_day(self):
         mid = datetime.fromtimestamp(self.NOW / 1000).replace(
@@ -1398,6 +1406,55 @@ class IndexTest(unittest.TestCase):
         self.assertIn("idx_tool_ts", after)
         self.assertEqual(status, "migrated")
         self.assertEqual(version, str(db.SCHEMA_VERSION))
+
+
+    def test_migrating_nulls_a_duration_its_own_result_record_preceded(self):
+        """v10: a negative duration is not a short call, it is two records
+        disagreeing about their order — so the migration makes it unknown.
+
+        Ingest stores NULL for those now (measured 2026-10-21: 2,540 of 45,262
+        calls, worst -5,070 ms), but a database indexed before that still holds
+        them, and every AVG averages them in. All four usage tables carry the
+        column, so all four are repaired."""
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = Path(tmp.name) / "usage.db"
+            conn = db.open_db(path)
+            db.ensure_schema(conn)
+            conn.execute(
+                "INSERT INTO tool_calls(call_id, tool_name, ts, duration_ms)"
+                " VALUES('c1', 'Read', 2000, -5070), ('c2', 'Read', 3000, 400)")
+            conn.execute(
+                "INSERT INTO skill_usage(call_id, skill, ts, duration_ms)"
+                " VALUES('s1', 'commit', 2000, -12)")
+            conn.execute(
+                "INSERT INTO agent_usage(call_id, agent_type, ts, duration_ms)"
+                " VALUES('a1', 'Explore', 2000, -7)")
+            conn.execute(
+                "INSERT INTO mcp_usage(call_id, server, tool, ts, duration_ms)"
+                " VALUES('m1', 'context7', 'query-docs', 2000, -3)")
+            conn.execute(
+                "UPDATE meta SET value='9' WHERE key='schema_version'")
+            conn.commit()
+
+            status = db.ensure_schema(conn)
+            got = {
+                table: [r[0] for r in conn.execute(
+                    f"SELECT duration_ms FROM {table} ORDER BY call_id")]
+                for table in ("tool_calls", "skill_usage", "agent_usage",
+                              "mcp_usage")}
+            version = conn.execute(
+                "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+            conn.close()
+        finally:
+            tmp.cleanup()
+
+        self.assertEqual(status, "migrated")
+        self.assertEqual(version, str(db.SCHEMA_VERSION))
+        self.assertEqual(got["tool_calls"], [None, 400],
+                         "the repair took the real duration with it")
+        for table in ("skill_usage", "agent_usage", "mcp_usage"):
+            self.assertEqual(got[table], [None], table)
 
 
 class OldDatabaseOnAReadOnlyCliTest(unittest.TestCase):

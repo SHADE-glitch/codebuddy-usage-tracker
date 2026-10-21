@@ -59,8 +59,13 @@ def ts(v):
     return datetime.fromtimestamp(v / 1000).strftime("%m-%d %H:%M")
 
 
+# A negative duration is not a short call: it is the two records disagreeing
+# about their order, and ingest stores NULL for those (plus a migration that
+# repairs older databases). This guard is for a read-only headless run against a
+# database nobody has migrated yet — "-" is the honest answer, and "-4611ms" is
+# a number a reader would believe.
 def ms(v):
-    if v is None:
+    if v is None or v < 0:
         return "-"
     return f"{v}ms" if v < 1000 else f"{v / 1000:.1f}s"
 
@@ -138,7 +143,11 @@ TOKEN_COLUMNS = ("Model", "Provider", "Usage Total", "Requests", "Input",
 # string: a renamed column would otherwise keep rendering under the old name here
 # while everything that agrees on the name moved.
 _STATE = db.ENTITY_STATE_COLUMN
-TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "avg", "last used", _STATE)
+# ``pend`` sits between ``fail`` and ``avg`` because it is the third answer to
+# "what happened to this call": completed, incomplete, or no result record at all
+# (a session killed mid-call). Without it ``ok`` + ``fail`` silently fell short of
+# ``calls``, and the headless ``cbut tools`` had shown the column all along.
+TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "pend", "avg", "last used", _STATE)
 SKILLS_COLUMNS = ("skill", "calls", "ok", "last used", _STATE)
 AGENTS_COLUMNS = ("agent", "calls", "last used", _STATE)
 PLUGINS_COLUMNS = ("plugin", "uses", "skills", "agents", "cmds", _STATE)
@@ -217,8 +226,8 @@ class EntityTab(NamedTuple):
 
 def _tool_row(r):
     return [r["tool_name"], f"{r['calls']:,}", f"{r['completed']:,}",
-            f"{r['failed']:,}", ms(r["avg_ms"]), ts(r["last_used"]),
-            state_cell(r, r["calls"])]
+            f"{r['failed']:,}", f"{r['pending']:,}", ms(r["avg_ms"]),
+            ts(r["last_used"]), state_cell(r, r["calls"])]
 
 
 def _skill_row(r):
@@ -1475,6 +1484,7 @@ if HAVE_TEXTUAL:
                                 Static("Runtime", classes="panel-title"),
                                 Static(id="dash-rt-completed"),
                                 Static(id="dash-rt-incomplete"),
+                                Static(id="dash-rt-pending"),
                                 Static(id="dash-rt-avg"),
                                 Static(id="dash-rt-sessions"),
                                 Static(id="dash-rt-projects"),
@@ -1917,7 +1927,7 @@ if HAVE_TEXTUAL:
             try:
                 s = db.q_usage_summary(conn, start, end)
                 self._render_summary_panels(s)
-                self._fill_usage_logs(conn, start, end)
+                self._fill_usage_logs(conn, start, end, s["requests"])
             except sqlite3.Error as e:
                 # e.g. an un-migrated DB where the newer columns are missing.
                 self.query_one("#usage-status", Static).update(
@@ -2033,6 +2043,10 @@ if HAVE_TEXTUAL:
             # counts are COUNT-based -> a real 0; avg_ms is NULL when nothing ran.
             self._put_panel("#dash-rt-completed", "Completed", f"{a['completed'] or 0:,}")
             self._put_panel("#dash-rt-incomplete", "Incomplete", f"{a['incomplete'] or 0:,}")
+            # Named rather than folded into Incomplete: a call with no result
+            # record did not fail, it never came back, and only a named panel
+            # makes Completed + Incomplete + Pending add up to Tool calls.
+            self._put_panel("#dash-rt-pending", "Pending", f"{a['pending'] or 0:,}")
             self._put_panel("#dash-rt-avg", "Avg tool time", ms(a["avg_ms"]))
             self._put_panel("#dash-rt-sessions", "Sessions", f"{a['sessions'] or 0:,}")
             self._put_panel("#dash-rt-projects", "Projects", f"{a['projects'] or 0:,}")
@@ -2113,12 +2127,24 @@ if HAVE_TEXTUAL:
             frac = db.cache_hit_rate(hit, miss, write)
             return "-" if frac is None else f"{frac * 100:.1f}%"
 
-        def _fill_usage_logs(self, conn, start, end) -> None:
+        def _fill_usage_logs(self, conn, start, end, total=None) -> None:
+            """Fill the request log, and say so when the list is cut short.
+
+            ``total`` is the window's request count (``q_usage_summary`` already
+            counted it). The table holds ``USAGE_LOG_LIMIT`` rows, and a silently
+            shortened list is the row-level version of the half column the wide
+            plan refuses to render: the note names the cut instead of leaving a
+            reader to assume they are seeing everything.
+            """
             rows = db.q_usage_request_logs(conn, start, end,
                                            limit=self.USAGE_LOG_LIMIT)
-            self.query_one("#usage-note", Static).update(
-                "Newest first · cache hit=read, write=create · "
-                "no cost/duration/status" if rows else "")
+            note = ""
+            if rows:
+                note = ("Newest first · cache hit=read, write=create · "
+                        "no cost/duration/status")
+                if total is not None and total > len(rows):
+                    note += f" · showing {len(rows):,} of {total:,}"
+            self.query_one("#usage-note", Static).update(note)
             out = [[
                 local_time(r["ts"]), r["model"] or "-",
                 db.provider_label(r["provider"]),
