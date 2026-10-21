@@ -1349,3 +1349,39 @@ Cost     A refused call to a name the catalogue does not hold is now invisible i
          CodeBuddy's English message text: if the CLI rewords it the rows come back, silently,
          because nothing fails — the two-store L1 comparison above is the check to re-run.
 Commit   583594b
+
+### D-056 · 2026-10-21 · fix
+
+Symptom  Three numbers a reader had no way to distrust. (a) `avg` was dragged down by negative
+         durations — Read read 719 ms against a true 826, Grep 814 against 979, Edit 443 against
+         477 — and the call-detail screen printed `-4611ms`. (b) The status line carried a
+         permanent `! 15 records … invalid_tool_name` after any rebuild, because a model emitting
+         a name no tool has was counted as format drift. (c) The Tools tab's `calls` exceeded
+         `ok` + `fail` with nothing accounting for the difference (61 calls on this machine), and
+         the Usage request log showed 100 rows of a larger window without saying so.
+Change   A duration is a difference, so the two timestamps have to agree about their order first:
+         CodeBuddy writes the result record before the call record for some calls (2,540 of
+         45,262, worst -5,070 ms), and ingest now stores NULL for those instead of a negative
+         number, which `AVG` skips and both duration formatters read as `-`. A v10 migration
+         (`_null_negative_durations`) repairs databases indexed before that, so no `--full` is
+         needed. `invalid_tool_name` joins the expected unparsed reasons. The Tools tab gains the
+         `pend` column the headless `cbut tools` already had, the Dashboard gains a Pending panel
+         so Completed + Incomplete + Pending reaches the Tool calls KPI, and the Usage note names
+         the cut when the log is truncated (`showing 100 of 120`).
+Evidence L0 2026-10-21: `.venv/bin/python -m unittest discover -s scripts/tests` — 528 tests, OK.
+         The duration case is red against the previous build, measured rather than assumed: the
+         same two records store -100 there and NULL here. L1 the same day: two throwaway stores
+         (`--db /tmp/…`) from this machine's logs, one at 583594b and one with this change — every
+         table identical, negative durations 2,467 → 0, NULL durations 58 → 2,525, and the avgs
+         moving to Read 859, Grep 1,043, Edit 491, REPL 6,074. L2 with the owner's go-ahead: the
+         live database migrated through `cbut sync` (schema 9 → 10, pre-migration snapshot taken
+         automatically), 2,540 negatives → 0, and the Tools avgs now read Read 826, Grep 979,
+         Edit 477 — the values the negative rows had been hiding.
+Cost     A call whose two records disagree no longer contributes to `avg` at all: the mean is now
+         over the calls that were measured, which is a different population from before, not the
+         same one measured better. `invalid_tool_name` no longer raises the status line's `!`, so
+         a genuine flood of refused calls is quiet there — `cbut health` still lists the count.
+         The Tools tab is one column wider, so a narrow terminal drops `last used` sooner than it
+         used to; column 0 and `state` stay protected. The migration runs on the first open of an
+         older database and snapshots before touching it.
+Commit   ebd86dc
