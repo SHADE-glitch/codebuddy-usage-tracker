@@ -100,6 +100,36 @@ def clip(text, width):
     return s if len(s) <= width else s[: width - 1] + "…"
 
 
+def _row_calls(row):
+    """The row's count in its tab's window, for the used-only default view.
+
+    Plugins rows call it `uses` and Tokens rows `responses`; a row
+    carrying none of those counts is never "unused" — the Tokens tab is
+    usage-only by construction and always answers.
+    """
+    for key in ("calls", "uses", "responses"):
+        try:
+            return row[key]
+        except (IndexError, KeyError):
+            continue
+    return 1
+
+
+def model_leader_labels(rows):
+    """Display labels for the Dashboard's Top models rows, in row order.
+
+    `q_usage_model_stats` groups by (model, provider), so one model name
+    can appear twice in the list — two routes serving one name. Without the
+    provider the two rows read as a duplicate; a model with a single route
+    keeps its bare name.
+    """
+    seen = {}
+    for r in rows:
+        seen[r["model"]] = seen.get(r["model"], 0) + 1
+    return [f"{r['model']} · {db.provider_label(r['provider'])}"
+            if seen[r["model"]] > 1 else r["model"] for r in rows]
+
+
 def local_time(ms):
     """Local-time render of an epoch-ms value (query bounds stay in Unix ms)."""
     if not ms:
@@ -355,6 +385,24 @@ if HAVE_TEXTUAL:
             # kept the width it was built with ("📅 Today" = 10 cells) and cut
             # the longer span down to "📅 10-06" until the next full relayout.
             btn.refresh(layout=True)
+
+    class FilterInput(Input):
+        """The one-line name filter for the entity tabs.
+
+        Typing filters live (the app re-renders the active tab from its
+        cached rows); Enter applies and keeps the needle; Esc cancels and
+        clears. Its own binding runs before the
+        app's, so every printable key — `a` included — inserts into the
+        field instead of reaching the tab's toggle.
+        """
+
+        BINDINGS = [Binding("escape", "close_filter", "Clear filter",
+                            show=False)]
+
+        def action_close_filter(self) -> None:
+            # Widget-level bindings resolve their action on the widget,
+            # not on the app, so this shim forwards Esc to the handler.
+            self.app.action_close_filter()
 
     class TimeInput(Input):
         """A clock field you can scrub as well as type.
@@ -1350,6 +1398,10 @@ if HAVE_TEXTUAL:
         .summary-panels.compact .usage-panel,
         .dash-row.compact .usage-panel { width: 100%; margin: 0 0 1 0; }
         .dash-row { height: auto; margin: 0 0 1 0; }
+        /* The entity-tab name filter: one row when open, gone otherwise.
+           Hiding is done in Python (widget.display), which outranks CSS. */
+        #filter-input { height: 1; border: none; padding: 0 1;
+                        background: $panel; }
         """
         # Pane ids in display order. Used for wrap-around tab cycling. Derived
         # from the same registry that builds the panes, columns and fill calls.
@@ -1362,12 +1414,21 @@ if HAVE_TEXTUAL:
             Binding("q", "quit", "Quit"),
             Binding("r", "refresh", "Refresh"),
             Binding("s", "toggle_auto_sync", "Auto sync"),
+            Binding("a", "toggle_unused", "Incl. unused"),
+            Binding("slash", "open_filter", "Filter"),
+            Binding("pagedown", "usage_page_down", "More"),
+            Binding("pageup", "usage_page_up", "Back"),
             Binding("tab", "next_tab", "Next tab", priority=True),
             Binding("shift+tab", "previous_tab", "Prev tab", priority=True),
         ]
         TITLE = "CodeBuddy usage tracker"
         # No built-in Header means no ctrl+p palette; disable it outright too.
         ENABLE_COMMAND_PALETTE = False
+        # No auto-focus: the first focusable widget used to be the TopBar's
+        # Select, which passes letters up; the filter Input does not (it types
+        # them), so leaving AUTO_FOCUS alone would eat r/s/a at launch. The
+        # tables are focused explicitly where a test or a click needs one.
+        AUTO_FOCUS = None
 
         USAGE_LOG_LIMIT = 100
         DASH_TOP = 5            # rows in the Dashboard's Top models / Top tools
@@ -1426,11 +1487,29 @@ if HAVE_TEXTUAL:
             # during this call" from "this call cleared the old warning" without
             # comparing message text.
             self._report_seq = 0
+            # Per-tab view state. The default is used-only: a row with 0 calls
+            # in the tab's window is catalogue noise (installed but never
+            # touched), and hiding it is what keeps the panel reading as
+            # usage. The `a` key includes them again — per tab, like the
+            # ranges; the state column stays either way, so a used-then-
+            # uninstalled tool still reads "removed" while hidden rows do not
+            # bury it. The `/` name filter is per tab too. Rows are
+            # cached unfiltered so both toggles re-render without re-querying.
+            self._show_unused = {t.pane: False for t in ENTITY_TABS}
+            self._name_filter = {t.pane: "" for t in ENTITY_TABS}
+            self._entity_rows = {}
+            # The Usage page's request log is paginated (log_limit per page);
+            # the offset survives a refresh and resets on a range change.
+            self._usage_offset = 0
 
         def compose(self) -> ComposeResult:
             yield TopBar(self.TITLE, with_range=True,
                          range_value=self.tab_range[self.INITIAL_TAB],
                          id="topbar")
+            yield Static("", id="filter-note", classes="col-note")
+            yield FilterInput(
+                placeholder="filter rows by name — Enter hides, Esc clears",
+                id="filter-input")
             with TabbedContent(initial=self.INITIAL_TAB):
                 with TabPane("Dashboard", id="tab-dashboard"):
                     yield Vertical(
@@ -1558,6 +1637,8 @@ if HAVE_TEXTUAL:
             # query needs. migrate() returns a status now, so a locked or damaged
             # file is named on the status line instead of showing an empty panel
             # as though that were the user's actual usage.
+            self.query_one("#filter-input", Input).display = False
+            self.query_one("#filter-note", Static).display = False
             note = db.migrate(self.db_path)
             self._schema_note = "" if note in ("current", "migrated") else note
             self._usage_ready = True
@@ -1602,7 +1683,9 @@ if HAVE_TEXTUAL:
 
             The query is looked up through the module on every call (never bound
             at class-definition time), so a test can monkeypatch ``db.q_tools``
-            and this path sees the patched function.
+            and this path sees the patched function. The query result is cached
+            unfiltered, so the `a` toggle and the `/` bar re-render
+            without re-querying.
             """
             rows = getattr(db, tab.query)(conn, start_ts=start, end_ts=end)
             # A NULL in a key column is keyed as the empty string: the composite
@@ -1612,10 +1695,78 @@ if HAVE_TEXTUAL:
             if tab.key_columns:
                 key_rows = [["" if r[c] is None else r[c]
                              for c in tab.key_columns] for r in rows]
+            self._entity_rows[tab.pane] = (rows, key_rows)
+            self._render_entity_rows(tab)
+
+        def _render_entity_rows(self, tab: EntityTab) -> None:
+            """Re-render one entity table from its cached rows (no re-query).
+
+            Two per-tab view toggles apply here, used-only first: the default
+            view drops rows with 0 calls in the window, then the name filter
+            keeps the rows whose key values match. The row key always rides on
+            the UNCAPPED key value, and both toggles slice rows and keys with
+            the same indices so they can never drift apart.
+            """
+            rows, key_rows = self._entity_rows.get(tab.pane, ([], None))
+            keep = []
+            for i, r in enumerate(rows):
+                if not self._show_unused.get(tab.pane) and not _row_calls(r):
+                    continue
+                if not self._name_matches(tab, r):
+                    continue
+                keep.append(i)
+            shown = [rows[i] for i in keep]
+            shown_keys = ([key_rows[i] for i in keep]
+                          if key_rows is not None else None)
             self._fill_wide(
-                tab.table_id, [tab.cells(r) for r in rows], tab.empty,
+                tab.table_id, [tab.cells(r) for r in shown], tab.empty,
                 key_index=tab.key_index, key_kind=tab.key_kind,
-                key_rows=key_rows)
+                key_rows=shown_keys)
+            self._render_filter_note(tab, len(shown), len(rows))
+
+        @staticmethod
+        def _entity_name_values(tab: EntityTab, row) -> list:
+            """The uncapped values the name filter matches against."""
+            if tab.key_columns:
+                return ["" if row[c] is None else str(row[c])
+                        for c in tab.key_columns]
+            idx = (tab.key_index if isinstance(tab.key_index, (tuple, list))
+                   else (tab.key_index,))
+            return [str(row[i]) for i in idx]
+
+        def _name_matches(self, tab: EntityTab, row) -> bool:
+            needle = self._name_filter.get(tab.pane, "")
+            if not needle:
+                return True
+            return any(needle in v.lower()
+                       for v in self._entity_name_values(tab, row))
+
+        def _render_filter_note(self, tab: EntityTab, shown: int,
+                                total: int) -> None:
+            """One line above the table explaining the two view toggles.
+
+            Silent when neither is active — a note explaining nothing is
+            noise. When the used-only default hid every row, the note is also
+            how the toggle is discovered.
+            """
+            note = self.query_one("#filter-note", Static)
+            parts = []
+            needle = self._name_filter.get(tab.pane, "")
+            if needle:
+                parts.append(f'filter "{needle}"')
+            if self._show_unused.get(tab.pane):
+                parts.append("incl. installed-unused")
+            if parts:
+                parts.append(f"{shown:,} of {total:,} rows")
+                note.update(" · ".join(parts))
+                note.display = True
+            elif shown == 0 and total:
+                note.update(f"{total:,} installed but unused in this window"
+                            " — press a to include them")
+                note.display = True
+            else:
+                note.update("")
+                note.display = False
 
         @staticmethod
         def _entity_tab(pane: str):
@@ -2056,9 +2207,10 @@ if HAVE_TEXTUAL:
             if not top:
                 self.query_one("#dash-models", Static).update("nothing in this window")
                 return
-            lines = [f"{i}. {clip(r['model'], 26):<26}{fmt_n(r['total_tokens']):>12}"
+            labels = model_leader_labels(top)
+            lines = [f"{i}. {clip(label, 26):<26}{fmt_n(r['total_tokens']):>12}"
                      f"  {r['requests']:>5} req"
-                     for i, r in enumerate(top, 1)]
+                     for i, (label, r) in enumerate(zip(labels, top), 1)]
             self.query_one("#dash-models", Static).update("\n".join(lines))
 
         def _render_dashboard_tools(self, rows) -> None:
@@ -2136,14 +2288,27 @@ if HAVE_TEXTUAL:
             plan refuses to render: the note names the cut instead of leaving a
             reader to assume they are seeing everything.
             """
+            offset = self._usage_offset
             rows = db.q_usage_request_logs(conn, start, end,
-                                           limit=self.USAGE_LOG_LIMIT)
+                                           limit=self.USAGE_LOG_LIMIT,
+                                           offset=offset)
+            if not rows and offset:
+                # The log shrank under the page (a range change, a new sync):
+                # fall back to the first page rather than showing a blank.
+                self._usage_offset = 0
+                offset = 0
+                rows = db.q_usage_request_logs(conn, start, end,
+                                               limit=self.USAGE_LOG_LIMIT)
             note = ""
             if rows:
                 note = ("Newest first · cache hit=read, write=create · "
                         "no cost/duration/status")
-                if total is not None and total > len(rows):
-                    note += f" · showing {len(rows):,} of {total:,}"
+                if total is not None and total > len(rows) + offset:
+                    note += (f" · showing {offset + 1:,}–{offset + len(rows):,}"
+                             f" of {total:,} · PgDn for more")
+                elif offset:
+                    note += (f" · showing {offset + 1:,}–{offset + len(rows):,}"
+                             f" of {total:,} · PgUp to go back")
             self.query_one("#usage-note", Static).update(note)
             out = [[
                 local_time(r["ts"]), r["model"] or "-",
@@ -2178,6 +2343,7 @@ if HAVE_TEXTUAL:
             self.tab_range[pane] = event.value
             self._sync_range_widget()     # refresh the 📅 label
             if pane == "tab-usage":
+                self._usage_offset = 0    # a new window restarts the log
                 self._render_usage_window()   # keep the Usage Window panel live
             self._refresh_active_tab()    # re-query only the visible tab
 
@@ -2192,6 +2358,7 @@ if HAVE_TEXTUAL:
                 self.tab_range[pane] = result
                 self._sync_range_widget()
                 if pane == "tab-usage":
+                    self._usage_offset = 0
                     self._render_usage_window()
                 self._refresh_active_tab()
 
@@ -2251,6 +2418,77 @@ if HAVE_TEXTUAL:
             # re-render of already-loaded data).
             self._set_status("Syncing…")
             self._request_sync()
+
+        def action_toggle_unused(self) -> None:
+            # a = include the installed-but-unused half of the union, per tab.
+            # Rows re-render from the cache; no query runs.
+            pane = self.query_one(TabbedContent).active
+            tab = self._entity_tab(pane)
+            if tab is None:
+                return
+            self._show_unused[pane] = not self._show_unused[pane]
+            self._render_entity_rows(tab)
+
+        def action_open_filter(self) -> None:
+            # / = show the name-filter bar for the active entity tab.
+            pane = self.query_one(TabbedContent).active
+            if self._entity_tab(pane) is None:
+                return
+            inp = self.query_one("#filter-input", Input)
+            inp.display = True
+            inp.value = self._name_filter.get(pane, "")
+            inp.focus()
+
+        def action_close_filter(self) -> None:
+            # Esc = cancel: the needle goes away with the bar.
+            self._close_filter(keep=False)
+
+        def _close_filter(self, keep: bool) -> None:
+            inp = self.query_one("#filter-input", Input)
+            pane = self.query_one(TabbedContent).active
+            tab = self._entity_tab(pane)
+            if not keep:
+                if inp.value:
+                    inp.value = ""
+                if tab is not None:
+                    self._name_filter[pane] = ""
+                    self._render_entity_rows(tab)
+            elif tab is not None:
+                self.query_one(f"#{tab.table_id}", DataTable).focus()
+            inp.display = False
+
+        def on_input_changed(self, event: Input.Changed) -> None:
+            # The modal's own inputs are handled on DateRangeModal; anything
+            # that bubbles here with another id is not the filter bar.
+            if event.input.id != "filter-input":
+                return
+            pane = self.query_one(TabbedContent).active
+            tab = self._entity_tab(pane)
+            if tab is None:
+                return
+            self._name_filter[pane] = event.value.strip()
+            self._render_entity_rows(tab)
+
+        def on_input_submitted(self, event: Input.Submitted) -> None:
+            if event.input.id == "filter-input":
+                # Enter = apply: keep the needle, close the bar, and
+                # hand focus back to the table so a keeps working.
+                self._close_filter(keep=True)
+
+        def action_usage_page_down(self) -> None:
+            # PgDn on the Usage page: the next log_limit rows of the request log.
+            if self.query_one(TabbedContent).active != "tab-usage":
+                return
+            self._usage_offset += self.USAGE_LOG_LIMIT
+            self._refresh_usage()
+
+        def action_usage_page_up(self) -> None:
+            if (self.query_one(TabbedContent).active != "tab-usage"
+                    or self._usage_offset <= 0):
+                return
+            self._usage_offset = max(0,
+                                     self._usage_offset - self.USAGE_LOG_LIMIT)
+            self._refresh_usage()
 
         def action_toggle_auto_sync(self) -> None:
             # S = toggle the automatic sync switch. Distinct from R: it does not

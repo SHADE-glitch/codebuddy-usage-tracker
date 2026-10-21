@@ -1640,17 +1640,126 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             app.query_one(tui.TabbedContent).active = "tab-tools"
             await pilot.pause()
             t = app.query_one("#t-tools", tui.DataTable)
-            # Default entity range is 7d. Name is the key, so both tools are
-            # listed; Old's calls (200h ago) fall outside 7d and count 0.
+            # Default entity range is 7d, and the default view is used-only:
+            # Old's calls (200h ago) fall outside 7d and count 0, so the row
+            # is hidden — the note line is what names the hidden half.
+            rows = {r[0]: r for r in all_rows(t)}
+            self.assertEqual(set(rows), {"Recent"})
+            self.assertEqual(rows["Recent"][1], "1")
+            # The note stays silent while used rows still show — the Footer's
+            # "a Incl. unused" strip is the discovery route, and a note that
+            # shouts on every quiet tab is a bar nobody reads. It names the
+            # hidden half only when a tab would otherwise read as empty.
+            self.assertEqual(str(app.query_one("#filter-note").content), "")
+            # a includes the installed-but-unused half; Old shows its 0.
+            await pilot.press("a")
+            await pilot.pause()
             rows = {r[0]: r for r in all_rows(t)}
             self.assertEqual(set(rows), {"Recent", "Old"})
-            self.assertEqual(rows["Recent"][1], "1")
             self.assertEqual(rows["Old"][1], "0")
+            # and the window only ever shrinks the counts, never the list
             app.query_one("#range", tui.Select).value = "all"
             await pilot.pause()
             rows = {r[0]: r for r in all_rows(t)}
             self.assertEqual(rows["Old"][1], "1")    # now counted
+            self.assertEqual(set(rows), {"Recent", "Old"})
 
+    # 39. / opens the name-filter bar; typing narrows live; Esc restores
+    async def test_slash_filter_narrows_and_esc_restores(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [])
+        insert_tool_calls(self.db_path, [
+            ("a", "s1", "/p", "Alpha", "builtin", now - 3600_000, 10,
+             "completed"),
+            ("b", "s1", "/p", "Beta", "builtin", now - 3600_000, 10,
+             "completed"),
+        ])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            t = app.query_one("#t-tools", tui.DataTable)
+            self.assertEqual({r[0] for r in all_rows(t)}, {"Alpha", "Beta"})
+            # / shows the bar and moves focus into it, so typing edits the
+            # filter instead of tripping tab bindings
+            await pilot.press("/")
+            await pilot.pause()
+            inp = app.query_one("#filter-input", tui.Input)
+            self.assertTrue(inp.display)
+            self.assertTrue(inp.has_focus)
+            await pilot.press("l")
+            await pilot.pause()
+            self.assertEqual({r[0] for r in all_rows(t)}, {"Alpha"})
+            note = str(app.query_one("#filter-note").content)
+            self.assertIn('filter "l"', note)
+            self.assertIn("1 of 2 rows", note)
+
+            # Esc closes the bar, clears the needle and restores every row
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertFalse(inp.display)
+            self.assertEqual({r[0] for r in all_rows(t)}, {"Alpha", "Beta"})
+            self.assertEqual(str(app.query_one("#filter-note").content), "")
+
+    # 39b. the name-filter is per-tab and combines with the a-toggle
+    async def test_name_filter_is_per_tab_and_combines_with_unused(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [])
+        insert_tool_calls(self.db_path, [
+            ("a", "s1", "/p", "Alpha", "builtin", now - 3600_000, 10,
+             "completed"),
+            ("o", "s1", "/p", "Old", "builtin", now - 200 * 3600_000, 10,
+             "completed"),
+        ])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tc = app.query_one(tui.TabbedContent)
+            tc.active = "tab-tools"
+            await pilot.pause()
+
+            inp = app.query_one("#filter-input", tui.Input)
+            await pilot.press("/")
+            await pilot.pause()
+            self.assertTrue(inp.display)
+            for ch in "old":
+                await pilot.press(ch)
+            await pilot.pause()
+            t = app.query_one("#t-tools", tui.DataTable)
+            # used-only hides Old (0 calls in 7d) and the needle hides Alpha,
+            # so the tab reads as its empty state, not as silently broken
+            self.assertEqual([r[0] for r in all_rows(t)],
+                             ["No tool calls yet"])
+            note = str(app.query_one("#filter-note").content)
+            self.assertIn('filter "old"', note)
+            self.assertIn("0 of 2 rows", note)
+            # Enter applies: the bar closes but the needle stays on
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertFalse(inp.display)
+            self.assertEqual([r[0] for r in all_rows(t)],
+                             ["No tool calls yet"])
+            self.assertIn('filter "old"',
+                          str(app.query_one("#filter-note").content))
+            # a includes the unused half under the same needle; the table got
+            # focus back on close, so the binding lands
+            await pilot.press("a")
+            await pilot.pause()
+            self.assertEqual({r[0] for r in all_rows(t)}, {"Old"})
+            note = str(app.query_one("#filter-note").content)
+            self.assertIn("incl. installed-unused", note)
+            self.assertIn("1 of 2 rows", note)
+            # the needle rides its own tab: leaving and coming back,
+            # the filter is still applied to Tools and nothing else
+            tc = app.query_one(tui.TabbedContent)
+            tc.active = "tab-skills"
+            await pilot.pause()
+            tc.active = "tab-tools"
+            await pilot.pause()
+            self.assertEqual({r[0] for r in all_rows(t)}, {"Old"})
+            self.assertIn('filter "old"',
+                          str(app.query_one("#filter-note").content))
     # 37b. every tab keeps its OWN range — changing one never moves another
     async def test_tab_ranges_are_independent(self):
         make_db(self.db_path, [])
@@ -1719,8 +1828,12 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             # the range control is live on this tab, like every other one
             self.assertTrue(app.query_one("#range", tui.Select).display)
             self.assertEqual(app.tab_range["tab-plugins"], "7d")
-            # 100 hours ago: outside the default week, inside "all" — and the row
-            # is listed either way, because the inventory side has no timestamps
+            # 100 hours ago: outside the default week, inside "all". The row
+            # is never dropped by the window — but the used-only default hides
+            # it while it counts 0, so the a toggle is what brings it back.
+            self.assertEqual(all_rows(t)[0][0], "No plugins installed")
+            await pilot.press("a")
+            await pilot.pause()
             self.assertEqual(all_rows(t)[0][1], "0")
             app.tab_range["tab-plugins"] = "all"
             app._refresh_active_tab()
@@ -2083,7 +2196,20 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             app.query_one(tui.TabbedContent).active = "tab-usage"
             await pilot.pause()
             note = str(app.query_one("#usage-note").content)
-            self.assertIn("showing 100 of 120", note)
+            self.assertIn("showing 1–100 of 120", note)
+            self.assertIn("PgDn for more", note)
+            self.assertEqual(
+                len(all_rows(app.query_one("#t-usage", tui.DataTable))), 100)
+            # PgDn pages; PgUp comes back.
+            await pilot.press("pagedown")
+            await pilot.pause()
+            note = str(app.query_one("#usage-note").content)
+            self.assertIn("showing 101–120 of 120", note)
+            self.assertIn("PgUp to go back", note)
+            self.assertEqual(
+                len(all_rows(app.query_one("#t-usage", tui.DataTable))), 20)
+            await pilot.press("pageup")
+            await pilot.pause()
             self.assertEqual(
                 len(all_rows(app.query_one("#t-usage", tui.DataTable))), 100)
 
@@ -3213,6 +3339,28 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         short = host._cap_cell(Text(db.ENTITY_STATE_REMOVED, style="dim"))
         self.assertEqual(str(short), db.ENTITY_STATE_REMOVED)
         self.assertEqual(short.style, "dim")
+
+
+class ModelLeaderLabelsTest(unittest.TestCase):
+    """Dashboard Top models disambiguates one name served by two routes.
+
+    q_usage_model_stats groups by (model, provider), so a model with two
+    routes appears twice; bare duplicates read as a bug, so shared names
+    get a provider suffix and single-route names stay bare.
+    """
+
+    def test_shared_name_gets_a_provider_suffix(self):
+        rows = [
+            {"model": "glm", "provider": None},
+            {"model": "glm", "provider": "proxy.example"},
+            {"model": "solo", "provider": None},
+        ]
+        self.assertEqual(tui.model_leader_labels(rows),
+                         ["glm · -", "glm · proxy.example", "solo"])
+
+    def test_single_route_keeps_the_bare_name(self):
+        rows = [{"model": "solo", "provider": None}]
+        self.assertEqual(tui.model_leader_labels(rows), ["solo"])
 
 
 if __name__ == "__main__":
