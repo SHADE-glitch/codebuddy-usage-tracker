@@ -252,15 +252,25 @@ RECORD_FIELDS = frozenset({
     "type", "sessionId", "cwd", "timestamp", "name", "arguments",
     "callId", "id", "status", "content", "providerData",
     "tokenDelta", "durationMs", "_meta",
+    # A result record's payload. Read for one thing only: Code Mode's
+    # "not a direct tool" refusal, which decides whether the call it answers
+    # left a row behind (``_withdraw_refused_call``). Never stored.
+    "output",
 })
 PROVIDER_FIELDS = frozenset({
     "messageId", "model", "conversationRequestId", "rawUsage",
+    # The same refusal, as the CLI spells it inside a result record.
+    "toolResult",
     # The route identity: a bare model id for a built-in route, or
     # "<endpoint>:<model id>" for a custom one. Drives model_responses.provider.
     "requestModelId",
 })
 BAGGAGE_FIELDS = frozenset({"baggage"})
 CONTENT_BLOCK_FIELDS = frozenset({"text"})
+# Keys of ``providerData.toolResult``. ``error`` is read alongside ``content``
+# because a refusal can arrive in either; both are matched against the marker
+# and neither is stored.
+TOOL_RESULT_FIELDS = frozenset({"content", "error"})
 # Block *types* observed in real transcripts (input_text 134, output_text 2,
 # measured 2026-10-09) are deliberately NOT among the fields we read: see
 # ``_text_blocks`` for what filtering on them cost.
@@ -283,7 +293,8 @@ INVENTORY_JSON_FIELDS = frozenset({
 })
 
 CODEBUDDY_FIELDS = (RECORD_FIELDS | PROVIDER_FIELDS | BAGGAGE_FIELDS
-                    | CONTENT_BLOCK_FIELDS | TOOL_ARG_FIELDS
+                    | CONTENT_BLOCK_FIELDS | TOOL_RESULT_FIELDS
+                    | TOOL_ARG_FIELDS
                     | INVENTORY_JSON_FIELDS | RAW_USAGE_FIELDS
                     | NESTED_USAGE_FIELDS)
 
@@ -293,6 +304,12 @@ CODEBUDDY_FIELDS = (RECORD_FIELDS | PROVIDER_FIELDS | BAGGAGE_FIELDS
 # not JSON, and "unreadable_file:<OSError>" for a file that could not be opened.
 UNPARSEABLE_LINE = "unparseable_line"
 INVALID_TOOL_NAME = "invalid_tool_name"
+
+# Code Mode's own answer to a name it does not expose directly: "X is not a
+# direct tool — it is a REPL sandbox global". A call carrying it never reached a
+# tool. The marker sits on the *result*, so it can only be judged when the result
+# record arrives — see `_withdraw_refused_call`.
+REFUSED_CALL_MARKER = "is not a direct tool"
 
 
 def _session_id(rec) -> str | None:
@@ -620,6 +637,38 @@ def valid_tool_name(name) -> bool:
     """
     return (isinstance(name, str) and 0 < len(name) <= TOOL_NAME_MAX
             and not tool_name_chars_re.search(name))
+
+
+def _carries_refusal(rec) -> bool:
+    """Whether Code Mode answered this call with "not a direct tool"."""
+    out = rec.get("output")
+    texts = [out.get("text")] if isinstance(out, dict) else []
+    result = (rec.get("providerData") or {}).get("toolResult")
+    if isinstance(result, dict):
+        texts += [result.get("content"), result.get("error")]
+    return any(isinstance(t, str) and REFUSED_CALL_MARKER in t for t in texts)
+
+
+def _withdraw_refused_call(conn, rec) -> bool:
+    """Withdraw a call the CLI refused *and* no catalogue has ever held.
+
+    Code Mode refuses any name it does not expose directly, and it does so for
+    two different things. One is a real tool called from the wrong layer
+    (``Bash``, ``REPL``): the model's mistake, but still a call worth counting,
+    and the row stays. The other is a name no catalogue ever held
+    (``REPO_PLACEHOLDER``, a placeholder the model emitted in place of a name):
+    nothing ran, yet the row it left behind read ``removed`` in every panel — a
+    state that means "was installed, is gone" — for a tool that never existed.
+    Only the second is withdrawn, and the installed catalogue is what tells the
+    two apart. Returns whether the row was withdrawn.
+    """
+    if not _carries_refusal(rec):
+        return False
+    name = rec.get("name") or ""
+    known = conn.execute(
+        "SELECT 1 FROM inventory WHERE kind='tool' AND name=?", (name,)
+    ).fetchone()
+    return known is None
 
 
 def _mcp_from_name(name: str):
@@ -1076,6 +1125,15 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
 
     elif rtype == "function_call_result":
         call_id = rec.get("callId") or rec.get("id")
+        if _withdraw_refused_call(conn, rec):
+            # The row was written when the call record arrived; the verdict only
+            # exists now. Deleting it is safe in both directions: the index is
+            # derived from the transcripts, and a re-read of this file re-runs
+            # the same withdrawal on a row that is already gone.
+            conn.execute("DELETE FROM tool_calls WHERE call_id=?", (call_id,))
+            if unparsed is not None:
+                _bump(unparsed, INVALID_TOOL_NAME)
+            return
         status = rec.get("status")
         rts = rec.get("timestamp")
         conn.execute(
@@ -1288,6 +1346,7 @@ def format_doc(tools=None, agents=None, models=None, commands=None,
             NESTED_USAGE_FIELDS),
         row("`_meta` fields", BAGGAGE_FIELDS),
         row("message content-block fields", CONTENT_BLOCK_FIELDS),
+        row("`providerData.toolResult` fields", TOOL_RESULT_FIELDS),
         row("tool argument names", TOOL_ARG_FIELDS),
         row("inventory JSON keys", INVENTORY_JSON_FIELDS),
         "- **Tool names that drive classification**: "
@@ -1300,7 +1359,10 @@ def format_doc(tools=None, agents=None, models=None, commands=None,
         f"default agent type `{DEFAULT_AGENT_TYPE}`\n",
         f"- **Tool-name validity**: empty, over {TOOL_NAME_MAX} characters, or "
         "containing whitespace/control characters is counted as "
-        f"`{INVALID_TOOL_NAME}` and not stored as a call\n",
+        f"`{INVALID_TOOL_NAME}` and not stored as a call. A name the CLI "
+        "refused as \"not a direct tool\" is withdrawn the same way when the "
+        "installed catalogue does not hold it either — nothing ran, and the row "
+        "read `removed` for a tool that never existed\n",
         f"- **Builtin catalogue source**: {origin}{where} — the installed "
         f"`{PRODUCT_CLI_NAME}` package's `{PRODUCT_JSON}`, found by resolving "
         "the executable on `PATH` and walking up; `CBUT_PRODUCT_JSON` overrides "

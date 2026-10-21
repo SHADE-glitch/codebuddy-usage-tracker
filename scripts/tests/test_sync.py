@@ -207,6 +207,42 @@ class IndexerTest(unittest.TestCase):
         self.assertIsNotNone(row, "the rejected name was not counted")
         self.assertEqual(row[0], 1)
 
+    def test_a_refused_call_whose_name_no_catalogue_holds_is_withdrawn(self):
+        """Code Mode refuses every name it does not expose directly. For a real
+        tool (Bash, REPL) that is the model calling from the wrong layer and the
+        row stays. For a name no catalogue ever held (REPO_PLACEHOLDER, a
+        placeholder the model emitted instead of a name) nothing ran, yet the row
+        read "removed" in every panel — a state that means "was installed, is
+        gone" — for a tool that never existed. Only the second is withdrawn."""
+        refusal = {"type": "text", "text": 'In ptc Code Mode, "X" is not a '
+                   'direct tool - it is a REPL sandbox global.'}
+        self.conn.execute("INSERT INTO inventory(kind,name,owner_plugin)"
+                          " VALUES('tool','Bash','')")
+        write_records(self.tr, [
+            {"type": "function_call", "name": "REPO_PLACEHOLDER",
+             "callId": "bad", "sessionId": "s1", "cwd": "/p", "timestamp": 10},
+            {"type": "function_call_result", "name": "REPO_PLACEHOLDER",
+             "callId": "bad", "status": "incomplete", "timestamp": 20,
+             "output": refusal},
+            {"type": "function_call", "name": "Bash", "callId": "kept",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 30},
+            {"type": "function_call_result", "name": "Bash", "callId": "kept",
+             "status": "incomplete", "timestamp": 40, "output": refusal},
+        ])
+        unparsed = {}
+        sync.index_file(self.conn, self.tr, 0, {}, {}, {}, unparsed)
+        for reason, n in unparsed.items():
+            db.note_unparsed(self.conn, reason, n)
+        self.conn.commit()
+        kept = [r["tool_name"] for r in self.conn.execute(
+            "SELECT tool_name FROM tool_calls")]
+        self.assertEqual(kept, ["Bash"],
+                         "a refused call to a catalogued tool is still a call")
+        row = self.conn.execute("SELECT count FROM unparsed WHERE reason=?",
+                                (sync.INVALID_TOOL_NAME,)).fetchone()
+        self.assertIsNotNone(row, "the withdrawn call was not counted")
+        self.assertEqual(row[0], 1)
+
     def test_partial_trailing_line_not_consumed(self):
         with open(self.tr, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(

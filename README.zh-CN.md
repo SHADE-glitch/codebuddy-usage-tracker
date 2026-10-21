@@ -239,7 +239,7 @@ sync_secs = 30       # TUI 自动同步定时器
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 523 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 524 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -248,7 +248,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 523 tests ... OK
 
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
-| `test_sync.py` | 135 | 转录解析、工具归类、路由出处列（`requestModelId` → 内置 / 厂商 / 主机 / 端点）、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
+| `test_sync.py` | 136 | 转录解析、工具归类、路由出处列（`requestModelId` → 内置 / 厂商 / 主机 / 端点）、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数 |
 | `test_tui.py` | 125 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、每 tab 独立的日期选择器（日历翻月/跨年、当前目标卡片、能整行放下的预设与快选快捷项、输入框读写的 24 小时时钟、小时网格、微调步进选择器、切 tab 后顶栏跨度仍完整）、两级下钻（窗口内汇总头、Enter 打开单条全字段、长值折行不裁剪、插件路径）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、单元格上限与它背后的设置项、状态栏诚实性 |
 | `test_usage.py` | 108 | 自然日窗口（今天 / 2 / 3 / 7 / 14 / 30 天 / 全部）与自定义范围的标签、日期时间的宽松输入归一化（24 小时显示、输入仍兼容 12 小时）、token 汇总与提供方分组、Dashboard 查询、下钻查询（窗口内按实体汇总、插件使用计数、单条调用的整行）、结构版本门禁、索引值不值得留 |
 | `test_indexes.py` | 4 | 前两次切索引只能靠一次手写读数的那条规则：报告面真的会跑的每条语句都被抓下来用 `EXPLAIN QUERY PLAN` 过一遍，声明了却没有任何计划点名的索引一律失败——外加 v9 那次真正用上的结构规则：键是另一个已声明索引键的严格前缀 |
@@ -277,7 +277,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 523 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 523 个用例 |
+| `scripts/tests/` | 上面那 524 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、以及体积与性能的固定度量法和基线 |
 | `systemd/` | 可选的每日同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
