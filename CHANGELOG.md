@@ -1310,3 +1310,42 @@ Cost     An installed-but-unused model no longer appears in Tokens (the previous
          `q_call_detail` still shows it as unknown for that one call. The catalogue snapshot was
          refreshed in `3e08c20`, a separate chore for the installed CLI's tool rename.
 Commit   87e985e
+
+### D-055 · 2026-10-21 · fix
+
+Symptom  The Tools tab listed `REPO`, `REPO_env`, `REPO_PLACEHOLDER` (10 calls) and
+         `REPO_TOTAL_DOCS_PLACEHOLDER` in state `removed` while their `last used` was the previous
+         day. Nothing by those names was ever installed: they came from subagent transcripts where
+         the model emitted a template placeholder in place of a tool name, and Code Mode answered
+         each with "is not a direct tool". D-053's guard caught only the whitespace shape
+         (`REPO<…\n<… parameter name=`), so a placeholder without a newline passed it, and
+         `removed` — which means "was installed, is gone" — was the only state such a row could
+         ever read.
+Change   Ingest withdraws a call when its result carries Code Mode's refusal *and* the installed
+         catalogue does not hold the name. The refusal alone is not enough: the same message
+         answers a real tool called from the wrong layer (Bash ×4, SendMessage ×4, REPL ×2, Read,
+         Write, AskUserQuestion on this machine), and those rows stay. A withdrawn call is counted
+         as `invalid_tool_name`, which already means "a call whose name cannot be a tool". The
+         verdict only exists on the result record, so the row is deleted there rather than skipped
+         at insert; a re-read repeats the same no-op withdrawal. `output`,
+         `providerData.toolResult` and `toolResult.error` are registered in the format registry
+         (read for the marker only, never stored) and the generated block is refreshed.
+Evidence L0 2026-10-21: `.venv/bin/python -m unittest discover -s scripts/tests` — 524 tests, OK;
+         the new case fails when the withdrawal is disabled
+         (`['Bash', 'REPO_PLACEHOLDER'] != ['Bash']`). L1 the same day: two throwaway stores
+         (`--db /tmp/…`) built from this machine's logs, one with the previous code and one with
+         this change. `tool_calls` −13 and `unparsed.invalid_tool_name` +14; every other table
+         identical, apart from `model_responses` −3 and `type:reasoning` −2, which the call-id diff
+         showed to be three REPL calls the live session wrote between the two builds. The 14th
+         placeholder row was already refused at insert by D-053's guard, and its result now bumps
+         the same counter. L2 with the owner's go-ahead: the snapshot taken immediately before
+         held 45,262 calls, 14 of them with a name outside the catalogue; after a targeted delete
+         the live table has none, and every other table is untouched. `cbut sync --full` was not
+         used — it rebuilds from the transcripts still on disk and would have dropped ~2,984 calls
+         whose logs CodeBuddy has since pruned.
+Cost     A refused call to a name the catalogue does not hold is now invisible in every panel and
+         in the headless reports. A name that leaves the catalogue later keeps its rows (no
+         refusal ever marked them), so `removed` still means what it says. The filter reads
+         CodeBuddy's English message text: if the CLI rewords it the rows come back, silently,
+         because nothing fails — the two-store L1 comparison above is the check to re-run.
+Commit   583594b
