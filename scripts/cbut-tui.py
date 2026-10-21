@@ -208,6 +208,11 @@ class EntityTab(NamedTuple):
     key_kind: str
     key_index: object = 0
     default_range: str = "7d"
+    # DB columns a composite key is built from, in the same order as
+    # ``key_index``. Empty means "key the visible cells". Tokens needs it: its
+    # provider cell is a display label (Built-in), while the drill-down has to
+    # filter on the stored value, and the name may be capped on a narrow screen.
+    key_columns: tuple = ()
 
 
 def _tool_row(r):
@@ -263,7 +268,8 @@ ENTITY_TABS = (
               key_index=(0, 1)),
     EntityTab("tab-tokens", "Tokens", "t-tokens", "colnote-tokens",
               TOKEN_COLUMNS, "q_model_tokens", _token_row,
-              "No model responses yet", "model"),
+              "No model responses yet", "model", key_index=(0, 1),
+              key_columns=("model", "provider")),
 )
 
 
@@ -1171,18 +1177,24 @@ if HAVE_TEXTUAL:
             return self.app.name_cap
 
         def __init__(self, model: str, start_ts=None, end_ts=None,
-                     window_label: str = "all time"):
+                     window_label: str = "all time", provider=None):
             super().__init__()
             self.model = model
+            self.provider = provider
             self.start_ts = start_ts
             self.end_ts = end_ts
             self.window_label = window_label
             self._wide_rows = {}
 
+        @property
+        def scope(self) -> str:
+            """The Tokens row this screen was opened from, as it was labelled."""
+            return f"{self.model} · {db.provider_label(self.provider)}"
+
         def compose(self) -> ComposeResult:
-            yield TopBar(f"Model responses · {self.model}")
+            yield TopBar(f"Model responses · {self.scope}")
             yield Vertical(
-                Static(f"[b]Model responses[/b] · {self.model}", id="resp-title"),
+                Static(f"[b]Model responses[/b] · {self.scope}", id="resp-title"),
                 Static(id="resp-summary", classes="entity-summary"),
                 Static(id="colnote-resp", classes="col-note"),
                 DataTable(id="resp-table", zebra_stripes=True),
@@ -1190,11 +1202,12 @@ if HAVE_TEXTUAL:
             yield Footer()
 
         def on_mount(self) -> None:
-            self.title = f"Model: {self.model}"
+            self.title = f"Model: {self.scope}"
             self.query_one("#resp-table", DataTable).cursor_type = "row"
             conn = db.open_db(self.app.db_path, readonly=True)
             try:
                 found = db.q_model_responses(conn, model=self.model,
+                                             provider=self.provider,
                                              limit=self.app.DETAIL_LIMIT,
                                              start_ts=self.start_ts,
                                              end_ts=self.end_ts)
@@ -1216,7 +1229,8 @@ if HAVE_TEXTUAL:
                     ])
                 summary = db.q_model_summary(conn, self.model,
                                              start_ts=self.start_ts,
-                                             end_ts=self.end_ts)
+                                             end_ts=self.end_ts,
+                                             provider=self.provider)
             finally:
                 conn.close()
             self.query_one("#resp-summary", Static).update(
@@ -1581,9 +1595,17 @@ if HAVE_TEXTUAL:
             and this path sees the patched function.
             """
             rows = getattr(db, tab.query)(conn, start_ts=start, end_ts=end)
+            # A NULL in a key column is keyed as the empty string: the composite
+            # key must stay one string, and None -> "None" would be a value a
+            # provider could legitimately be named.
+            key_rows = None
+            if tab.key_columns:
+                key_rows = [["" if r[c] is None else r[c]
+                             for c in tab.key_columns] for r in rows]
             self._fill_wide(
                 tab.table_id, [tab.cells(r) for r in rows], tab.empty,
-                key_index=tab.key_index, key_kind=tab.key_kind)
+                key_index=tab.key_index, key_kind=tab.key_kind,
+                key_rows=key_rows)
 
         @staticmethod
         def _entity_tab(pane: str):
@@ -2179,7 +2201,11 @@ if HAVE_TEXTUAL:
                 start, end = self._bounds_for(pane)
                 label = db.window_label(rng)
             if kind == "model":
-                self.push_screen(ModelResponsesScreen(rest, start, end, label))
+                # The key is model\t<model>\t<provider>: both halves travel, or a
+                # model served through two routes would open the wrong responses.
+                model, _, provider = rest.partition("\t")
+                self.push_screen(ModelResponsesScreen(
+                    model, start, end, label, provider=provider))
             elif kind == "mcp":
                 # Key is mcp\t<server>\t<tool>. q_history maps "mcp" to the
                 # mcp_usage.tool column, so query by the TOOL and show

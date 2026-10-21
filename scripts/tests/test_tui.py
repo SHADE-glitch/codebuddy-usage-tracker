@@ -245,7 +245,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             t = app.query_one("#t-tokens", tui.DataTable)
             row = all_rows(t)[0]
             self.assertEqual(row[0], "m")
-            self.assertEqual(row[1], "-")    # Provider (none recorded)
+            self.assertEqual(row[1], "Built-in")   # route absent -> built-in
             self.assertEqual(row[2], "-")    # Usage Total (no API parts)
             self.assertEqual(row[3], "1")    # Requests (the row exists)
             # Input / Output / API Total / Cache columns are "-", never "0"
@@ -265,7 +265,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             row = all_rows(t)[0]
             # Order: Model · Provider · Usage Total · Requests · Input · Output ·
             #        API Total · Cache hit · Cache miss · Cache write
-            self.assertEqual(row[1], "-")    # Provider (none recorded)
+            self.assertEqual(row[1], "Built-in")   # route absent -> built-in
             self.assertEqual(row[2], "37")   # Usage Total = 10 + 20 + 7
             self.assertEqual(row[3], "1")    # Requests
             self.assertEqual(row[4], "10")   # Input  = prompt_tokens
@@ -320,7 +320,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                                       "Requests", "Input", "Output", "API Total",
                                       "Cache hit", "Cache miss", "Cache write"])
 
-    # 5e. the Provider column shows Built-in / a vendor, and "-" when unknown
+    # 5e. the Provider column shows Built-in / a vendor
     async def test_tokens_shows_provider_origin(self):
         now = int(time.time() * 1000)
         make_db(self.db_path, [
@@ -335,7 +335,8 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             by_model = {r[0]: r for r in all_rows(t)}
             self.assertEqual(by_model["built-in-model"][1], "Built-in")
             self.assertEqual(by_model["custom-alias"][1], "Volcano Ark")
-            self.assertEqual(by_model["unknown-route"][1], "-")
+            # No requestModelId -> built-in, never a second, unattributable row.
+            self.assertEqual(by_model["unknown-route"][1], "Built-in")
 
     # 5f. the Usage tab carries the Provider column too
     async def test_usage_tab_has_provider_column(self):
@@ -1138,7 +1139,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             # Order: Time · Model · Provider · Usage Total · Input · Output ·
             #        API Total · Cache hit · Cache miss · Cache write · Hit rate
             self.assertEqual(row[1], "m")            # model
-            self.assertEqual(row[2], "-")            # provider (none recorded)
+            self.assertEqual(row[2], "Built-in")      # route absent -> built-in
             self.assertEqual(row[3], "1,000,029")    # Usage Total = 10+20+999999
             self.assertEqual(row[4], "10")           # Input
             self.assertEqual(row[5], "20")           # Output
@@ -1245,7 +1246,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             t = app.query_one("#t-tokens", tui.DataTable)
             row = all_rows(t)[0]
-            self.assertEqual(row[1], "-")        # Provider (none recorded)
+            self.assertEqual(row[1], "Built-in")  # route absent -> built-in
             self.assertEqual(row[2], "2")        # Usage Total = 1 + 1
             self.assertEqual(row[3], "2")        # Requests
 
@@ -2334,7 +2335,8 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             key = list(t.rows.keys())[1]
             # the real routing handler, same message a click posts
             shown = str(t.get_cell_at(t.cursor_coordinate))
-            full = key.value.partition("\t")[2]
+            _kind, _, rest = key.value.partition("\t")
+            full, _, provider = rest.partition("\t")
             app.on_data_table_row_selected(
                 tui.DataTable.RowSelected(t, t.cursor_row, key))
             await pilot.pause()
@@ -2342,8 +2344,8 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             top = app.screen_stack[-1]
             self.assertIsInstance(top, tui.ModelResponsesScreen,
                                   f"a cut table cannot open its detail screen ({top!r})")
-            self.assertEqual(top.model, full,
-                             "the rebuilt rows lost the key that names their model")
+            self.assertEqual((top.model, top.provider), (full, provider),
+                             "the rebuilt rows lost the key that names their row")
             # The cell and the key are deliberately different objects now: the cell
             # is the capped rendering, the route is the whole name. Asserting only
             # `top.model == shown` would have passed either way.
@@ -3075,8 +3077,8 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             # header + one row: a newline in a cell used to add a line
             self.assertEqual(table.virtual_size.height, table.row_count + 1)
 
-    # 80. the Tokens tab lists an available model that was never called
-    async def test_tokens_lists_an_available_model_with_zero_rows(self):
+    # 80. the Tokens tab is usage-only: a catalogue row is not a model record
+    async def test_tokens_does_not_list_an_uncalled_catalogue_model(self):
         now = self._noon_ms()
         make_db(self.db_path, [("m1", "s1", "used-model", 10, 2, 0, 0,
                                 now - 60_000, 1)])
@@ -3091,11 +3093,46 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             app.query_one(tui.TabbedContent).active = "tab-tokens"
             await pilot.pause()
             table = app.query_one("#t-tokens", tui.DataTable)
-            rows = {str(r[0]): r for r in all_rows(table)}
-            self.assertIn("available-model", rows)
-            available = rows["available-model"]
-            self.assertEqual(str(available[3]), "0")       # Requests
-            self.assertEqual(str(available[2]), "-")       # Usage Total
+            models = {str(r[0]) for r in all_rows(table)}
+            self.assertEqual(models, {"used-model"})
+
+    async def test_two_routes_for_one_model_do_not_collide(self):
+        """The crash: one model answered twice, once without requestModelId.
+
+        The row key used to be the model name alone, so ``Tokens`` raised
+        ``DuplicateKey`` as soon as a model had rows from two routes (and All
+        time was the window that included both). The key now carries the
+        provider, and each row opens only its own responses.
+        """
+        now = self._noon_ms()
+        make_db(self.db_path, [
+            ("a", "s1", "shared", 10, 2, 0, 0, now - 60_000, 1),
+            ("b", "s1", "shared", 5, 1, 0, 0, now - 50_000, 1),
+            ("c", "s1", "shared", 1, 1, 0, 0, now - 40_000, 1),
+        ], providers={"a": "builtin", "c": "Volcano Ark"})
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tokens"
+            app.tab_range["tab-tokens"] = "all"
+            await pilot.pause()
+            table = app.query_one("#t-tokens", tui.DataTable)
+            keys = {k.value for k in table.rows.keys()}
+            self.assertEqual(keys, {"model\tshared\tbuiltin",
+                                    "model\tshared\tVolcano Ark"})
+            self.assertEqual(table.row_count, 2)
+            # Opens the route the row was selected from, not the model's whole history.
+            key = next(k for k in table.rows.keys()
+                       if k.value.endswith("Volcano Ark"))
+            app.on_data_table_row_selected(
+                tui.DataTable.RowSelected(table, 0, key))
+            await pilot.pause()
+            top = app.screen_stack[-1]
+            self.assertIsInstance(top, tui.ModelResponsesScreen)
+            self.assertEqual((top.provider, top.window_label),
+                             ("Volcano Ark", "All time"))
+            self.assertEqual(
+                top.query_one("#resp-table", tui.DataTable).row_count, 1)
 
     # 78b. a styled cell keeps its style through the name_cap
     def test_a_styled_cell_survives_the_name_cap(self):

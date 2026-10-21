@@ -21,7 +21,7 @@ cbut format --write      # refresh the block in this file after changing the reg
 - **`_meta` fields**: `baggage`
 - **message content-block fields**: `text`
 - **tool argument names**: `agent_type`, `args`, `command`, `skill`, `subagent_type`, `toolName`, `tool_name`
-- **inventory JSON keys**: `agents`, `commands`, `id`, `installPath`, `mcpServers`, `models`, `name`, `plugins`, `tools`, `url`, `vendor`, `version`
+- **inventory JSON keys**: `agents`, `commands`, `id`, `installPath`, `mcpServers`, `models`, `name`, `plugins`, `tools`, `url`, `version`
 - **Tool names that drive classification**: `Skill`, `Agent`, prefix `mcp__` with separator `__`
 - **Meta tools (wrap another tool)**: `DeferExecuteTool`, `ListMcpResources`, `ReadMcpResource`, `ToolSearch`, `WaitForMcpServers`
 - **Tolerant name tables** (an unknown name still indexes): 35 builtin tools, 17 builtin agents, 0 builtin models, 0 builtin commands, default agent type `general-purpose`

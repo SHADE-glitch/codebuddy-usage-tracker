@@ -276,7 +276,6 @@ TOOL_ARG_FIELDS = frozenset({
 # models.json (whose "models"[].id/url give the custom routes their host).
 INVENTORY_JSON_FIELDS = frozenset({
     "mcpServers", "plugins", "installPath", "version", "models", "url",
-    "vendor",
     # product.json, the builtin catalogue. Read by name/id, so the fields have to
     # be registered or the registry stops describing the parser.
     PRODUCT_TOOLS_FIELD, PRODUCT_AGENTS_FIELD, PRODUCT_MODELS_FIELD,
@@ -507,23 +506,13 @@ def collect_inventory() -> tuple[list[tuple], dict, Path | None]:
     rows += [("command", n, "", None, product_path, "builtin")
              for n in sorted(catalog.commands)]
 
-    # Custom provider definitions: models.json is where the host keeps them, and
-    # the same file already names the url host used for the route label. Only
-    # id/url/vendor are read (never the apiKey beside them).
-    models_path = root / MODELS_FILE
-    custom = _load_json(models_path) or {}
-    custom_entries = custom.get("models") if isinstance(custom, dict) else None
-    for entry in custom_entries or []:
-        if not isinstance(entry, dict):
-            continue
-        model_id = entry.get("id")
-        if not isinstance(model_id, str) or not model_id:
-            continue
-        host = url_host(entry.get("url"))
-        provider = (_vendor_for_host(host) or host
-                    or entry.get("vendor") or "custom")
-        rows.append(("model", model_id, provider, None, str(models_path),
-                     "user"))
+    # models.json is *not* inventoried as models. Its ids are route names
+    # (``ark-code-latest``) that answer as a different model
+    # (``deepseek-v4-1-flash``), so listing them produced a zero-request Tokens
+    # row naming something nobody called. The file is still read by
+    # ``load_model_hosts`` to resolve a response's route label, which is the only
+    # thing it can say for certain. Only id/url are read there (never the apiKey
+    # beside them).
 
     # MCP servers
     mcp_path = root / MCP_FILE

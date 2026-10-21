@@ -1135,7 +1135,8 @@ def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None):
     ).fetchall()
 
 
-def q_model_responses(conn, limit=50, model=None, start_ts=None, end_ts=None):
+def q_model_responses(conn, limit=50, model=None, start_ts=None, end_ts=None,
+                      provider=None):
     """Recent per-response model usage rows (newest first).
 
     Token columns are the raw providerData.rawUsage values; NULL means the field
@@ -1143,13 +1144,16 @@ def q_model_responses(conn, limit=50, model=None, start_ts=None, end_ts=None):
     to ``prompt + completion``; ``total_tokens_source`` says which was used
     ('provider' | 'derived' | NULL). The window is half-open; both bounds ``None``
     is all-time.
+
+    ``model`` + ``provider`` scope the drill-down to the exact Tokens row that
+    was opened; the provider comes from the row key, so two routes serving one
+    model name cannot share a screen.
     """
-    conds: list = []
-    if model:
-        conds.append(("model = ?", model))
+    conds = _model_provider_conds(model, provider)
     conds += _time_conds(start_ts, end_ts, col="ts")
     sql = (
-        "SELECT message_id, session_id, conversation_request_id, model, provider,"
+        f"SELECT message_id, session_id, conversation_request_id, model,"
+        f" {_PROVIDER_DISPLAY_EXPR} AS provider,"
         " prompt_tokens, completion_tokens, cache_read_input_tokens,"
         " cache_creation_input_tokens,"
         " prompt_cache_hit_tokens, prompt_cache_miss_tokens,"
@@ -1231,14 +1235,15 @@ def q_plugin_summary(conn, plugin, start_ts=None, end_ts=None):
     ).fetchone()
 
 
-def q_model_summary(conn, model, start_ts=None, end_ts=None):
-    """Windowed token rollup for one model — the drill-down's header numbers.
+def q_model_summary(conn, model, start_ts=None, end_ts=None, provider=None):
+    """Windowed token rollup for one (model, provider) — the drill-down header.
 
     Same expressions the Tokens tab and the Usage page use, so the header can
     never disagree with the row it was opened from. ``total_tokens`` is the API
     total; ``usage_total_tokens`` is the display-only cache-hit re-add.
     """
-    conds = [("model = ?", model)] + _time_conds(start_ts, end_ts, col="ts")
+    conds = _model_provider_conds(model, provider)
+    conds += _time_conds(start_ts, end_ts, col="ts")
     where = " WHERE " + " AND ".join(c for c, _ in conds)
     return conn.execute(
         "SELECT COUNT(*) AS responses,"
@@ -1314,8 +1319,45 @@ def q_call_detail(conn, kind, key):
     return dict(row) if row else None
 
 
+# The route origin lives in model_responses.provider (schema v7): 'builtin' for a
+# built-in route, else a third-party label resolved at ingest from
+# providerData.requestModelId. It is read from the transcript, never inferred
+# from the model name. See cbut-sync.resolve_provider.
+PROVIDER_BUILTIN = "builtin"
+
+# A response whose ``requestModelId`` is absent has no stored route. It is shown
+# as the built-in route: CodeBuddy only omits the field on older built-in
+# responses, and leaving it as a separate ``-`` row split one model into two rows
+# that could not be told apart (and collided in the Tokens table). The stored
+# column is untouched — only what the panels read is normalised here.
+_PROVIDER_DISPLAY_EXPR = f"COALESCE(provider, '{PROVIDER_BUILTIN}')"
+
+
+def _model_provider_conds(model=None, provider=None):
+    """Predicates scoping a model query to one Tokens row, or ``[]`` for all.
+
+    ``provider`` is the value the row was keyed on (``_PROVIDER_DISPLAY_EXPR``),
+    so ``builtin`` also selects the responses whose stored provider is NULL.
+    """
+    conds: list = []
+    if model:
+        conds.append(("model = ?", model))
+    if provider:
+        conds.append((f"{_PROVIDER_DISPLAY_EXPR} = ?", provider))
+    return conds
+
+
 def q_model_tokens(conn, start_ts=None, end_ts=None):
-    """Per-model token totals.
+    """Per-model token totals, one row per (model, provider) that answered.
+
+    Usage only: a name enters this table by answering a request, never by being
+    listed in a catalogue. That is deliberate. A built-in catalogue turns over
+    with the installed package and an account's region, and a third-party
+    ``models.json`` entry is a route id (``ark-code-latest``), not the model that
+    answered it (``deepseek-v4-1-flash``); listing either produced zero-request
+    rows that named routes nobody called. Past responses are the durable record,
+    so a model that leaves the catalogue (``glm-5.1``) keeps every row it earned
+    here, for as long as the database keeps them.
 
     ``SUM`` skips NULLs, so responses recorded with ``usage_available=0`` add
     nothing instead of a fabricated zero. ``tokenDelta`` and credit are never
@@ -1336,8 +1378,9 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
     inflated.
     """
     where, params = _time_filter(start_ts, end_ts)
-    used = (
-        "SELECT model, provider,"
+    return conn.execute(
+        "SELECT model,"
+        f" {_PROVIDER_DISPLAY_EXPR} AS provider,"
         " COUNT(*) AS responses,"
         " SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END) AS with_usage,"
         " SUM(prompt_tokens) AS prompt_tokens,"
@@ -1351,33 +1394,10 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
         f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
         f" {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens"
         # Grouped by (model, provider): a model name can be served by two routes
-        # (a built-in id and a custom alias), and those must not merge.
+        # (a built-in route and a custom endpoint), and those must not merge.
         f" FROM model_responses{where}"
-        " GROUP BY model, provider")
-    # The list is installed ∪ seen-in-window, like every entity tab: the model
-    # catalogue is read from the host on each sync, and a model that has not
-    # answered in this tab's window still gets its own zero row instead of
-    # vanishing. ``owner_plugin`` carries the provider label for model rows (the
-    # only owner a model has). A pair already present in the window is not
-    # repeated; a model used through another route keeps both rows, because the
-    # two routes are different measurements.
-    available = (
-        "SELECT i.name AS model, NULLIF(i.owner_plugin, '') AS provider,"
-        " 0 AS responses, 0 AS with_usage,"
-        " NULL AS prompt_tokens, NULL AS completion_tokens,"
-        " NULL AS cache_read_input_tokens,"
-        " NULL AS cache_creation_input_tokens,"
-        " NULL AS prompt_cache_hit_tokens, NULL AS prompt_cache_miss_tokens,"
-        " NULL AS prompt_cache_write_tokens,"
-        " NULL AS total_tokens, NULL AS total_tokens_source,"
-        " NULL AS usage_total_tokens"
-        " FROM inventory i WHERE i.kind='model'"
-        " AND NOT EXISTS (SELECT 1 FROM used u WHERE u.model = i.name"
-        "  AND COALESCE(u.provider, '') = COALESCE(i.owner_plugin, ''))")
-    return conn.execute(
-        f"WITH used AS ({used}) SELECT * FROM ("
-        f" SELECT * FROM used UNION ALL {available}"
-        ") ORDER BY responses DESC, model, provider",
+        f" GROUP BY model, {_PROVIDER_DISPLAY_EXPR}"
+        " ORDER BY responses DESC, model, provider",
         params,
     ).fetchall()
 
@@ -1393,13 +1413,6 @@ USAGE_RANGE_LABELS = {
     "1d": "Today", "2d": "2 days", "3d": "3 days",
     "7d": "7 days", "14d": "14 days", "30d": "30 days", "all": "All time",
 }
-
-# The route origin lives in model_responses.provider (schema v7): 'builtin' for a
-# built-in route, else a third-party label resolved at ingest from
-# providerData.requestModelId. It is read from the transcript, never inferred
-# from the model name. See cbut-sync.resolve_provider.
-PROVIDER_BUILTIN = "builtin"
-
 
 def provider_label(value):
     """The display label for a ``model_responses.provider`` value.
@@ -1719,7 +1732,8 @@ def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0):
     """
     where, params = _ts_where(start_ts, end_ts)
     sql = (
-        "SELECT ts, model, provider, prompt_tokens, completion_tokens,"
+        f"SELECT ts, model, {_PROVIDER_DISPLAY_EXPR} AS provider,"
+        " prompt_tokens, completion_tokens,"
         f" {_TOTAL_EXPR} AS total_tokens,"
         f" {_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
         f" {_USAGE_TOTAL_EXPR} AS usage_total_tokens,"
@@ -1744,7 +1758,8 @@ def q_usage_model_stats(conn, start_ts, end_ts, order_by="total_tokens"):
     where, params = _ts_where(start_ts, end_ts)
     order = _MODEL_STATS_ORDER.get(order_by, _MODEL_STATS_ORDER["total_tokens"])
     return conn.execute(
-        "SELECT model, provider,"
+        "SELECT model,"
+        f" {_PROVIDER_DISPLAY_EXPR} AS provider,"
         " COUNT(*) AS requests,"
         " SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END) AS with_usage,"
         " SUM(prompt_tokens) AS prompt_tokens,"
@@ -1755,7 +1770,7 @@ def q_usage_model_stats(conn, start_ts, end_ts, order_by="total_tokens"):
         " SUM(prompt_cache_miss_tokens) AS cache_miss,"
         " SUM(prompt_cache_write_tokens) AS cache_write"
         f" FROM model_responses WHERE {where}"
-        f" GROUP BY model, provider ORDER BY {order}",
+        f" GROUP BY model, {_PROVIDER_DISPLAY_EXPR} ORDER BY {order}",
         params,
     ).fetchall()
 

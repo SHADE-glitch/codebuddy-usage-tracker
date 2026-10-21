@@ -136,9 +136,20 @@ tool runs from a checkout, so the version only needs to move when a documented c
   It is never inferred from the model *name*: a custom endpoint's alias can look built-in
   (`deepseek-v4-1-flash` next to the built-in `deepseek-v4.1-flash`). This reverses the earlier
   "no provider field" decision, which was true only while `requestModelId` went unread.
-- **Name is the primary key of every panel.** Each tab lists the union of what is installed
-  (the `inventory` table) and what has *ever been used* (the usage tables), keyed by name
-  alone, sorted by call count. A renamed, updated or removed entity keeps its history; a name
+  A response that carries no `requestModelId` has no stored route; the panels read it as
+  `builtin` through `db._PROVIDER_DISPLAY_EXPR`, so a model is not split into a `Built-in`
+  and a `-` row. That is a display rule: the stored column stays NULL.
+- **Tokens is usage-only.** Every other panel lists installed ∪ ever used; a model is
+  different, because its catalogue is a package snapshot and its custom entries are route
+  ids, not models. A row exists only for a (model, provider) that answered, which also means
+  history survives a catalogue upgrade (`glm-5.1` leaving `product.json`). `inventory` still
+  carries the built-in model / command catalogue for `cbut inventory`; `models.json` ids are
+  no longer inventoried at all, and the file is read only by `load_model_hosts` for the route
+  label. The Tokens row key is `(model, provider)`, never the name alone.
+- **Name is the primary key of every panel — except Tokens.** Each entity tab lists the
+  union of what is installed (the `inventory` table) and what has *ever been used* (the
+  usage tables), keyed by name alone, sorted by call count; a model row is keyed by
+  `(model, provider)` and exists only when it answered (see the Tokens rule above). A renamed, updated or removed entity keeps its history; a name
   that appears under several owners is merged into one row. Under a time window only the counts
   shrink — the list stays full. Add a new panel by name, never by a per-run surrogate id.
   **`inventory` is a snapshot of what is installed right now**, rebuilt from disk in one

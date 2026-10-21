@@ -270,10 +270,10 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual(names, {"add-tests", "api-contract"})
 
     def test_catalogue_models_and_commands_are_inventoried(self):
-        """The package's own arrays decide the Tokens and inventory lists.
+        """The package's own arrays decide the inventory list.
 
-        Before this, models and commands existed only when something used
-        them; a model the host offers but nobody had called was invisible.
+        Tokens is usage-only, but ``cbut inventory`` still answers "what does the
+        installed package offer", so those rows have to be there.
         """
         snapshot = json.loads((
             Path(__file__).resolve().parent / "fixtures"
@@ -296,10 +296,11 @@ class IndexerTest(unittest.TestCase):
             " AND name=?", (sorted(models)[0],)).fetchone()[0]
         self.assertEqual(provider, "builtin")
 
-    def test_custom_models_are_inventoried_with_their_route_label(self):
-        """``models.json`` is the host's custom-provider list; the url host is
-        the same label a response would get (``Volcano Ark``), and a model
-        without a url still gets an honest ``custom`` owner instead of NULL.
+    def test_custom_model_route_ids_are_not_inventoried(self):
+        """``models.json`` holds route ids, not models: ``ark-code-latest``
+        answers as ``deepseek-v4-1-flash``. Inventoring it put a zero-request
+        Tokens row under a name nobody had called. The file is still read for
+        the url host that labels a real response (``Volcano Ark``).
         """
         root = self._cb_root()
         (root / "models.json").write_text(json.dumps({"models": [
@@ -313,11 +314,11 @@ class IndexerTest(unittest.TestCase):
             sync.scan_inventory(self.conn)
         finally:
             sync.db.CODEBUDDY_DIR = old
-        owners = {r[0]: r[1] for r in self.conn.execute(
-            "SELECT name, owner_plugin FROM inventory WHERE kind='model'"
-            " AND source='user'")}
-        self.assertEqual(owners["custom-ark"], "Volcano Ark")
-        self.assertEqual(owners["custom-nourl"], "custom")
+        user_models = {r[0] for r in self.conn.execute(
+            "SELECT name FROM inventory WHERE kind='model' AND source='user'")}
+        self.assertEqual(user_models, set())
+        self.assertEqual(sync.load_model_hosts(root),
+                         {"custom-ark": "ark.cn-beijing.volces.com"})
 
     def test_user_agents_are_inventoried(self):
         # ~/.codebuddy/agents/<name>.md was never scanned, so an installed agent

@@ -100,7 +100,8 @@ PLANNABLE = ("SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "REPLACE")
 # of being quietly skipped.
 QUERY_ARGUMENTS = {
     "limit": 5, "start_ts": None, "end_ts": None, "kind": "tool", "name": "bash",
-    "model": "model-x", "plugin": "some-plugin", "server": "some-server",
+    "model": "model-x", "provider": "builtin",
+    "plugin": "some-plugin", "server": "some-server",
     "offset": 0, "key": "call-1",
     # `None` for the whitelisted sort key: `q_usage_model_stats` falls back to its own
     # default for an unknown value, so the fallback's ORDER BY is what gets planned.

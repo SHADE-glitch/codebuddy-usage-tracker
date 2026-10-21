@@ -560,22 +560,37 @@ class WindowedQueryTest(unittest.TestCase):
         alltime = {r["model"]: r for r in db.q_model_tokens(self.conn)}
         self.assertEqual(set(alltime), {"mA", "mB"})
 
-    def test_q_model_tokens_lists_an_available_model_with_zero_rows(self):
-        """The Tokens tab is a list too: a model the host offers must appear
-        even before its first response, with 0 requests and NULL tokens (never
-        a fabricated 0), sorted after every used model."""
+    def test_q_model_tokens_lists_only_models_that_answered(self):
+        """A catalogue row is not a model record.
+
+        ``inventory`` describes what the installed package (or a custom route)
+        currently offers; a model that has not answered has no request, no
+        token and no provider claim to make. Listing it is what produced the
+        ``default-model`` / ``ark-code-latest`` zero rows.
+        """
         self._model("a", "used", 10, 2, self.NOW - HOUR)
         self.conn.execute(
             "INSERT INTO inventory(kind, name, owner_plugin, source)"
             " VALUES('model','available','builtin','builtin')")
         self.conn.commit()
         rows = db.q_model_tokens(self.conn)
-        self.assertEqual([r["model"] for r in rows], ["used", "available"])
-        zero = rows[-1]
-        self.assertEqual(zero["provider"], "builtin")
-        self.assertEqual(zero["responses"], 0)
-        self.assertIsNone(zero["prompt_tokens"])
-        self.assertIsNone(zero["total_tokens"])
+        self.assertEqual([r["model"] for r in rows], ["used"])
+
+    def test_q_model_tokens_keeps_history_after_the_model_leaves_the_catalogue(self):
+        """The installed package turns over; the responses it produced do not.
+
+        A model that disappears from the catalogue (``glm-5.1``) must keep the
+        row its own answers earned, or last month's totals would silently move
+        when CodeBuddy updates. Only the catalogue side is a snapshot.
+        """
+        self._model("a", "glm-5.1", 10, 2, self.NOW - HOUR)
+        self.conn.execute(
+            "INSERT INTO inventory(kind, name, owner_plugin, source)"
+            " VALUES('model','glm-5.3','builtin','builtin')")
+        self.conn.commit()
+        rows = db.q_model_tokens(self.conn)
+        self.assertEqual([r["model"] for r in rows], ["glm-5.1"])
+        self.assertEqual(rows[0]["prompt_tokens"], 10)
 
     # -- _time_filter helpers ---------------------------------------------
 
@@ -1571,13 +1586,34 @@ class ProviderGroupingTest(unittest.TestCase):
         self.assertEqual(by_provider["builtin"]["prompt_tokens"], 10)
         self.assertEqual(by_provider["Volcano Ark"]["prompt_tokens"], 10)
 
-    def test_q_usage_model_stats_carries_and_groups_by_provider(self):
+    def test_q_usage_model_stats_merges_an_unknown_route_into_builtin(self):
+        """A response without ``requestModelId`` has no stored route.
+
+        It reads as the built-in route everywhere (Tokens, Usage, drill-down),
+        so one model cannot appear as both ``Built-in`` and ``-`` — the split
+        that collided in the Tokens table.
+        """
         self._row("a", "shared-name", "builtin")
         self._row("b", "shared-name", None)
         self.conn.commit()
         rows = db.q_usage_model_stats(self.conn, 0, 10 ** 15)
-        self.assertEqual({r["provider"] for r in rows}, {"builtin", None})
-        self.assertTrue(all(r["requests"] == 1 for r in rows))
+        self.assertEqual([(r["provider"], r["requests"]) for r in rows],
+                         [("builtin", 2)])
+
+    def test_q_model_tokens_merges_an_unknown_route_into_builtin(self):
+        self._row("a", "shared-name", "builtin")
+        self._row("b", "shared-name", None)
+        self.conn.commit()
+        rows = db.q_model_tokens(self.conn)
+        self.assertEqual([(r["model"], r["provider"], r["responses"])
+                          for r in rows], [("shared-name", "builtin", 2)])
+        # The drill-down narrows to the same row it was opened from.
+        self.assertEqual(
+            len(db.q_model_responses(self.conn, model="shared-name",
+                                     provider="builtin")), 2)
+        self.assertEqual(
+            db.q_model_summary(self.conn, "shared-name",
+                               provider="builtin")["responses"], 2)
 
     def test_q_usage_request_logs_carries_provider(self):
         self._row("a", "m", "Volcano Ark")
