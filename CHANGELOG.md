@@ -1385,3 +1385,29 @@ Cost     A call whose two records disagree no longer contributes to `avg` at all
          used to; column 0 and `state` stay protected. The migration runs on the first open of an
          older database and snapshots before touching it.
 Commit   ebd86dc
+
+
+### D-057 · 2026-10-21 · fix
+
+Symptom  Two syncs racing— the TUI's 30-second auto-sync worker against a
+         scheduled `cbut sync`, or two headless runs— both read the same appended bytes:
+         every keyed table dedups by primary key, but `sessions` adds its `tokenDelta`
+         again and `unparsed` bumps its counts again— the context total and the
+         format-drift numbers inflate, with no error anywhere.
+Change   `run()` takes an exclusive `fcntl.flock` on a sidecar `<db>.lock`
+         beside the database for the whole pass and releases it in a `finally`; the second
+         writer blocks, then re-reads from the recorded offsets and finds nothing new. The
+         sidecar is created beside the database, never under `~/.codebuddy` (which the
+         repo promises not to write), and a missing `fcntl` degrades to unlocked rather
+         than failing the sync. The lock lands in the same change as the OTel trace reader,
+         whose stream-plus-final merge is the other new accumulator risk this closes.
+Evidence L0 2026-10-21: `SyncLockTest` — the sidecar exists beside the db and a
+         released lock is re-acquirable; a second writer blocks while the lock is held (a
+         0.3 s probe) and acquires after release; two serialized `run()`s count one
+         100-token turn once. Suite the same day: 550 tests, OK, up from 528 (the trace
+         reader, the TUI view toggles and the headless session report carry the rest).
+Cost     Syncs queue behind each other instead of racing, so a stuck sync delays the next
+         rather than corrupting it; the flock releases on process death, so a killed run
+         leaves no lockfile to clean up. The `.lock` file itself stays on disk — harmless
+         by design.
+Commit   7c20e22
