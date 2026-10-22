@@ -2440,19 +2440,44 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             models = str(app.query_one("#dash-models").content).splitlines()
             self.assertEqual(len(set(map(len, models))), 1,
                              f"ragged leaderboard: {models}")
+            # The line is sized to the panel, so it must fit it: a 13-character
+            # exact count used to make this 56 cells in a 53-cell panel.
+            panel = app.query_one("#dash-models").size.width
+            self.assertLessEqual(len(models[0]), panel, models[0])
             # The ellipsis must land exactly on the field edge, not past it, and
             # the short name must be padded to that same edge.
             cut = [l for l in models if "…" in l]
             self.assertEqual(len(cut), 1, models)
-            # 3 for "1. " plus a 20-cell label field: the ellipsis is the last
-            # cell of the name, and a short name is padded to the same edge.
-            self.assertEqual(cut[0][22], "…")
-            self.assertEqual([l for l in models if l not in cut][0][22], " ")
+            edge = cut[0].index("…")
+            self.assertEqual([l for l in models if l not in cut][0][edge], " ")
             tools = str(app.query_one("#dash-tools").content).splitlines()
             self.assertEqual(len(set(map(len, tools))), 1, f"ragged: {tools}")
+            self.assertLessEqual(len(tools[0]),
+                                 app.query_one("#dash-tools").size.width, tools[0])
             cut = [l for l in tools if "…" in l]
             self.assertEqual(len(cut), 1, tools)      # only the long name is cut
-            self.assertEqual(cut[0][24], "…")
+
+    # 55a. a panel number is scaled, so its field stops growing
+    def test_compact_numbers_keep_their_field(self):
+        self.assertEqual(tui.fmt_compact_n(7_917_931_247), "7.92B")
+        self.assertEqual(tui.fmt_compact_n(1_234_567), "1.23M")
+        self.assertEqual(tui.fmt_compact_n(1_234), "1.23K")
+        self.assertEqual(tui.fmt_compact_n(None), "-")
+        # Seven cells, whatever the count: the dashboard field is sized for it.
+        for value in (999, 9_999, 9_999_999, 9_999_999_999, 9_999_999_999_999):
+            self.assertLessEqual(len(tui.fmt_compact_n(value)), 7, value)
+
+    # 55b. the status bar is one row, clipped, not a two-line paragraph
+    async def test_status_bar_stays_one_row(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [("msg-1", "s1", "m", 1, 1, 0, 0, now, 1)])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            status = app.query_one("#status")
+            self.assertEqual(status.styles.height.value, 1)
+            self.assertEqual(str(status.styles.text_overflow), "ellipsis")
+            self.assertEqual(str(status.styles.text_wrap), "nowrap")
 
     # 56. the Agents tab renders its rows (it had no page assertion at all)
     async def test_agents_tab_renders_its_rows(self):

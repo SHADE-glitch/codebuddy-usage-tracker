@@ -90,6 +90,24 @@ def fmt_n(v):
     return f"{v:,}"
 
 
+def fmt_compact_n(v):
+    """A token count shortened for a panel line, never for a table.
+
+    The dashboard leaderboard is half the terminal, so a 13-character exact
+    count ("7,917,931,247") pushed the request count onto a row of its own and
+    the ranking read as broken. The tables keep the exact grouped value; a
+    panel only needs the magnitude, and this keeps the field at seven cells as
+    the numbers grow.
+    """
+    if v is None:
+        return "-"
+    for unit, scale in (("T", 1e12), ("B", 1e9), ("M", 1e6), ("K", 1e3)):
+        if abs(v) >= scale:
+            # Two decimals at every scale, so the column's points line up.
+            return f"{v / scale:.2f}{unit}"
+    return f"{v:,}"
+
+
 def fmt_credit(v):
     """One provider-reported credit; ``-`` when this row carried none."""
     if v is None:
@@ -1435,7 +1453,11 @@ if HAVE_TEXTUAL:
         #hist-title, #resp-title, #call-title { padding: 1 2; }
         TabbedContent { height: 1fr; }
         DataTable { height: 1fr; }
-        #status { padding: 0 2; color: $text-muted; }
+        /* One row, always: the line is longer than any terminal, and letting it
+           wrap to a second row stole a row from the tab above it. The head of
+           the line (db, tool calls) is what survives the ellipsis. */
+        #status { padding: 0 2; color: $text-muted; height: 1;
+                  text-wrap: nowrap; text-overflow: ellipsis; }
         /* The drill-down header (counts) and the single-call detail. The summary
            is one auto-height line; the detail body takes the rest of the screen
            and scrolls, its label column fixed so long values wrap in 1fr. */
@@ -2336,14 +2358,27 @@ if HAVE_TEXTUAL:
                 self.query_one("#dash-models", Static).update("nothing in this window")
                 return
             labels = model_leader_labels(top)
-            # 3 + 20 + 12 + 7 + 3 + 1 + 4 + 4 = 54 cells: the widest this line can
-            # be and still fit the two-up leaderboard panel at 120 columns. At 58
-            # the request count wrapped onto a row of its own and the ranking read
-            # as broken; the panel is half the terminal, so the bound is 120/2.
-            lines = [f"{i}. {clip(label, 20):<20}{fmt_n(r['usage_total_tokens']):>12}"
-                     f"{fmt_credit_total(r['credits'], r['credit_rows']):>7} cr"
-                     f" {r['requests']:>4} req"
-                     for i, (label, r) in enumerate(zip(labels, top), 1)]
+            # The panel's own width is the budget, and every field is sized from
+            # the data: an exact 13-character count in a 12-cell field made this
+            # line 56 cells in a 53-cell panel at 120 columns, which wrapped the
+            # request count onto a row of its own and read as a broken ranking.
+            panel = self.query_one("#dash-models", Static)
+            # One column is held back: the panel is measured before the pane's
+            # scrollbar takes its column, and a line that fits the measurement
+            # does not fit the render.
+            budget = (panel.size.width or 54) - 1
+            toks = [fmt_compact_n(r["usage_total_tokens"]) for r in top]
+            creds = [fmt_credit_total(r["credits"], r["credit_rows"]) for r in top]
+            reqs = [f"{r['requests']:,}" for r in top]
+            tok_w = max(len(t) for t in toks)
+            cred_w = max(len(c) for c in creds)
+            req_w = max(len(q) for q in reqs)
+            # "1. " + label + tokens + credits + " cr " + requests + " req"
+            label_w = max(8, budget - (tok_w + cred_w + req_w + 13))
+            lines = [f"{i}. {clip(label, label_w):<{label_w}} {t:>{tok_w}}"
+                     f" {c:>{cred_w}} cr {q:>{req_w}} req"
+                     for i, (label, t, c, q) in
+                     enumerate(zip(labels, toks, creds, reqs), 1)]
             self.query_one("#dash-models", Static).update("\n".join(lines))
 
         def _render_dashboard_tools(self, rows) -> None:
@@ -2352,10 +2387,18 @@ if HAVE_TEXTUAL:
             if not top:
                 self.query_one("#dash-tools", Static).update("nothing in this window")
                 return
-            lines = [f"{i}. {clip(r['tool_name'], 22):<22}"
-                     f"{count_n(r['calls'], 'call'):>12}"
-                     f" · {ms(r['avg_ms'])}"
-                     for i, r in enumerate(top, 1)]
+            # Sized like the model list: the panel is the budget, and the call
+            # count grows with use ("100,000 calls" is 13 cells, not 12).
+            panel = self.query_one("#dash-tools", Static)
+            budget = (panel.size.width or 56) - 1
+            calls = [count_n(r["calls"], "call") for r in top]
+            spans = [ms(r["avg_ms"]) for r in top]
+            call_w = max(len(c) for c in calls)
+            span_w = max(len(s) for s in spans)
+            name_w = max(8, budget - (call_w + span_w + 6))
+            lines = [f"{i}. {clip(r['tool_name'], name_w):<{name_w}}"
+                     f"{c:>{call_w}} · {s:>{span_w}}"
+                     for i, (r, c, s) in enumerate(zip(top, calls, spans), 1)]
             self.query_one("#dash-tools", Static).update("\n".join(lines))
 
         def _render_dashboard_projects(self, rows) -> None:
