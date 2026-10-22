@@ -1502,3 +1502,21 @@ Evidence L0 2026-10-22: the dashboard rendered with the picker on All time at 12
 Cost     The name field is 20 cells at 120 columns (wider at 140+) and the status line is
          clipped at the tail on any terminal narrower than its 208 cells.
 Commit   e525ab9
+
+### D-063 · 2026-10-22 · taste
+Symptom  Every dashboard row was content-sized, so on a 120x45 terminal the box ended ten
+         rows above the status line — a dashboard that read as half-loaded.
+Change   `_fit_dashboard` measures what the rows above the ledger leave (the note, rows 1
+         and 2, and the three rows of row margin) and hands it to the ledger as a
+         `min-height`: the table grows into the spare rows and the note lands on the box's
+         last line. The spare is measured from the rows above and the table's row count,
+         never from the table's current height, so a second call returns the same answer;
+         a short terminal computes a non-positive spare and keeps the natural height, which
+         is what keeps the box scrolling instead of clipping a project.
+Evidence L0 2026-10-22: 120x45 box 40 / rows 12+6+18 / `max_scroll_y` 0 and the note's
+         bottom on the box's; 120x20 natural heights and 2 rows of scroll; Today -> All
+         time -> Today returns to the same geometry. Suite green (556 tests).
+Cost     On a tall terminal the ledger is mostly empty rows. The alternative — the same
+         space outside the card — looked like a broken layout, and the ledger is the only
+         panel that can show one more row per unit of height.
+Commit   736ddba
