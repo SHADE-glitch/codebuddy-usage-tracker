@@ -1468,3 +1468,17 @@ Cost     Failure and pending counts are one keystroke further (the Tools tab) an
          per-day shape of usage is visible only through window changes. In exchange the
          dashboard is three rows that all answer the window it is set to.
 Commit   4ad3fae
+
+### D-061 · 2026-10-22 · fix
+Symptom  At 140 columns the top-models line was one cell wider than its panel, so the
+         request count wrapped onto a line of its own and the ranking read as broken — a
+         layout that passed every test because no test measured the panel.
+Change   The label field drops from 26 to 24 cells and the request count from 5 to 4, so
+         the line is 58 cells inside a 64-cell panel. The ellipsis test moves with the
+         field edge (index 26).
+Evidence L0 2026-10-22: the same test asserts one line length across the leaderboard and
+         the ellipsis landing exactly on the field edge; rendered at 140x42 in tmux and
+         read back, no wrapped "req". Suite green (553 tests).
+Cost     A model name longer than 24 cells is clipped one character earlier. The full name
+         is still on the Tokens tab and in the drill-down.
+Commit   5a59b16
