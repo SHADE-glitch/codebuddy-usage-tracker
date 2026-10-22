@@ -261,8 +261,8 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row[2], "-")    # Usage Total (no API parts)
             self.assertEqual(row[3], "-")    # Credits (no billing field)
             self.assertEqual(row[4], "1")    # Requests (the row exists)
-            # Input / Output / API Total / Cache / hit-rate cells are "-", never "0"
-            for i in range(5, 12):
+            # Input / Output / Cache / hit-rate cells are "-", never "0"
+            for i in range(5, 11):
                 self.assertEqual(row[i], "-", f"col {i} should be '-'")
 
     # 5. prompt / completion / total / cache shown in separate columns
@@ -277,7 +277,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             t = app.query_one("#t-tokens", tui.DataTable)
             row = all_rows(t)[0]
             # Order: Model · Provider · Usage Total · Credits · Requests · Input ·
-            #        Output · API Total · Cache hit · Cache miss · Cache write ·
+            #        Output · Cache hit · Cache miss · Cache write ·
             #        Cache hit rate · Last used
             self.assertEqual(row[1], "Built-in")   # route absent -> built-in
             self.assertEqual(row[2], "37")   # Usage Total = 10 + 20 + 7
@@ -285,11 +285,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row[4], "1")    # Requests
             self.assertEqual(row[5], "10")   # Input  = prompt_tokens
             self.assertEqual(row[6], "20")   # Output = completion_tokens
-            self.assertEqual(row[7], "30")   # API Total = Input + Output
-            self.assertEqual(row[8], "7")    # Cache hit
-            self.assertEqual(row[9], "8")    # Cache miss
-            self.assertEqual(row[10], "9")   # Cache write
-            self.assertEqual(row[11], "29.2%")   # 7 / (7+8+9)
+            self.assertEqual(row[7], "7")    # Cache hit
+            self.assertEqual(row[8], "8")    # Cache miss
+            self.assertEqual(row[9], "9")    # Cache write
+            self.assertEqual(row[10], "29.2%")   # 7 / (7+8+9)
 
     # 5b. explicit 0 is shown as "0", absent stays "-"
     async def test_zero_vs_null_distinction(self):
@@ -303,15 +302,15 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             t = app.query_one("#t-tokens", tui.DataTable)
             rows = {r[0]: r for r in all_rows(t)}
-            self.assertEqual(rows["zeroed"][8], "0")     # real 0
-            self.assertEqual(rows["zeroed"][9], "0")
-            self.assertEqual(rows["zeroed"][10], "0")
-            self.assertEqual(rows["nulled"][8], "-")     # NULL, not 0
+            self.assertEqual(rows["zeroed"][7], "0")     # real 0 (cache hit)
+            self.assertEqual(rows["zeroed"][8], "0")     # cache miss
+            self.assertEqual(rows["zeroed"][9], "0")     # cache write
+            self.assertEqual(rows["nulled"][7], "-")     # NULL, not 0
+            self.assertEqual(rows["nulled"][8], "-")
             self.assertEqual(rows["nulled"][9], "-")
-            self.assertEqual(rows["nulled"][10], "-")
 
-    # 5c. Total is not inflated by cache hit/miss
-    async def test_total_excludes_cache(self):
+    # 5c. exactly one token total per row, and it is the Usage Total
+    async def test_one_token_total_and_no_api_total(self):
         now = int(time.time() * 1000)
         make_db(self.db_path, [
             ("m1", "s1", "m", 10, 20, 0, 0, now - 3600_000, 1),
@@ -320,9 +319,12 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=WIDE) as pilot:
             await pilot.pause()
             t = app.query_one("#t-tokens", tui.DataTable)
+            labels = [str(c.label) for c in t.columns.values()]
+            self.assertNotIn("API Total", labels)
+            self.assertEqual(sum("Total" in label for label in labels), 1)
             row = all_rows(t)[0]
-            self.assertEqual(row[7], "30")           # API Total, not +cache
-            self.assertEqual(row[8], "999,999")      # cache hit still shown
+            self.assertEqual(row[2], "1,000,029")    # Usage Total = 10 + 20 + 999999
+            self.assertEqual(row[7], "999,999")      # cache hit still shown
 
     # 5d. Tokens tab has exactly the expected columns
     async def test_tokens_tab_columns(self):
@@ -334,7 +336,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             labels = [str(c.label) for c in t.columns.values()]
             self.assertEqual(labels, ["Model", "Provider", "Usage Total",
                                       "Credits", "Requests", "Input", "Output",
-                                      "API Total", "Cache hit", "Cache miss",
+                                      "Cache hit", "Cache miss",
                                       "Cache write", "Cache hit rate",
                                       "Last used"])
 
@@ -1172,7 +1174,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             t = app.query_one("#t-usage", tui.DataTable)
             row = all_rows(t)[0]
             # Order: Time · Model · Provider · Usage Total · Credits · Input ·
-            #        Output · API Total · Cache hit · Cache miss · Cache write ·
+            #        Output · Cache hit · Cache miss · Cache write ·
             #        Cache hit rate
             self.assertEqual(row[1], "m")            # model
             self.assertEqual(row[2], "Built-in")      # route absent -> built-in
@@ -1180,12 +1182,11 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row[4], "-")            # Credits (absent, not 0)
             self.assertEqual(row[5], "10")           # Input
             self.assertEqual(row[6], "20")           # Output
-            self.assertEqual(row[7], "30")           # API Total, not +cache
-            self.assertEqual(row[8], "999,999")      # Cache hit (read)
-            self.assertEqual(row[9], "888,888")      # Cache miss
-            self.assertEqual(row[10], "7")           # Cache write (create)
+            self.assertEqual(row[7], "999,999")      # Cache hit (read)
+            self.assertEqual(row[8], "888,888")      # Cache miss
+            self.assertEqual(row[9], "7")            # Cache write (create)
             # 999999 / (999999 + 888888 + 7) = 52.9%
-            self.assertEqual(row[11], "52.9%")       # Cache hit rate
+            self.assertEqual(row[10], "52.9%")       # Cache hit rate
 
     # 17b. empty window shows an explicit empty state, never a blank region
     async def test_usage_empty_state(self):
@@ -1213,7 +1214,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(app.query_one("#range", tui.Select))
             self.assertEqual(len(app.query("#tab-usage #range")), 0)
 
-    # 19. Summary separates API Total from the display-only Usage Total
+    # 19. Summary shows one token total — the display-only Usage Total
     async def test_usage_summary_api_vs_usage_total(self):
         now = int(time.time() * 1000)
         make_db(self.db_path, [
@@ -1223,12 +1224,12 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test() as pilot:
             await pilot.pause()
             await self._usage_all_time(app, pilot)
-            api = str(app.query_one("#sum-total").content)
             usage = str(app.query_one("#sum-usage-total").content)
-            self.assertIn("API Total", api)
-            self.assertIn("120", api)
             self.assertIn("Usage Total", usage)
             self.assertIn("200", usage)          # 100 + 20 + 80
+            # The API-side total is gone: the page shows one token total, and it
+            # is the one the tables and the dashboard also rank by.
+            self.assertEqual(len(app.query("#sum-total")), 0)
 
     # 20. a v2 DB still launches (on_mount auto-migrates)
     async def test_v2_db_starts(self):
@@ -1263,7 +1264,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                         "#panel-runtime"):
                 self.assertTrue(app.query_one(pid))
             for wid in ("#sum-requests", "#sum-sessions", "#sum-projects",
-                        "#sum-credits", "#sum-input", "#sum-total",
+                        "#sum-credits", "#sum-input",
                         "#sum-cache-hit", "#sum-hit-rate", "#sum-usage-total",
                         "#sum-missing", "#usage-status"):
                 self.assertTrue(app.query_one(wid))
@@ -2011,27 +2012,29 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
-            for rid in ("#dash-row-1", "#dash-row-2", "#dash-row-3",
-                        "#dash-row-4"):
+            for rid in ("#dash-row-1", "#dash-row-2", "#dash-row-3"):
                 self.assertTrue(app.query_one(rid))
             for pid in ("#panel-dash-kpi", "#panel-dash-tokens",
                         "#panel-dash-cache", "#panel-dash-models",
-                        "#panel-dash-tools", "#panel-dash-runtime",
-                        "#panel-dash-activity", "#panel-dash-projects"):
+                        "#panel-dash-tools", "#panel-dash-projects"):
                 self.assertTrue(app.query_one(pid))
             for wid in ("#dash-sum-requests", "#dash-sum-credits",
                         "#dash-sum-sessions", "#dash-sum-projects",
                         "#dash-kpi-tools", "#dash-kpi-skills",
                         "#dash-kpi-agents", "#dash-kpi-mcp", "#dash-kpi-plugins",
                         "#dash-tok-usage", "#dash-tok-input",
-                        "#dash-tok-output", "#dash-tok-api", "#dash-tok-credits",
+                        "#dash-tok-output", "#dash-tok-credits",
                         "#dash-tok-hit-rate", "#dash-cache-hit",
                         "#dash-cache-miss", "#dash-cache-write",
-                        "#dash-rt-completed", "#dash-rt-incomplete",
-                        "#dash-rt-avg", "#dash-rt-sessions", "#dash-rt-projects",
                         "#dash-models", "#dash-tools", "#dash-projects",
-                        "#dash-activity", "#dash-activity-axis", "#dash-note"):
+                        "#dash-note"):
                 self.assertTrue(app.query_one(wid))
+            # Runtime and the per-day trend are gone, and so is the API-side
+            # total: one token total per panel, the Usage Total.
+            for gone in ("#panel-dash-runtime", "#panel-dash-activity",
+                         "#dash-activity", "#dash-activity-axis",
+                         "#dash-rt-completed", "#dash-tok-api", "#sum-total"):
+                self.assertEqual(len(app.query(gone)), 0, gone)
             # Only the Projects board is a table; the rest are text panels.
             self.assertEqual(len(app.query("#tab-dashboard DataTable")), 1)
 
@@ -2131,14 +2134,11 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("80", str(app.query_one("#dash-cache-hit").content))
             self.assertIn("15", str(app.query_one("#dash-cache-miss").content))
             self.assertIn("5", str(app.query_one("#dash-cache-write").content))
-            # runtime panel
-            self.assertIn("2", str(app.query_one("#dash-rt-completed").content))
-            self.assertIn("1", str(app.query_one("#dash-rt-incomplete").content))
-            pend = str(app.query_one("#dash-rt-pending").content)
-            self.assertTrue(pend.rstrip().endswith("1"), pend)
+            # every call in the window is still counted, including the one with
+            # no result record (the runtime panel that used to break it down is
+            # gone; the KPI is now the only place that count appears)
             kpi = str(app.query_one("#dash-kpi-tools").content)
             self.assertTrue(kpi.rstrip().endswith("4"), kpi)
-            self.assertIn("50", str(app.query_one("#dash-rt-avg").content))  # (40+60)/2
             # leaderboards pick the entities with calls
             self.assertIn("alpha", str(app.query_one("#dash-models").content))
             tools = str(app.query_one("#dash-tools").content)
@@ -2146,9 +2146,6 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("2 calls", tools)          # Bash had two calls
             self.assertNotIn("1 calls", tools)       # Edit/Read had one -> singular
             self.assertIn("1 call ", tools)
-            # sparkline has a bar for the busy day + a range/peak caption
-            self.assertTrue(str(app.query_one("#dash-activity").content).strip())
-            self.assertIn("peak", str(app.query_one("#dash-activity-axis").content))
 
     # 41. the injected clock drives "now", and therefore the tab windows
     async def test_injected_clock_drives_the_window(self):
@@ -2346,42 +2343,6 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 len(all_rows(app.query_one("#t-usage", tui.DataTable))), 100)
 
-    # 50. a quiet window draws a baseline instead of a blank, and says so
-    async def test_dashboard_activity_is_never_a_blank_region(self):
-        pinned = 1_700_000_000_000
-        now = int(time.time() * 1000)
-        make_db(self.db_path, [("msg-1", "s1", "m", 1, 1, 0, 0, now, 1)])
-        conn = db.open_db(self.db_path)
-        # q_usage_daily counts tool calls, so the control needs one: without it
-        # both clocks would read "no activity" and prove nothing.
-        conn.execute("INSERT INTO tool_calls(call_id, session_id, project,"
-                     " tool_name, category, ts)"
-                     " VALUES('c1','s1','/p','Bash','builtin',?)", (now,))
-        conn.commit()
-        conn.close()
-
-        quiet = TrackerApp(str(self.db_path), clock=lambda: pinned / 1000)
-        async with quiet.run_test() as pilot:
-            await pilot.pause()
-            activity = str(quiet.query_one("#dash-activity").content)
-            self.assertTrue(activity.strip(),
-                            "no calls rendered an empty region on the Dashboard")
-            self.assertEqual(set(activity.strip()), {"·"},
-                             "a quiet window must draw the baseline, not bars "
-                             "it did not measure")
-            self.assertIn("no activity",
-                          str(quiet.query_one("#dash-activity-axis").content))
-
-        busy = TrackerApp(str(self.db_path))
-        async with busy.run_test() as pilot:
-            await pilot.pause()
-            axis = str(busy.query_one("#dash-activity-axis").content)
-            self.assertNotIn("no activity", axis)
-            self.assertIn("peak", axis)
-            self.assertEqual(set(str(busy.query_one("#dash-activity").content)),
-                             {"█"})
-
-    # 51. every count in the status line agrees with its own number
     async def test_status_counts_agree_with_their_number(self):
         now = int(time.time() * 1000)
         make_db(self.db_path, [("msg-1", "s1", "m", 1, 1, 0, 0, now, 1)])
@@ -2429,11 +2390,8 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
-            dash = str(app.query_one("#dash-rt-avg").content)
-            self.assertIn("1.5s", dash)
-            self.assertNotIn("1,500", dash,
-                             "the Dashboard formatted a duration with the token "
-                             "formatter, so the two pages disagreed by shape")
+            # The Dashboard used to print the same average; that panel is gone,
+            # so the Tools tab is the only place left to check the shape.
             rows = [c for c in all_rows(app.query_one("#t-tools", tui.DataTable))]
             self.assertIn("1.5s", rows[0])
 
@@ -3214,7 +3172,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(det, tui.CallDetailScreen)
             labels = [str(w.render()).strip() for w in det.query(".call-label")]
             self.assertIn("message id", labels)
-            self.assertIn("api total", labels)
+            # The stored per-row total is still on the screen; it is named for
+            # its provenance, not as a second "api total".
+            self.assertIn("reported total", labels)
+            self.assertNotIn("api total", labels)
 
     # 79. Plugins drills down too — two levels, its own columns
     async def test_the_plugin_tab_drills_down_two_levels(self):

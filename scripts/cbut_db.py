@@ -1856,14 +1856,20 @@ def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0,
 
 # Whitelisted orderings for q_usage_model_stats (never user-supplied SQL).
 _MODEL_STATS_ORDER = {
+    "usage_total_tokens": "usage_total_tokens DESC, requests DESC",
     "total_tokens": "total_tokens DESC, requests DESC",
     "requests": "requests DESC, total_tokens DESC",
     "model": "model COLLATE NOCASE ASC",
 }
 
 
-def q_usage_model_stats(conn, start_ts, end_ts, order_by="total_tokens"):
-    """Per-model rollup for one window. ``order_by`` is whitelisted."""
+def q_usage_model_stats(conn, start_ts, end_ts, order_by="usage_total_tokens"):
+    """Per-model rollup for one window. ``order_by`` is whitelisted.
+
+    Ordered by Usage Total by default: the dashboard prints that number, so
+    ordering by the API-side total would rank rows by a figure the reader
+    cannot see.
+    """
     where, params = _ts_where(start_ts, end_ts)
     order = _MODEL_STATS_ORDER.get(order_by, _MODEL_STATS_ORDER["total_tokens"])
     return conn.execute(
@@ -1875,6 +1881,7 @@ def q_usage_model_stats(conn, start_ts, end_ts, order_by="total_tokens"):
         " SUM(completion_tokens) AS completion_tokens,"
         f" {_AGG_TOTAL_EXPR} AS total_tokens,"
         f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
+        f" {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,"
         " SUM(prompt_cache_hit_tokens) AS cache_hit,"
         " SUM(prompt_cache_miss_tokens) AS cache_miss,"
         " SUM(prompt_cache_write_tokens) AS cache_write,"

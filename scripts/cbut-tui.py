@@ -187,7 +187,7 @@ CUSTOM_RANGE = "custom"
 # so they are deliberately absent rather than estimated; the provider has one
 # (providerData.requestModelId), and credits do too (rawUsage.credit).
 USAGE_COLUMNS = ("Time", "Model", "Provider", "Usage Total", "Credits",
-                 "Input", "Output", "API Total", "Cache hit", "Cache miss",
+                 "Input", "Output", "Cache hit", "Cache miss",
                  "Cache write", "Cache hit rate")
 
 # Tokens-tab column order mirrors the family: Provider right after the model,
@@ -195,7 +195,7 @@ USAGE_COLUMNS = ("Time", "Model", "Provider", "Usage Total", "Credits",
 # detail and last use. The near-always-100% "With usage" and "Coverage" columns
 # were dropped; the rest are measurements the transcripts really carry.
 TOKEN_COLUMNS = ("Model", "Provider", "Usage Total", "Credits", "Requests",
-                 "Input", "Output", "API Total", "Cache hit", "Cache miss",
+                 "Input", "Output", "Cache hit", "Cache miss",
                  "Cache write", "Cache hit rate", "Last used")
 
 # Entity tabs and the two detail screens. Declared here rather than inline at
@@ -229,7 +229,7 @@ PLUGIN_HISTORY_COLUMNS = ("when", "kind", "target", "marketplace", "session",
 # Twelve columns need 170 cells: on an 80-wide terminal more than half of this table
 # used to sit past the right edge with no key that would bring it back.
 RESPONSE_COLUMNS = ("when", "model", "provider", "usage total", "credits",
-                    "prompt", "completion", "total", "cache hit", "cache miss",
+                    "prompt", "completion", "cache hit", "cache miss",
                     "cache write", "cache r", "cache w", "usage", "message_id")
 # The Dashboard board is a money/reach summary, not a session log: sessions sit
 # after the credits so the longest paths cannot push `last used` under the bar.
@@ -256,7 +256,10 @@ CALL_DETAIL_LABELS = {
     "prompt_cache_hit_tokens": "cache hit",
     "prompt_cache_miss_tokens": "cache miss",
     "prompt_cache_write_tokens": "cache write",
-    "total_tokens": "api total", "total_tokens_source": "total source",
+    # The stored per-row total, named for where it came from: the panels print one
+    # token total and it is `usage total`, so a second "api total" beside it read as
+    # a rival answer to the same question.
+    "total_tokens": "reported total", "total_tokens_source": "total source",
     "usage_available": "usage available", "missing": "missing fields",
 }
 _DETAIL_TIME_COLS = {"ts"}
@@ -353,7 +356,7 @@ def _token_row(r):
             fmt_credit_total(r["credits"], r["credit_rows"]),
             f"{r['responses']:,}",
             fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
-            fmt_n(r["total_tokens"]), fmt_n(r["prompt_cache_hit_tokens"]),
+            fmt_n(r["prompt_cache_hit_tokens"]),
             fmt_n(r["prompt_cache_miss_tokens"]),
             fmt_n(r["prompt_cache_write_tokens"]),
             "-" if hit is None else f"{hit * 100:.1f}%",
@@ -1356,7 +1359,6 @@ if HAVE_TEXTUAL:
                         fmt_n(r["usage_total_tokens"]),
                         fmt_credit(r["credit"]),
                         fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
-                        fmt_n(r["total_tokens"]),
                         fmt_n(r["prompt_cache_hit_tokens"]),
                         fmt_n(r["prompt_cache_miss_tokens"]),
                         fmt_n(r["prompt_cache_write_tokens"]),
@@ -1385,7 +1387,6 @@ if HAVE_TEXTUAL:
                     f"{s['with_usage']} with usage · "
                     f"in {fmt_n(s['prompt_tokens'])} · "
                     f"out {fmt_n(s['completion_tokens'])} · "
-                    f"api total {fmt_n(s['total_tokens'])} · "
                     f"credits {fmt_credit_total(s['credits'], s['credit_rows'])}"
                     f" · cache "
                     f"{fmt_n(s['cache_hit'])}/{fmt_n(s['cache_miss'])}/"
@@ -1458,9 +1459,11 @@ if HAVE_TEXTUAL:
             height: auto;
         }
         #panel-runtime, #panel-dash-cache, #panel-dash-tools,
-        #panel-dash-activity, #panel-dash-projects { margin: 0; }
+        #panel-dash-projects { margin: 0; }
+        /* The ledger grows with its rows and the box scrolls once the screen is
+           full — a fixed 9 rows silently hid the rest of a long project list. */
         #panel-dash-projects { height: auto; }
-        #dash-projects { height: 9; }
+        #dash-projects { height: auto; }
         .panel-title { text-style: bold; color: $accent; }
         #usage-status, #usage-window { padding: 0; }
         #usage-note, #dash-note { padding: 0 1; color: $text-muted; }
@@ -1469,8 +1472,6 @@ if HAVE_TEXTUAL:
            height because a note that is itself cut off at the right edge would be
            the same defect it exists to report. */
         .col-note { padding: 0 1; color: $text-muted; height: auto; display: none; }
-        #dash-activity { color: $accent; }
-        #dash-activity-axis { color: $text-muted; }
         #t-usage { height: 1fr; min-height: 6; }
         .summary-panels.compact, .dash-row.compact { layout: vertical; }
         /* Stacked one-per-row wastes the width a narrow terminal still has: at
@@ -1620,7 +1621,6 @@ if HAVE_TEXTUAL:
                                 Static(id="dash-tok-usage"),
                                 Static(id="dash-tok-input"),
                                 Static(id="dash-tok-output"),
-                                Static(id="dash-tok-api"),
                                 Static(id="dash-tok-credits"),
                                 Static(id="dash-tok-hit-rate"),
                                 classes="usage-panel", id="panel-dash-tokens",
@@ -1648,26 +1648,8 @@ if HAVE_TEXTUAL:
                             ),
                             classes="dash-row", id="dash-row-2",
                         ),
-                        # Row 3: runtime health + the per-day trend.
-                        Horizontal(
-                            Vertical(
-                                Static("Runtime", classes="panel-title"),
-                                Static(id="dash-rt-completed"),
-                                Static(id="dash-rt-incomplete"),
-                                Static(id="dash-rt-pending"),
-                                Static(id="dash-rt-avg"),
-                                Static(id="dash-rt-sessions"),
-                                Static(id="dash-rt-projects"),
-                                classes="usage-panel", id="panel-dash-runtime",
-                            ),
-                            Vertical(
-                                Static("Calls per day", classes="panel-title"),
-                                Static(id="dash-activity"),
-                                Static(id="dash-activity-axis"),
-                                classes="usage-panel", id="panel-dash-activity",
-                            ),
-                            classes="dash-row", id="dash-row-3",
-                        ),
+                        # Row 3: the project ledger, and the only panel that grows
+                        # past its own content: it takes whatever height is left.
                         Horizontal(
                             Vertical(
                                 Static("Projects", classes="panel-title"),
@@ -1678,7 +1660,7 @@ if HAVE_TEXTUAL:
                                 classes="usage-panel",
                                 id="panel-dash-projects",
                             ),
-                            classes="dash-row", id="dash-row-4",
+                            classes="dash-row", id="dash-row-3",
                         ),
                         Static(id="dash-note"),
                         id="dash-box",
@@ -1708,7 +1690,6 @@ if HAVE_TEXTUAL:
                                 Static(id="sum-credits"),
                                 Static(id="sum-input"),
                                 Static(id="sum-output"),
-                                Static(id="sum-total"),
                                 classes="usage-panel", id="panel-tokens",
                             ),
                             Vertical(
@@ -2255,7 +2236,6 @@ if HAVE_TEXTUAL:
                 fmt_credit_total(s["credits"], s["credit_rows"]))
             put("#sum-input", "Input", fmt_n(s["prompt_tokens"]))
             put("#sum-output", "Output", fmt_n(s["completion_tokens"]))
-            put("#sum-total", "API Total", fmt_n(s["total_tokens"]))
             put("#sum-cache-hit", "Cache hit", fmt_n(s["cache_hit"]))
             put("#sum-cache-miss", "Cache miss", fmt_n(s["cache_miss"]))
             put("#sum-cache-write", "Cache write", fmt_n(s["cache_write"]))
@@ -2291,12 +2271,10 @@ if HAVE_TEXTUAL:
             try:
                 kpi = db.q_usage_kpi(conn, start, end)
                 s = db.q_usage_summary(conn, start, end)
-                act = db.q_usage_activity(conn, start, end)
                 models = db.q_usage_model_stats(conn, start, end)
                 tools = db.q_tools(conn, limit=self.DASH_TOP,
                                    start_ts=start, end_ts=end)
                 projects = db.q_project_board(conn, start, end)
-                daily = db.q_usage_daily(conn, start, end)
             except sqlite3.Error as e:
                 # e.g. an un-migrated DB where the newer columns are missing.
                 self.query_one("#dash-note", Static).update(
@@ -2306,11 +2284,9 @@ if HAVE_TEXTUAL:
             self._render_dashboard_usage(kpi, s)
             self._render_dashboard_tokens(s)
             self._render_dashboard_cache(s)
-            self._render_dashboard_runtime(act)
             self._render_dashboard_models(models)
             self._render_dashboard_tools(tools)
             self._render_dashboard_projects(projects)
-            self._render_dashboard_activity(daily, start, end)
             if not any(kpi.values()) and not (s["requests"] or 0):
                 self.query_one("#dash-note", Static).update(
                     "No data in this window — widen the range above.")
@@ -2343,7 +2319,6 @@ if HAVE_TEXTUAL:
                             fmt_n(s["usage_total_tokens"]))
             self._put_panel("#dash-tok-input", "Input", fmt_n(s["prompt_tokens"]))
             self._put_panel("#dash-tok-output", "Output", fmt_n(s["completion_tokens"]))
-            self._put_panel("#dash-tok-api", "API Total", fmt_n(s["total_tokens"]))
             self._put_panel("#dash-tok-credits", "Credits",
                             fmt_credit_total(s["credits"], s["credit_rows"]))
             self._put_panel("#dash-tok-hit-rate", "Cache hit rate",
@@ -2355,25 +2330,13 @@ if HAVE_TEXTUAL:
             self._put_panel("#dash-cache-miss", "Cache miss", fmt_n(s["cache_miss"]))
             self._put_panel("#dash-cache-write", "Cache write", fmt_n(s["cache_write"]))
 
-        def _render_dashboard_runtime(self, a: dict) -> None:
-            # counts are COUNT-based -> a real 0; avg_ms is NULL when nothing ran.
-            self._put_panel("#dash-rt-completed", "Completed", f"{a['completed'] or 0:,}")
-            self._put_panel("#dash-rt-incomplete", "Incomplete", f"{a['incomplete'] or 0:,}")
-            # Named rather than folded into Incomplete: a call with no result
-            # record did not fail, it never came back, and only a named panel
-            # makes Completed + Incomplete + Pending add up to Tool calls.
-            self._put_panel("#dash-rt-pending", "Pending", f"{a['pending'] or 0:,}")
-            self._put_panel("#dash-rt-avg", "Avg tool time", ms(a["avg_ms"]))
-            self._put_panel("#dash-rt-sessions", "Sessions", f"{a['sessions'] or 0:,}")
-            self._put_panel("#dash-rt-projects", "Projects", f"{a['projects'] or 0:,}")
-
         def _render_dashboard_models(self, rows) -> None:
             top = rows[: self.DASH_TOP]
             if not top:
                 self.query_one("#dash-models", Static).update("nothing in this window")
                 return
             labels = model_leader_labels(top)
-            lines = [f"{i}. {clip(label, 26):<26}{fmt_n(r['total_tokens']):>12}"
+            lines = [f"{i}. {clip(label, 26):<26}{fmt_n(r['usage_total_tokens']):>12}"
                      f"{fmt_credit_total(r['credits'], r['credit_rows']):>10} cr"
                      f"  {r['requests']:>5} req"
                      for i, (label, r) in enumerate(zip(labels, top), 1)]
@@ -2407,55 +2370,6 @@ if HAVE_TEXTUAL:
             ] for r in rows]
             self._fill_wide("dash-projects", out,
                             "No projects in this window")
-
-        # Block characters for the per-day sparkline (index 0 = no activity).
-        _SPARK = " ▁▂▃▄▅▆▇█"
-
-        def _sparkline(self, values) -> str:
-            peak = max(values) if values else 0
-            if peak <= 0:
-                # A quiet window still draws something: an empty string left a
-                # blank region on the Dashboard, which reads as "widget broken"
-                # rather than "no calls". A dotted baseline says the same thing
-                # as the zero-height bars it replaces, without inventing a bar.
-                return "·" * len(values)
-            out = []
-            for v in values:
-                level = 0 if v <= 0 else min(8, max(1, round(v / peak * 8)))
-                out.append(self._SPARK[level])
-            return "".join(out)
-
-        def _render_dashboard_activity(self, daily, start, end) -> None:
-            """A one-line sparkline of calls per local day across the window.
-
-            ``daily`` only carries days that had calls, so the gaps are filled
-            from the window bounds. For the all-time range the series starts at
-            the first day with data (never from the epoch).
-            """
-            counts = {r["day"]: r["calls"] for r in daily}
-            now = self._now_ms() if end is None else end
-            end_day = datetime.fromtimestamp(now / 1000).date()
-            if start is not None:
-                start_day = datetime.fromtimestamp(start / 1000).date()
-            elif daily:
-                start_day = datetime.strptime(daily[0]["day"], "%Y-%m-%d").date()
-            else:
-                start_day = end_day
-            days, d = [], start_day
-            while d <= end_day:
-                days.append(d)
-                d += timedelta(days=1)
-            series = [counts.get(day.isoformat(), 0) for day in days]
-            self.query_one("#dash-activity", Static).update(self._sparkline(series))
-            # The day list is never empty (a window always contains at least
-            # today), so the branch that matters is "no calls in it", not
-            # "no days" — the old `if series:` test was always true.
-            if any(series):
-                self.query_one("#dash-activity-axis", Static).update(
-                    f"{days[0]:%m-%d} → {days[-1]:%m-%d} · peak {max(series):,}/day")
-            else:
-                self.query_one("#dash-activity-axis", Static).update(
-                    f"{days[0]:%m-%d} → {days[-1]:%m-%d} · no activity")
 
         @staticmethod
         def _hit_rate(hit, miss, write) -> str:
@@ -2494,7 +2408,6 @@ if HAVE_TEXTUAL:
                 fmt_n(r["usage_total_tokens"]),
                 fmt_credit(r["credit"]),
                 fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
-                fmt_n(r["total_tokens"]),
                 fmt_n(r["prompt_cache_hit_tokens"]),
                 fmt_n(r["prompt_cache_miss_tokens"]),
                 fmt_n(r["prompt_cache_write_tokens"]),
