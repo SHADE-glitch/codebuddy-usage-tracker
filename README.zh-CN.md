@@ -90,7 +90,7 @@ CodeBuddy 其实**已经在写**你需要的数据，只是**从不展示**。�
 
 | | Tab | 内容 |
 |---|-----|------|
-| 🧭 | **Dashboard** | 四行面板，均取 Dashboard 自己的窗口：用量（请求数、credits、session 数、项目数、工具/skill/agent/MCP/插件 调用数）、token 摘要（usage 总计、输入/输出、API 总计、credits、缓存命中率）、缓存 hit/miss/write 绝对值、Top 5 模型与 Top 5 工具、运行时健康（完成/未完成/待定、平均工具耗时、去重 session/project 数）、按天调用量 sparkline，以及 **Projects 项目板**（请求 · usage 总计 · credits · session 数 · 最近使用） |
+| 🧭 | **Dashboard** | 四行面板，均取 Dashboard 自己的窗口：用量（请求数、credits、session 数、项目数、工具/skill/agent/MCP/插件 调用数）、token 摘要（usage 总计、输入/输出、API 总计、credits、缓存命中率）、缓存 hit/miss/write 绝对值、Top 5 模型与 Top 5 工具、运行时健康（完成/未完成/待定、平均工具耗时、去重 session/project 数）、按天调用量 sparkline，以及 **Projects 项目板**（请求 · usage 总计 · credits · session 数 · 最近使用）。项目板随内容长高，并吃掉上面几行剩下的高度，让仪表盘铺到状态行；项目多到放不下时窗格滚动，列表不会被截断 |
 | 🧰 | **Tools** | 按名称统计的工具调用、完成率、平均耗时、最近使用 |
 | 🎯 | **Skills** | 按名称统计的 skill 调用（跨归属合并）、最近使用 |
 | 🤖 | **Agents** | 按名称统计的子代理类型、调用次数、最近使用 |
@@ -245,7 +245,7 @@ name_cap = 28        # 单元格最宽渲染多少字符，超出就截断
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 555 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 556 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -260,7 +260,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 555 tests ... OK
   `cli`/`ptc` 拒收、running 占位升级且重放不降级、
   完结文件用 `trace.sessionId` 补上流式拿不到的会话、重读幂等、
   `_run` 集成 |
-| `test_tui.py` | 134 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、每 tab 独立的日期选择器（日历翻月/跨年、当前目标卡片、能整行放下的预设与快选快捷项、输入框读写的 24 小时时钟、小时网格、微调步进选择器、切 tab 后顶栏跨度仍完整）、两级下钻（窗口内汇总头、Enter 打开单条全字段、长值折行不裁剪、插件路径）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、单元格上限与它背后的设置项、状态栏诚实性、默认只显示用过的（每 tab `a` 开关）、`/` 名称过滤（Enter 应用、Esc 取消）、Usage 请求日志只保留最新 100 行且没有翻页键、同名模型的提供方后缀、Dashboard 的 Projects 项目板，以及路由未上报时显示 `-` 的 credits 单元格 |
+| `test_tui.py` | 135 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、每 tab 独立的日期选择器（日历翻月/跨年、当前目标卡片、能整行放下的预设与快选快捷项、输入框读写的 24 小时时钟、小时网格、微调步进选择器、切 tab 后顶栏跨度仍完整）、两级下钻（窗口内汇总头、Enter 打开单条全字段、长值折行不裁剪、插件路径）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、单元格上限与它背后的设置项、状态栏诚实性、默认只显示用过的（每 tab `a` 开关）、`/` 名称过滤（Enter 应用、Esc 取消）、Usage 请求日志只保留最新 100 行且没有翻页键、同名模型的提供方后缀、Dashboard 的 Projects 项目板，以及路由未上报时显示 `-` 的 credits 单元格 |
 | `test_usage.py` | 116 | 自然日窗口（今天 / 2 / 3 / 7 / 14 / 30 天 / 全部）与自定义范围的标签、日期时间的宽松输入归一化（24 小时显示、输入仍兼容 12 小时）、token 汇总与提供方分组、Dashboard 查询、下钻查询（窗口内按实体汇总、插件使用计数、单条调用的整行）、结构版本门禁、索引值不值得留、无界面会话列表（窗口、最新在前、limit） |
 | `test_indexes.py` | 4 | 前两次切索引只能靠一次手写读数的那条规则：报告面真的会跑的每条语句都被抓下来用 `EXPLAIN QUERY PLAN` 过一遍，声明了却没有任何计划点名的索引一律失败——外加 v9 那次真正用上的结构规则：键是另一个已声明索引键的严格前缀 |
 | `test_stats.py` | 33 | 无界面报告 CLI（`cbut stats`）：总览与各分类表、按模型的 token 报告及窄终端下被丢弃的 cache 列、`show`/`recent`/`inventory`/`export`、`health`（结构版本、设置行、未识别计数）、`backup`→`restore` 往返、`vacuum`（先快照、回收字节数、行数不变）、生成的 `format` 表面，以及空数据时的 `(none)` 提示 |
@@ -288,7 +288,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 555 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 528 个用例 |
+| `scripts/tests/` | 上面那 556 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、以及体积与性能的固定度量法和基线 |
 | `systemd/` | 可选的 15 分钟同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |

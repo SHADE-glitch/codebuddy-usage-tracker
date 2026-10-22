@@ -2479,6 +2479,43 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(str(status.styles.text_overflow), "ellipsis")
             self.assertEqual(str(status.styles.text_wrap), "nowrap")
 
+    # 55c. the dashboard fills the window: the ledger takes the spare height
+    async def test_the_project_ledger_takes_the_height_the_rows_leave(self):
+        """A content-sized dashboard ended above the status line on a tall screen.
+
+        The ledger is the only panel that can use extra rows, so it grows into
+        them; on a short screen it keeps its natural height and the box
+        scrolls, so the growth can never clip a project.
+        """
+        now = int(time.time() * 1000)
+        make_db(self.db_path,
+                [("msg-1", "s1", "m", 1, 1, 0, 0, now, 1),
+                 ("msg-2", "s2", "m", 1, 1, 0, 0, now, 1)],
+                projects={"msg-1": "/work/demo", "msg-2": "/work/other"})
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            box = app.query_one("#dash-box")
+            table = app.query_one("#dash-projects", tui.DataTable)
+            note = app.query_one("#dash-note", tui.Static)
+            self.assertEqual(box.max_scroll_y, 0,
+                             "a tall dashboard still scrolls")
+            self.assertGreater(table.size.height, 1 + table.row_count,
+                               "the ledger never took the spare height")
+            self.assertEqual(note.region.bottom, box.region.bottom,
+                             "the ledger did not reach the bottom of the box")
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(120, 20)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            box = app.query_one("#dash-box")
+            table = app.query_one("#dash-projects", tui.DataTable)
+            self.assertEqual(table.size.height, 1 + table.row_count,
+                             "a short box grew the ledger instead of scrolling")
+            self.assertGreater(box.max_scroll_y, 0,
+                               "the short box does not scroll")
+
     # 56. the Agents tab renders its rows (it had no page assertion at all)
     async def test_agents_tab_renders_its_rows(self):
         now = int(time.time() * 1000)

@@ -103,7 +103,7 @@ because every tab is keyed by name.
 
 | | Tab | What it shows |
 |---|-----|---------------|
-| 🧭 | **Dashboard** | three rows for the Dashboard's own window: Usage (requests, credits, sessions, projects, tool/skill/agent/MCP/plugin counts), Tokens (usage total, input/output, credits, cache hit rate), absolute cache hit/miss/write, Top 5 models and Top 5 tools, and the **Projects board** (requests · usage total · credits · sessions · last used). The board grows with its rows and the pane scrolls, so a long project list is never silently cut |
+| 🧭 | **Dashboard** | three rows for the Dashboard's own window: Usage (requests, credits, sessions, projects, tool/skill/agent/MCP/plugin counts), Tokens (usage total, input/output, credits, cache hit rate), absolute cache hit/miss/write, Top 5 models and Top 5 tools, and the **Projects board** (requests · usage total · credits · sessions · last used). The board grows with its rows and takes the height the rows above leave, so the dashboard ends at the status line; the pane scrolls once a long project list no longer fits |
 | 🧰 | **Tools** | tool calls by name, completion, average duration, last used |
 | 🎯 | **Skills** | skill invocations by name (merged across owners), last use |
 | 🤖 | **Agents** | subagent types by name, call count, last use |
@@ -346,7 +346,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 555 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 556 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -364,7 +364,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
   running placeholder upgraded and never downgraded on replay, the final file's
   `trace.sessionId` linking what the stream could not, re-reads
   idempotent, the full `_run` integration |
-| `test_tui.py` | 134 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness, the used-only default with the per-tab `a` toggle, the `/` name filter (Enter applies, Esc cancels),
+| `test_tui.py` | 135 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness, the used-only default with the per-tab `a` toggle, the `/` name filter (Enter applies, Esc cancels),
   the Usage log's newest-100 cap with no page key, provider suffixes on shared model names,
   the Dashboard's Projects board and the credit cells that read `-` when a route reported none |
 | `test_usage.py` | 116 | the calendar-day windows (Today / 2 / 3 / 7 / 14 / 30 days / all) and their custom-range labels, the typed date/time normalisation (24-hour display, 12-hour still accepted on input), the token totals and provider grouping, the Dashboard queries, the drill-down queries (windowed per-entity summaries, plugin use counts, a single call's full row), the schema gate, and which indexes earn their keep, the headless session list (window,
@@ -396,7 +396,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 528 tests above |
+| `scripts/tests/` | the 556 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, and the size & performance baseline with the commands that produced it |
 | `systemd/` | optional 15-minute sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
