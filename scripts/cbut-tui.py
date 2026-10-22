@@ -33,6 +33,19 @@ try:
         TabbedContent, TabPane,
     )
 
+    class Table(DataTable):
+        """A DataTable whose enter key is in the footer.
+
+        Textual binds `enter` on DataTable with `show=False`, so the one key
+        that opens a row's detail was the one key the footer hid — and an
+        app-level `enter` binding cannot fix it, because the focused table's
+        own binding wins. Same action, visible name. Only the tables whose rows
+        actually open something use it; a table with no detail stays plain, so
+        the footer never advertises a dead key.
+        """
+
+        BINDINGS = [Binding("enter", "select_cursor", "Open")]
+
     HAVE_TEXTUAL = True
 except ImportError:  # pragma: no cover - exercised only without the dep
     HAVE_TEXTUAL = False
@@ -1227,7 +1240,7 @@ if HAVE_TEXTUAL:
                 Static(f"[b]{self.kind}[/b] · {self.heading}", id="hist-title"),
                 Static(id="hist-summary", classes="entity-summary"),
                 Static(id="colnote-hist", classes="col-note"),
-                DataTable(id="hist-table", zebra_stripes=True),
+                Table(id="hist-table", zebra_stripes=True),
             )
             yield Footer()
 
@@ -1319,7 +1332,7 @@ if HAVE_TEXTUAL:
                 Static(f"[b]Model responses[/b] · {self.scope}", id="resp-title"),
                 Static(id="resp-summary", classes="entity-summary"),
                 Static(id="colnote-resp", classes="col-note"),
-                DataTable(id="resp-table", zebra_stripes=True),
+                Table(id="resp-table", zebra_stripes=True),
             )
             yield Footer()
 
@@ -1676,7 +1689,7 @@ if HAVE_TEXTUAL:
                         # on the sibling trackers — not a shared row under the tabs.
                         yield Static(id=f"note-{tab.pane}", classes="col-note")
                         yield Static(id=tab.note_id, classes="col-note")
-                        yield DataTable(id=tab.table_id, zebra_stripes=True)
+                        yield Table(id=tab.table_id, zebra_stripes=True)
                 with TabPane("Usage", id="tab-usage"):
                     yield Vertical(
                         Horizontal(

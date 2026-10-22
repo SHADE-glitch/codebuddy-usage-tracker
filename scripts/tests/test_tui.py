@@ -1882,6 +1882,37 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(actions & tui.TrackerApp.APP_SHORTCUT_ACTIONS,
                              actions & tui.TrackerApp.APP_SHORTCUT_ACTIONS)
 
+    # 39g. the key that opens a row is in the footer, and only where it opens
+    async def test_enter_is_in_the_footer_only_where_a_row_opens(self):
+        """Textual hides DataTable's own enter binding; `Table` re-declares it.
+
+        The footer is the key list, so a table whose rows open a detail must show
+        `Open` — and a table whose rows open nothing (the Dashboard ledger, the
+        Usage list, whose rows carry no key) must not.
+        """
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+
+            def shown() -> set:
+                return {(b.binding.key, b.binding.description)
+                        for b in app.screen.active_bindings.values()
+                        if b.binding.show}
+
+            tc = app.query_one(tui.TabbedContent)
+            self.assertNotIn(("enter", "Open"), shown())     # Dashboard
+            tc.active = "tab-tools"
+            await pilot.pause()
+            app.query_one(f"#{tui.ENTITY_TABS[0].table_id}").focus()
+            await pilot.pause()
+            self.assertIn(("enter", "Open"), shown())
+            tc.active = "tab-usage"
+            await pilot.pause()
+            app.query_one("#t-usage").focus()
+            await pilot.pause()
+            self.assertNotIn(("enter", "Open"), shown())
+
     # 37b. every tab keeps its OWN range — changing one never moves another
     async def test_tab_ranges_are_independent(self):
         make_db(self.db_path, [])
@@ -3059,8 +3090,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         tree = ast.parse((SCRIPTS / "cbut-tui.py").read_text(encoding="utf-8"))
         built = set()
         for node in ast.walk(tree):
+            # `Table` is the DataTable subclass that re-exposes enter in the
+            # footer; both are tables, and both need a plan.
             if not (isinstance(node, ast.Call)
-                    and getattr(node.func, "id", None) == "DataTable"):
+                    and getattr(node.func, "id", None) in ("DataTable", "Table")):
                 continue
             for kw in node.keywords:
                 if kw.arg != "id":
@@ -3075,7 +3108,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         registered = (set(TrackerApp.WIDE_TABLES) | set(tui.HistoryScreen.WIDE_TABLES)
                       | set(tui.ModelResponsesScreen.WIDE_TABLES))
         self.assertGreaterEqual(len(built), 9,
-                                f"only {len(built)} DataTable(id=…) found — the query broke")
+                                f"only {len(built)} table(id=…) found — the query broke")
         self.assertFalse(built - registered,
                          f"unplanned tables, free to clip: {sorted(built - registered)}")
         self.assertFalse(registered - built,
