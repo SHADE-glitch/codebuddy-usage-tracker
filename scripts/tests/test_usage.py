@@ -441,12 +441,13 @@ class WindowedQueryTest(unittest.TestCase):
             " ts, status, duration_ms) VALUES(?,?,?,?,?,?,?,?)",
             (cid, server, tool, "s1", "/p", ts, "completed", 1))
 
-    def _model(self, mid, model, pt, ct, ts):
+    def _model(self, mid, model, pt, ct, ts, credit=None, project=None):
         self.conn.execute(
             "INSERT INTO model_responses(message_id, session_id, model,"
-            " prompt_tokens, completion_tokens, ts, usage_available)"
-            " VALUES(?,?,?,?,?,?,?)",
-            (mid, "s1", model, pt, ct, ts, 1))
+            " prompt_tokens, completion_tokens, credit, ts, project,"
+            " usage_available)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (mid, "s1", model, pt, ct, credit, ts, project, 1))
 
     def _plugin(self, name):
         self.conn.execute(
@@ -621,7 +622,8 @@ class WindowedQueryTest(unittest.TestCase):
         self.conn.commit()
         k = db.q_usage_kpi(self.conn, self._recent(), self.NOW)
         self.assertEqual(k, {"tool_calls": 1, "skills": 1, "agents": 1,
-                             "mcp": 1, "plugins": 1})
+                             "mcp": 1, "plugins": 1, "model_sessions": 0,
+                             "model_projects": 0})
         allk = db.q_usage_kpi(self.conn, None, None)   # all-time
         self.assertEqual(allk["tool_calls"], 2)
         self.assertEqual(allk["agents"], 2)
@@ -630,7 +632,8 @@ class WindowedQueryTest(unittest.TestCase):
     def test_q_usage_kpi_empty_window(self):
         self.assertEqual(
             db.q_usage_kpi(self.conn, None, None),
-            {"tool_calls": 0, "skills": 0, "agents": 0, "mcp": 0, "plugins": 0})
+            {"tool_calls": 0, "skills": 0, "agents": 0, "mcp": 0, "plugins": 0,
+             "model_sessions": 0, "model_projects": 0})
 
     def test_q_usage_kpi_matches_name_query_sums(self):
         # The KPI COUNT(*) must equal the sum of the per-name `calls` column in
@@ -1712,11 +1715,13 @@ class DrilldownQueryTest(unittest.TestCase):
             " VALUES(?,?,?,?,?,?,?,?,?)",
             (cid, sess, proj, name, "builtin", ts, dur, status, "m"))
 
-    def _model(self, mid, model, pt, ct, ts, ua=1):
+    def _model(self, mid, model, pt, ct, ts, ua=1, credit=None,
+               project=None):
         self.conn.execute(
-            "INSERT INTO model_responses(message_id, model, prompt_tokens,"
-            " completion_tokens, ts, usage_available) VALUES(?,?,?,?,?,?)",
-            (mid, model, pt, ct, ts, ua))
+            "INSERT INTO model_responses(message_id, session_id, model,"
+            " prompt_tokens, completion_tokens, credit, ts, project,"
+            " usage_available) VALUES(?,?,?,?,?,?,?,?,?)",
+            (mid, "s1", model, pt, ct, credit, ts, project, ua))
 
     def _window(self):
         return self.NOW - 24 * HOUR, self.NOW
@@ -1757,6 +1762,48 @@ class DrilldownQueryTest(unittest.TestCase):
         self.assertEqual([r["id"] for r in rows], [1])
         self.assertEqual(rows[0]["marketplace"], "mp")
         self.assertEqual(rows[0]["kind"], "skill")
+
+    def test_credits_are_summed_beside_tokens_not_into_them(self):
+        self._model("a", "m", 10, 2, self.NOW - HOUR, credit=2.5,
+                    project="/p/one")
+        self._model("b", "m", 20, 4, self.NOW - HOUR, credit=1.25,
+                    project="/p/one")
+        self._model("c", "m", 30, 6, self.NOW - HOUR, project="/p/two")
+        self.conn.commit()
+        start, end = self._window()
+        s = db.q_usage_summary(self.conn, start, end)
+        self.assertEqual(s["credits"], 3.75)
+        self.assertEqual(s["credit_rows"], 2)
+        self.assertEqual(s["total_tokens"], 72)      # credits never added
+        token = {r["model"]: r for r in db.q_model_tokens(self.conn)}["m"]
+        self.assertEqual(token["credits"], 3.75)
+        self.assertEqual(token["total_tokens"], 72)
+        self.assertEqual(token["last_used"], self.NOW - HOUR)
+
+    def test_credit_absent_reads_null_not_zero(self):
+        self._model("a", "m", 10, 2, self.NOW - HOUR)
+        self.conn.commit()
+        start, end = self._window()
+        s = db.q_usage_summary(self.conn, start, end)
+        self.assertIsNone(s["credits"])
+        self.assertEqual(s["credit_rows"], 0)
+
+    def test_project_board_groups_requests_usage_and_credits(self):
+        self._model("a", "m", 10, 2, self.NOW - HOUR, credit=2.0,
+                    project="/p/one")
+        self._model("b", "m", 20, 4, self.NOW - 2 * HOUR, credit=1.0,
+                    project="/p/one")
+        self._model("c", "m", 30, 6, self.NOW - HOUR, project="/p/two")
+        self.conn.commit()
+        start, end = self._window()
+        rows = {r["project"]: r for r in db.q_project_board(self.conn, start, end)}
+        self.assertEqual(set(rows), {"/p/one", "/p/two"})
+        self.assertEqual(rows["/p/one"]["requests"], 2)
+        self.assertEqual(rows["/p/one"]["sessions"], 1)  # same session id
+        self.assertEqual(rows["/p/one"]["usage_total_tokens"], 36)
+        self.assertEqual(rows["/p/one"]["credits"], 3.0)
+        self.assertEqual(rows["/p/one"]["credit_rows"], 2)
+        self.assertIsNone(rows["/p/two"]["credits"])
 
     def test_q_model_summary_windows_and_uses_the_api_total(self):
         self._model("in", "m", 10, 2, self.NOW - HOUR)

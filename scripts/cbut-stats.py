@@ -55,6 +55,17 @@ def fmt_n(v):
     return f"{v:,}"
 
 
+def fmt_credit(v):
+    """One provider-reported credit; ``-`` when this row carried none."""
+    if v is None:
+        return "-"
+    if not v:
+        return "0"
+    if abs(v) >= 1000:
+        return f"{v:,.0f}"
+    return f"{v:,.2f}"
+
+
 def _rendered_width(headers, rows) -> int:
     """Width (chars) of the table ``table()`` would print, including separators."""
     widths = [len(h) for h in headers]
@@ -221,14 +232,15 @@ MODEL_TABLE_COLUMNS = (
     ("in", "prompt_tokens"),
     ("out", "completion_tokens"),
     ("total", "total_tokens"),
+    ("credits", "credits"),
     ("cache hit", "prompt_cache_hit_tokens"),
     ("cache miss", "prompt_cache_miss_tokens"),
     ("cache write", "prompt_cache_write_tokens"),
 )
-# Dropped left-to-right until the table fits; the identity + size columns
-# (model / provider / resp / in / out) always survive.
+# Dropped left-to-right until the table fits; the identity, size and money
+# columns (model / provider / resp / in / out / total / credits) survive.
 _MODEL_DROP_ORDER = ("cache write", "cache miss", "cache hit")
-_MODEL_ALWAYS_KEEP = 5
+_MODEL_ALWAYS_KEEP = 7
 
 
 def _fit_model_columns(width, headers, rows):
@@ -260,6 +272,7 @@ def cmd_models(conn, args):
     headers, rows = _fit_model_columns(width, headers, rows)
     print("Model token usage (source: transcript providerData.rawUsage)")
     print("Total = provider total when present, else Input + Output. "
+          "Credits are billing, kept beside the tokens. "
           "Cache hit/miss/write are separate, not in Total.")
     if rows:
         print(table(headers, rows))
@@ -269,10 +282,11 @@ def cmd_models(conn, args):
     print("Recent model responses")
     recent = db.q_model_responses(conn, args.limit)
     print(table_or(
-        ["when", "model", "in", "out", "total", "cache hit", "cache miss",
-         "cache write", "usage", "session"],
+        ["when", "model", "in", "out", "total", "credits", "cache hit",
+         "cache miss", "cache write", "usage", "session"],
         [[ts(r["ts"]), r["model"] or "?", fmt_n(r["prompt_tokens"]),
           fmt_n(r["completion_tokens"]), fmt_n(r["total_tokens"]),
+          fmt_credit(r["credit"]),
           fmt_n(r["prompt_cache_hit_tokens"]),
           fmt_n(r["prompt_cache_miss_tokens"]),
           fmt_n(r["prompt_cache_write_tokens"]),
@@ -301,11 +315,11 @@ def cmd_show(conn, args):
             print(f"no recorded responses for model {args.name!r}")
             return
         print(f"model {args.name} — {len(found)} recent responses")
-        print(table(["when", "provider", "in", "out", "total", "cache hit",
-                     "cache miss", "cache write", "session"],
+        print(table(["when", "provider", "in", "out", "total", "credits",
+                     "cache hit", "cache miss", "cache write", "session"],
                     [[ts(r["ts"]), db.provider_label(r["provider"]),
                       fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
-                      fmt_n(r["total_tokens"]),
+                      fmt_n(r["total_tokens"]), fmt_credit(r["credit"]),
                       fmt_n(r["prompt_cache_hit_tokens"]),
                       fmt_n(r["prompt_cache_miss_tokens"]),
                       fmt_n(r["prompt_cache_write_tokens"]),

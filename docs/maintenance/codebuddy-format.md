@@ -24,7 +24,7 @@ cbut format --write      # refresh the block in this file after changing the reg
   - `error` → `incomplete`
   - `ok` → `completed`
 - **`providerData` fields**: `conversationRequestId`, `messageId`, `model`, `rawUsage`, `requestModelId`, `toolResult`
-- **`providerData.rawUsage` fields**: `cache_creation_input_tokens`, `cache_read_input_tokens`, `completion_tokens`, `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, `prompt_cache_write_tokens`, `prompt_tokens`, `total_tokens`
+- **`providerData.rawUsage` fields**: `cache_creation_input_tokens`, `cache_read_input_tokens`, `completion_tokens`, `credit`, `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, `prompt_cache_write_tokens`, `prompt_tokens`, `total_tokens`
 - **`rawUsage` nested cache path (fallback for the hit above)**: `cached_tokens`, `prompt_tokens_details`
 - **`_meta` fields**: `baggage`
 - **message content-block fields**: `text`

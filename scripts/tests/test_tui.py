@@ -19,6 +19,7 @@ import time
 import unittest
 from datetime import date, datetime
 from pathlib import Path
+from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
 from types import SimpleNamespace
@@ -66,18 +67,22 @@ def model_rec(message_id, raw=None, rtype="function_call",
 
 
 def make_db(path, responses, session_token=12345, cache=None, ptotals=None,
-            providers=None):
+            providers=None, credits=None, projects=None):
     """Build a tracker DB with model_responses rows (and a tokenDelta session).
 
     ``responses`` rows: (mid, sid, model, prompt, completion, cache_r, cache_w,
     ts, usage). ``cache`` optionally maps mid -> (hit, miss, write) for the v3
     ``prompt_cache_*`` columns (defaults to NULL). ``ptotals`` optionally maps
     mid -> provider_total_tokens (defaults to NULL). ``providers`` optionally
-    maps mid -> provider (defaults to NULL, the "unknown" origin).
+    maps mid -> provider (defaults to NULL, the "unknown" origin). ``credits``
+    maps mid -> rawUsage.credit (defaults to NULL), and ``projects`` maps mid ->
+    the decoded cwd (defaults to NULL).
     """
     cache = cache or {}
     ptotals = ptotals or {}
     providers = providers or {}
+    credits = credits or {}
+    projects = projects or {}
     conn = db.open_db(path)
     db.ensure_schema(conn)
     if session_token is not None:
@@ -96,10 +101,10 @@ def make_db(path, responses, session_token=12345, cache=None, ptotals=None,
             " completion_tokens, cache_read_input_tokens,"
             " cache_creation_input_tokens, prompt_cache_hit_tokens,"
             " prompt_cache_miss_tokens, prompt_cache_write_tokens,"
-            " provider_total_tokens, ts, usage_available)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " provider_total_tokens, credit, ts, usage_available, project)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (mid, sid, model, providers.get(mid), pt, ct, cr, cw, hit, miss,
-             write, ptotal, ts, ua),
+             write, ptotal, credits.get(mid), ts, ua, projects.get(mid)),
         )
     conn.commit()
     conn.close()
@@ -109,11 +114,18 @@ def all_rows(table):
     return [table.get_row_at(i) for i in range(table.row_count)]
 
 
+def active_note(app):
+    """The active tab's summary line (each pane owns its own note)."""
+    pane = app.query_one(tui.TabbedContent).active
+    return app.query_one("#usage-note" if pane == "tab-usage"
+                         else f"#note-{pane}")
+
+
 # Textual's default test terminal is 80x24, and below the width where a table's
 # columns fit, the column plan drops the tail (see test 58). A case that reads
 # cells by position therefore has to ask for a terminal wide enough to show all
 # of them, otherwise it asserts against a table that was never meant to be full.
-WIDE = (160, 40)
+WIDE = (220, 40)
 
 # A fixed instant the calendar cases pin the clock to, so "today", the month
 # they open on and the preset spans are all deterministic.
@@ -247,9 +259,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row[0], "m")
             self.assertEqual(row[1], "Built-in")   # route absent -> built-in
             self.assertEqual(row[2], "-")    # Usage Total (no API parts)
-            self.assertEqual(row[3], "1")    # Requests (the row exists)
-            # Input / Output / API Total / Cache columns are "-", never "0"
-            for i in range(4, 10):
+            self.assertEqual(row[3], "-")    # Credits (no billing field)
+            self.assertEqual(row[4], "1")    # Requests (the row exists)
+            # Input / Output / API Total / Cache / hit-rate cells are "-", never "0"
+            for i in range(5, 12):
                 self.assertEqual(row[i], "-", f"col {i} should be '-'")
 
     # 5. prompt / completion / total / cache shown in separate columns
@@ -263,17 +276,20 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             t = app.query_one("#t-tokens", tui.DataTable)
             row = all_rows(t)[0]
-            # Order: Model · Provider · Usage Total · Requests · Input · Output ·
-            #        API Total · Cache hit · Cache miss · Cache write
+            # Order: Model · Provider · Usage Total · Credits · Requests · Input ·
+            #        Output · API Total · Cache hit · Cache miss · Cache write ·
+            #        Cache hit rate · Last used
             self.assertEqual(row[1], "Built-in")   # route absent -> built-in
             self.assertEqual(row[2], "37")   # Usage Total = 10 + 20 + 7
-            self.assertEqual(row[3], "1")    # Requests
-            self.assertEqual(row[4], "10")   # Input  = prompt_tokens
-            self.assertEqual(row[5], "20")   # Output = completion_tokens
-            self.assertEqual(row[6], "30")   # API Total = Input + Output
-            self.assertEqual(row[7], "7")    # Cache hit
-            self.assertEqual(row[8], "8")    # Cache miss
-            self.assertEqual(row[9], "9")    # Cache write
+            self.assertEqual(row[3], "-")    # Credits (absent, not 0)
+            self.assertEqual(row[4], "1")    # Requests
+            self.assertEqual(row[5], "10")   # Input  = prompt_tokens
+            self.assertEqual(row[6], "20")   # Output = completion_tokens
+            self.assertEqual(row[7], "30")   # API Total = Input + Output
+            self.assertEqual(row[8], "7")    # Cache hit
+            self.assertEqual(row[9], "8")    # Cache miss
+            self.assertEqual(row[10], "9")   # Cache write
+            self.assertEqual(row[11], "29.2%")   # 7 / (7+8+9)
 
     # 5b. explicit 0 is shown as "0", absent stays "-"
     async def test_zero_vs_null_distinction(self):
@@ -287,12 +303,12 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             t = app.query_one("#t-tokens", tui.DataTable)
             rows = {r[0]: r for r in all_rows(t)}
-            self.assertEqual(rows["zeroed"][7], "0")     # real 0
-            self.assertEqual(rows["zeroed"][8], "0")
+            self.assertEqual(rows["zeroed"][8], "0")     # real 0
             self.assertEqual(rows["zeroed"][9], "0")
-            self.assertEqual(rows["nulled"][7], "-")     # NULL, not 0
-            self.assertEqual(rows["nulled"][8], "-")
+            self.assertEqual(rows["zeroed"][10], "0")
+            self.assertEqual(rows["nulled"][8], "-")     # NULL, not 0
             self.assertEqual(rows["nulled"][9], "-")
+            self.assertEqual(rows["nulled"][10], "-")
 
     # 5c. Total is not inflated by cache hit/miss
     async def test_total_excludes_cache(self):
@@ -301,12 +317,12 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             ("m1", "s1", "m", 10, 20, 0, 0, now - 3600_000, 1),
         ], cache={"m1": (999999, 888888, 7)})
         app = TrackerApp(str(self.db_path))
-        async with app.run_test() as pilot:
+        async with app.run_test(size=WIDE) as pilot:
             await pilot.pause()
             t = app.query_one("#t-tokens", tui.DataTable)
             row = all_rows(t)[0]
-            self.assertEqual(row[6], "30")           # API Total, not +cache
-            self.assertEqual(row[7], "999,999")      # cache hit still shown
+            self.assertEqual(row[7], "30")           # API Total, not +cache
+            self.assertEqual(row[8], "999,999")      # cache hit still shown
 
     # 5d. Tokens tab has exactly the expected columns
     async def test_tokens_tab_columns(self):
@@ -317,8 +333,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             t = app.query_one("#t-tokens", tui.DataTable)
             labels = [str(c.label) for c in t.columns.values()]
             self.assertEqual(labels, ["Model", "Provider", "Usage Total",
-                                      "Requests", "Input", "Output", "API Total",
-                                      "Cache hit", "Cache miss", "Cache write"])
+                                      "Credits", "Requests", "Input", "Output",
+                                      "API Total", "Cache hit", "Cache miss",
+                                      "Cache write", "Cache hit rate",
+                                      "Last used"])
 
     # 5e. the Provider column shows Built-in / a vendor
     async def test_tokens_shows_provider_origin(self):
@@ -945,6 +963,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = TrackerApp(str(self.db_path))
         app.sync_mod = SimpleNamespace(run=fake_run)
         async with app.run_test() as pilot:
+            # The launch sync has its own case; start this one from a clean call
+            # list so it measures `r`, not mount.
+            await app.workers.wait_for_complete()
+            calls.clear()
             await pilot.press("r")
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -954,26 +976,36 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             t = app.query_one("#t-tokens", tui.DataTable)
             self.assertTrue(any(r[0] == "m" for r in all_rows(t)))
 
-    # 8. S toggles auto-sync only; it does not itself trigger a sync
-    async def test_s_toggles_auto_sync_only(self):
-        calls = []
-
-        def fake_run(**kw):
-            calls.append(1)
-            return {"files_indexed": 0}
-
+    # 8. S cycles the active tab's sort; it never starts a sync
+    async def test_s_cycles_the_active_tab_sort(self):
+        now = int(time.time() * 1000)
         make_db(self.db_path, [])
+        insert_tool_calls(self.db_path, [
+            ("a", "s1", "/p", "Alpha", "builtin", now - 60_000, 10, "completed"),
+            ("b", "s1", "/p", "Beta", "builtin", now - 3_600_000, 10, "completed"),
+            ("c", "s1", "/p", "Beta", "builtin", now - 3_500_000, 10, "completed"),
+        ])
         app = TrackerApp(str(self.db_path))
-        app.sync_mod = SimpleNamespace(run=fake_run)
+        app.sync_mod = SimpleNamespace(run=lambda **kw: {"files_indexed": 0})
         async with app.run_test() as pilot:
-            self.assertTrue(app._auto_sync)
-            await pilot.press("s")
             await pilot.pause()
-            self.assertFalse(app._auto_sync)
-            self.assertEqual(calls, [])  # no sync happened
-            await pilot.press("s")
-            self.assertTrue(app._auto_sync)
-            self.assertEqual(calls, [])  # still no sync
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            t = app.query_one("#t-tools", tui.DataTable)
+            note = active_note(app)
+            self.assertEqual([r[0] for r in all_rows(t)], ["Beta", "Alpha"])
+            self.assertIn("sort: tab order", str(note.content))
+            await pilot.press("s")          # calls
+            await pilot.press("s")          # recent
+            await pilot.press("s")          # name
+            await pilot.pause()
+            self.assertIn("sort: name", str(note.content))
+            self.assertEqual([r[0] for r in all_rows(t)], ["Alpha", "Beta"])
+            await pilot.press("s")          # fails
+            await pilot.press("s")          # tab order
+            await pilot.pause()
+            self.assertIn("sort: tab order", str(note.content))
+            self.assertEqual([r[0] for r in all_rows(t)], ["Beta", "Alpha"])
 
     # 9. running the real indexer twice does not double-insert (messageId dedup)
     async def test_sync_dedup_no_double_insert(self):
@@ -1043,6 +1075,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = TrackerApp(str(self.db_path))
         app.sync_mod = SimpleNamespace(run=fake_run)
         async with app.run_test() as pilot:
+            # Mount has its own launch sync; measure the two explicit requests.
+            await app.workers.wait_for_complete()
+            state.update(active=0, max=0, calls=0)
             app._request_sync()
             app._request_sync()  # while the first is still running
             await app.workers.wait_for_complete()
@@ -1136,19 +1171,21 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await self._usage_all_time(app, pilot)
             t = app.query_one("#t-usage", tui.DataTable)
             row = all_rows(t)[0]
-            # Order: Time · Model · Provider · Usage Total · Input · Output ·
-            #        API Total · Cache hit · Cache miss · Cache write · Hit rate
+            # Order: Time · Model · Provider · Usage Total · Credits · Input ·
+            #        Output · API Total · Cache hit · Cache miss · Cache write ·
+            #        Cache hit rate
             self.assertEqual(row[1], "m")            # model
             self.assertEqual(row[2], "Built-in")      # route absent -> built-in
             self.assertEqual(row[3], "1,000,029")    # Usage Total = 10+20+999999
-            self.assertEqual(row[4], "10")           # Input
-            self.assertEqual(row[5], "20")           # Output
-            self.assertEqual(row[6], "30")           # API Total, not +cache
-            self.assertEqual(row[7], "999,999")      # Cache hit (read)
-            self.assertEqual(row[8], "888,888")      # Cache miss
-            self.assertEqual(row[9], "7")            # Cache write (create)
+            self.assertEqual(row[4], "-")            # Credits (absent, not 0)
+            self.assertEqual(row[5], "10")           # Input
+            self.assertEqual(row[6], "20")           # Output
+            self.assertEqual(row[7], "30")           # API Total, not +cache
+            self.assertEqual(row[8], "999,999")      # Cache hit (read)
+            self.assertEqual(row[9], "888,888")      # Cache miss
+            self.assertEqual(row[10], "7")           # Cache write (create)
             # 999999 / (999999 + 888888 + 7) = 52.9%
-            self.assertEqual(row[10], "52.9%")       # Cache hit rate
+            self.assertEqual(row[11], "52.9%")       # Cache hit rate
 
     # 17b. empty window shows an explicit empty state, never a blank region
     async def test_usage_empty_state(self):
@@ -1225,7 +1262,8 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             for pid in ("#panel-window", "#panel-tokens", "#panel-cache",
                         "#panel-runtime"):
                 self.assertTrue(app.query_one(pid))
-            for wid in ("#sum-requests", "#sum-input", "#sum-total",
+            for wid in ("#sum-requests", "#sum-sessions", "#sum-projects",
+                        "#sum-credits", "#sum-input", "#sum-total",
                         "#sum-cache-hit", "#sum-hit-rate", "#sum-usage-total",
                         "#sum-missing", "#usage-status"):
                 self.assertTrue(app.query_one(wid))
@@ -1248,9 +1286,38 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             row = all_rows(t)[0]
             self.assertEqual(row[1], "Built-in")  # route absent -> built-in
             self.assertEqual(row[2], "2")        # Usage Total = 1 + 1
-            self.assertEqual(row[3], "2")        # Requests
+            self.assertEqual(row[3], "-")        # Credits (absent, not 0)
+            self.assertEqual(row[4], "2")        # Requests
 
-    # 24. hidden tabs are not re-queried by the 5s refresh
+    # 23b. credits are shown on every page the provider reports them for
+    async def test_credits_show_on_tokens_usage_and_dashboard(self):
+        now = self._noon_ms()
+        make_db(self.db_path, [
+            ("a", "s1", "paid", 10, 2, 0, 0, now - 3600_000, 1),
+            ("b", "s1", "free", 20, 4, 0, 0, now - 3500_000, 1),
+        ], credits={"a": 1.5}, projects={"a": "/work/one", "b": "/work/two"})
+        app = self._pinned_app(now)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            tokens = {r[0]: r for r in all_rows(
+                app.query_one("#t-tokens", tui.DataTable))}
+            self.assertEqual(tokens["paid"][3], "1.50")
+            self.assertEqual(tokens["free"][3], "-")   # absent, never 0
+            await self._usage_all_time(app, pilot)
+            logs = {r[1]: r for r in all_rows(
+                app.query_one("#t-usage", tui.DataTable))}
+            self.assertEqual(logs["paid"][4], "1.50")
+            self.assertEqual(logs["free"][4], "-")
+            # Dashboard: both panels and the project board carry the credit.
+            self.assertIn("1.50", str(app.query_one("#dash-sum-credits").content))
+            self.assertIn("1.50", str(app.query_one("#dash-tok-credits").content))
+            self.assertIn(" cr", str(app.query_one("#dash-models").content))
+            board = {r[0]: r for r in all_rows(
+                app.query_one("#dash-projects", tui.DataTable))}
+            self.assertEqual(board["/work/one"][3], "1.50")
+            self.assertEqual(board["/work/two"][3], "-")
+
+    # 24. refreshing the visible tab never queries the hidden Requests page
     async def test_hidden_tab_not_requeried(self):
         calls = {"n": 0}
         real = db.q_usage_summary
@@ -1269,13 +1336,13 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             db.q_usage_summary = spy
             try:
                 calls["n"] = 0
-                app._auto_refresh_tick()
+                app._refresh_active_tab()
                 await pilot.pause()
                 self.assertEqual(calls["n"], 0)     # tools tab -> no usage query
                 tc.active = "tab-usage"
                 await pilot.pause()
                 calls["n"] = 0
-                app._auto_refresh_tick()
+                app._refresh_active_tab()
                 await pilot.pause()
                 self.assertGreater(calls["n"], 0)   # usage tab -> queried
             finally:
@@ -1340,79 +1407,23 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         app = TrackerApp(str(self.db_path))
         self.assertNotIn("force", inspect.signature(app._request_sync).parameters)
 
-    # 28b. the refresh tick must not collide with Textual's DOMNode._auto_refresh
-    # instance attribute (which would shadow the method and break the timer)
-    def test_auto_refresh_tick_is_callable(self):
+    # 28b. one launch sync, and no background timer that redraws the page
+    async def test_one_launch_sync_and_no_background_timer(self):
         make_db(self.db_path, [])
-        app = TrackerApp(str(self.db_path))
-        self.assertTrue(callable(app._auto_refresh_tick))
-
-    # 28c. a refresh tick that fires while the app is not running (e.g. once
-    # more during run_test teardown) must be a no-op. Otherwise query_one on the
-    # now-unmounted widgets raises NoMatches from inside the timer and fails the
-    # whole test run — the flake CI caught on test_tab_cycle_wraps.
-    async def test_auto_refresh_tick_is_noop_when_not_running(self):
-        make_db(self.db_path, [])
-        app = TrackerApp(str(self.db_path))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.query_one(tui.TabbedContent).active = "tab-dashboard"
-            await pilot.pause()
-            ran = {"n": 0}
-            real = app._refresh_active_tab
-
-            def spy(*a, **k):
-                ran["n"] += 1
-                return real(*a, **k)
-
-            app._refresh_active_tab = spy
-            # is_running is True inside run_test, so the tick still refreshes...
-            app._auto_refresh_tick()
-            self.assertEqual(ran["n"], 1)
-
-        # ...but once the app has stopped it must return before touching the DOM
-        # (query_one would raise NoMatches here).
-        self.assertFalse(app.is_running)
-        app._auto_refresh_tick()
-        self.assertEqual(ran["n"], 1)
-
-    # 28d. the auto-sync timer has the same teardown window as the refresh one,
-    # and D-003 only guarded the refresh side. Without the guard _request_sync
-    # reaches run_worker on an app that has already stopped: "RuntimeError: no
-    # running event loop", plus a coroutine that is never awaited.
-    async def test_auto_sync_tick_is_noop_when_not_running(self):
-        make_db(self.db_path, [])
-        app = TrackerApp(str(self.db_path))
         requested = []
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            # Stubbed, not wrapped: the real _request_sync starts a worker that
-            # would scan this machine's ~/.codebuddy from inside a test.
-            app._request_sync = lambda *a, **k: requested.append(1)
-            app._auto_sync_tick()
-            self.assertEqual(len(requested), 1,
-                             "the tick must still sync while the app is running")
 
-        self.assertFalse(app.is_running)
-        app._auto_sync_tick()                       # must not raise
-        self.assertEqual(len(requested), 1,
-                         "no sync may be queued after the app has stopped")
+        def fake_request_sync(self):
+            requested.append(self)
 
-    # 28e. and toggling auto-sync off must stop the ticks, not just the label
-    async def test_auto_sync_tick_honours_the_switch(self):
-        make_db(self.db_path, [])
-        app = TrackerApp(str(self.db_path))
-        requested = []
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._request_sync = lambda *a, **k: requested.append(1)
-            app.action_toggle_auto_sync()
-            app._auto_sync_tick()
-            self.assertEqual(requested, [],
-                             "auto-sync is off; the tick must not sync")
-            app.action_toggle_auto_sync()
-            app._auto_sync_tick()
-            self.assertEqual(len(requested), 1)
+        with mock.patch.object(TrackerApp, "_request_sync", fake_request_sync):
+            app = TrackerApp(str(self.db_path))
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                self.assertEqual(requested, [app])
+                periods = [t._interval for t in app._timers]
+                self.assertFalse(
+                    any(period in (5, 5.0, 30, 30.0) for period in periods),
+                    f"a background timer survived: {periods}")
 
     # 29. narrow terminals switch the panels to a compact (stacked) layout
     async def test_usage_summary_compact_fallback(self):
@@ -1646,11 +1657,11 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             rows = {r[0]: r for r in all_rows(t)}
             self.assertEqual(set(rows), {"Recent"})
             self.assertEqual(rows["Recent"][1], "1")
-            # The note stays silent while used rows still show — the Footer's
-            # "a Incl. unused" strip is the discovery route, and a note that
-            # shouts on every quiet tab is a bar nobody reads. It names the
-            # hidden half only when a tab would otherwise read as empty.
-            self.assertEqual(str(app.query_one("#filter-note").content), "")
+            # The note names the visible count and the sort in force. The
+            # hidden half is only counted once `a` includes it.
+            note = str(active_note(app).content)
+            self.assertIn("1 row", note)
+            self.assertIn("sort: tab order", note)
             # a includes the installed-but-unused half; Old shows its 0.
             await pilot.press("a")
             await pilot.pause()
@@ -1691,16 +1702,18 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.press("l")
             await pilot.pause()
             self.assertEqual({r[0] for r in all_rows(t)}, {"Alpha"})
-            note = str(app.query_one("#filter-note").content)
+            note = str(active_note(app).content)
             self.assertIn('filter "l"', note)
-            self.assertIn("1 of 2 rows", note)
+            self.assertIn("1 of 2", note)
 
             # Esc closes the bar, clears the needle and restores every row
             await pilot.press("escape")
             await pilot.pause()
             self.assertFalse(inp.display)
             self.assertEqual({r[0] for r in all_rows(t)}, {"Alpha", "Beta"})
-            self.assertEqual(str(app.query_one("#filter-note").content), "")
+            note = str(active_note(app).content)
+            self.assertNotIn("filter", note)
+            self.assertIn("2 rows", note)
 
     # 39b. the name-filter is per-tab and combines with the a-toggle
     async def test_name_filter_is_per_tab_and_combines_with_unused(self):
@@ -1731,25 +1744,26 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             # so the tab reads as its empty state, not as silently broken
             self.assertEqual([r[0] for r in all_rows(t)],
                              ["No tool calls yet"])
-            note = str(app.query_one("#filter-note").content)
+            note = str(active_note(app).content)
             self.assertIn('filter "old"', note)
-            self.assertIn("0 of 2 rows", note)
-            # Enter applies: the bar closes but the needle stays on
+            self.assertIn("0 of 2", note)
+            # Enter applies: focus returns to the table, but the bar stays
+            # visible because the filter is still on.
             await pilot.press("enter")
             await pilot.pause()
-            self.assertFalse(inp.display)
+            self.assertTrue(inp.display)
             self.assertEqual([r[0] for r in all_rows(t)],
                              ["No tool calls yet"])
             self.assertIn('filter "old"',
-                          str(app.query_one("#filter-note").content))
+                          str(active_note(app).content))
             # a includes the unused half under the same needle; the table got
             # focus back on close, so the binding lands
             await pilot.press("a")
             await pilot.pause()
             self.assertEqual({r[0] for r in all_rows(t)}, {"Old"})
-            note = str(app.query_one("#filter-note").content)
+            note = str(active_note(app).content)
             self.assertIn("incl. installed-unused", note)
-            self.assertIn("1 of 2 rows", note)
+            self.assertIn("1 of 2", note)
             # the needle rides its own tab: leaving and coming back,
             # the filter is still applied to Tools and nothing else
             tc = app.query_one(tui.TabbedContent)
@@ -1759,7 +1773,115 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual({r[0] for r in all_rows(t)}, {"Old"})
             self.assertIn('filter "old"',
-                          str(app.query_one("#filter-note").content))
+                          str(active_note(app).content))
+    # 39c. filter edits start at the first match; the bar survives Enter
+    async def test_filter_bar_stays_visible_and_anchors_the_list(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [])
+        insert_tool_calls(self.db_path, [
+            (f"c{i}", "s1", "/p", f"Tool{i:02d}", "builtin", now - i * 1000,
+             10, "completed") for i in range(30)
+        ])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(100, 24)) as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-tools"
+            await pilot.pause()
+            t = app.query_one("#t-tools", tui.DataTable)
+            inp = app.query_one("#filter-input", tui.Input)
+            t.focus()
+            t.move_cursor(row=20)
+            await pilot.pause()
+            self.assertGreater(t.scroll_y, 0)
+
+            await pilot.press("/")
+            await pilot.pause()
+            for ch in "tool":
+                await pilot.press(ch)
+                await pilot.pause()
+            self.assertEqual(t.cursor_row, 0)
+            self.assertEqual(t.scroll_y, 0,
+                             "a live filter kept a deep cursor and scrolled away")
+            note = str(active_note(app).content)
+            self.assertIn('filter "tool"', note)
+
+            for ch in "29":
+                await pilot.press(ch)
+                await pilot.pause()
+            self.assertEqual([r[0] for r in all_rows(t)], ["Tool29"])
+            self.assertIn('filter "tool29" · 1 of 30', str(
+                active_note(app).content))
+
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertTrue(inp.display,
+                            "Enter hid a filter that is still applied")
+            self.assertEqual(app.focused.id, "t-tools")
+
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertFalse(inp.display)
+            self.assertEqual(len(all_rows(t)), 30)
+
+    # 39d. Requests filters in SQL and sorts over the whole window
+    async def test_requests_filter_and_sort(self):
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [
+            ("a", "s1", "alpha", 100, 10, 0, 0, now - 60_000, 1),
+            ("b", "s1", "beta", 1, 1, 0, 0, now - 30_000, 1),
+        ])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-usage"
+            await pilot.pause()
+            t = app.query_one("#t-usage", tui.DataTable)
+            note = app.query_one("#usage-note")
+            self.assertIn("sort: time", str(note.content))
+            self.assertEqual([r[1] for r in all_rows(t)], ["beta", "alpha"])
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertIn("sort: tokens", str(note.content))
+            self.assertEqual([r[1] for r in all_rows(t)], ["alpha", "beta"])
+
+            await pilot.press("/")
+            await pilot.pause()
+            for ch in "alpha":
+                await pilot.press(ch)
+                await pilot.pause()
+            self.assertEqual([r[1] for r in all_rows(t)], ["alpha"])
+            self.assertIn('filter "alpha" · 1 matches', str(note.content))
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertEqual(len(all_rows(t)), 2)
+
+    # 39e. the page never scrolls into blank space when its content fits
+    async def test_the_main_screen_cannot_scroll_when_its_content_fits(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test(size=(100, 24)) as pilot:
+            await pilot.pause()
+            self.assertEqual(app.screen.max_scroll_y, 0)
+            app.query_one(tui.TabbedContent).active = "tab-usage"
+            await pilot.pause()
+            self.assertEqual(app.screen.max_scroll_y, 0)
+
+    # 39f. a pushed detail screen does not inherit the app's shortcuts
+    async def test_a_pushed_detail_screen_carries_no_app_shortcuts(self):
+        make_db(self.db_path, [])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(tui.HistoryScreen("tool", "bash"))
+            await pilot.pause()
+            bindings = app.screen.active_bindings
+            keys = set(bindings)
+            self.assertTrue(any(k in keys for k in ("q", "escape", "escape,q")),
+                            keys)
+            actions = {b.binding.action for b in bindings.values()}
+            self.assertFalse(actions & tui.TrackerApp.APP_SHORTCUT_ACTIONS,
+                             actions & tui.TrackerApp.APP_SHORTCUT_ACTIONS)
+
     # 37b. every tab keeps its OWN range — changing one never moves another
     async def test_tab_ranges_are_independent(self):
         make_db(self.db_path, [])
@@ -1852,32 +1974,35 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             labels = [str(c.label) for c in t.columns.values()]
             self.assertNotIn("plugin", labels)
 
-    # 40. Dashboard: a grid of panel rows, no table, all expected widgets
+    # 40. Dashboard: a grid of panel rows plus the Projects board
     async def test_dashboard_layout(self):
         make_db(self.db_path, [])
         app = TrackerApp(str(self.db_path))
         async with app.run_test() as pilot:
             await pilot.pause()
-            for rid in ("#dash-row-1", "#dash-row-2", "#dash-row-3"):
+            for rid in ("#dash-row-1", "#dash-row-2", "#dash-row-3",
+                        "#dash-row-4"):
                 self.assertTrue(app.query_one(rid))
             for pid in ("#panel-dash-kpi", "#panel-dash-tokens",
                         "#panel-dash-cache", "#panel-dash-models",
                         "#panel-dash-tools", "#panel-dash-runtime",
-                        "#panel-dash-activity"):
+                        "#panel-dash-activity", "#panel-dash-projects"):
                 self.assertTrue(app.query_one(pid))
-            for wid in ("#dash-kpi-tools", "#dash-kpi-skills",
+            for wid in ("#dash-sum-requests", "#dash-sum-credits",
+                        "#dash-sum-sessions", "#dash-sum-projects",
+                        "#dash-kpi-tools", "#dash-kpi-skills",
                         "#dash-kpi-agents", "#dash-kpi-mcp", "#dash-kpi-plugins",
-                        "#dash-tok-requests", "#dash-tok-input",
-                        "#dash-tok-output", "#dash-tok-api", "#dash-tok-usage",
+                        "#dash-tok-usage", "#dash-tok-input",
+                        "#dash-tok-output", "#dash-tok-api", "#dash-tok-credits",
                         "#dash-tok-hit-rate", "#dash-cache-hit",
                         "#dash-cache-miss", "#dash-cache-write",
                         "#dash-rt-completed", "#dash-rt-incomplete",
                         "#dash-rt-avg", "#dash-rt-sessions", "#dash-rt-projects",
-                        "#dash-models", "#dash-tools",
+                        "#dash-models", "#dash-tools", "#dash-projects",
                         "#dash-activity", "#dash-activity-axis", "#dash-note"):
                 self.assertTrue(app.query_one(wid))
-            # the leaderboards and the trend are text, not tables
-            self.assertEqual(len(app.query("#tab-dashboard DataTable")), 0)
+            # Only the Projects board is a table; the rest are text panels.
+            self.assertEqual(len(app.query("#tab-dashboard DataTable")), 1)
 
     # 40b. Dashboard has its own range, defaulting to Today
     async def test_dashboard_defaults_to_today(self):
@@ -2025,25 +2150,6 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("tool calls", after)
             self.assertEqual(after, before)
 
-    # 43. `s` marks the switch *and* keeps the counts it used to wipe out
-    async def test_auto_sync_toggle_keeps_the_data_line(self):
-        now = int(time.time() * 1000)
-        make_db(self.db_path, [("m1", "s1", "m", 1, 1, 0, 0, now, 1)])
-        app = TrackerApp(str(self.db_path))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("s")
-            await pilot.pause()
-            status = str(app.query_one("#status").content)
-            self.assertIn("auto-sync OFF", status)
-            self.assertIn("tool calls", status,
-                         "the toggle replaced the whole line, and nothing put "
-                         "the numbers back until an unrelated refresh")
-            await pilot.press("s")
-            await pilot.pause()
-            self.assertNotIn("auto-sync OFF",
-                             str(app.query_one("#status").content))
-
     # 44/45. a re-query that fails says so; the tick that recovers says it stopped
     async def test_a_failed_requery_is_reported_and_recovers(self):
         now = int(time.time() * 1000)
@@ -2093,32 +2199,33 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
         conn.commit()
         conn.close()
         app = TrackerApp(str(self.db_path))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            status = str(app.query_one("#status").content)
-            self.assertIn("22,674 records unparsed (2 known)", status)
-            self.assertNotIn("!", status,
-                             "a known reason raised the alarm the alarm is for")
+        # The launch sync's fixture host is deliberately absent; its failure
+        # would add a second, unrelated `!` to the line this case reads.
+        with mock.patch.object(TrackerApp, "_request_sync", lambda self: None):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                status = str(app.query_one("#status").content)
+                self.assertIn("22,674 records unparsed (2 known)", status)
+                self.assertNotIn("!", status,
+                                 "a known reason raised the alarm the alarm is for")
 
-            conn = db.open_db(self.db_path)
-            conn.execute("INSERT INTO unparsed(reason, count) VALUES(?,?)",
-                         ("type:brand-new", 3))
-            conn.commit()
-            conn.close()
-            # `refresh_data` is the full refresh (every tab + the status bar) — the
-            # `r` binding also runs a sync first, and the tripwire refuses to let a
-            # test read the real host footprint, which is what the bar then reports.
-            # `_refresh_active_tab` is not enough either: it fills the visible tab
-            # and leaves the bar showing its previous line.
-            app.refresh_data()
-            await pilot.pause()
-            status = str(app.query_one("#status").content)
-            self.assertIn("!", status)
-            self.assertIn("3 records unparsed under a new reason: type:brand-new",
-                          status)
-            self.assertNotIn("22,674", status,
-                             "the alarm count is the new records, not the familiar "
-                             "ones it would otherwise be buried under")
+                conn = db.open_db(self.db_path)
+                conn.execute("INSERT INTO unparsed(reason, count) VALUES(?,?)",
+                             ("type:brand-new", 3))
+                conn.commit()
+                conn.close()
+                # `refresh_data` is the full refresh (every tab + the status bar) —
+                # `_refresh_active_tab` is not enough: it fills the visible tab and
+                # leaves the bar showing its previous line.
+                app.refresh_data()
+                await pilot.pause()
+                status = str(app.query_one("#status").content)
+                self.assertIn("!", status)
+                self.assertIn("3 records unparsed under a new reason: type:brand-new",
+                              status)
+                self.assertNotIn("22,674", status,
+                                 "the alarm count is the new records, not the familiar "
+                                 "ones it would otherwise be buried under")
 
     # 46/47. narrow terminals get two panels per row, very narrow ones stack
     async def test_usage_panels_go_two_up_before_they_stack(self):
@@ -2184,7 +2291,9 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
 
         A silently shortened list is the row-level version of the half column
         the wide plan refuses to render — a reader cannot tell "that is all"
-        from "that is the first page"."""
+        from "that is the first page". There is no page key: the footer stays
+        identical on every tab, and the note names the cut.
+        """
         now = self._noon_ms()
         make_db(self.db_path, [
             (f"m{i}", "s1", "alpha", 10, 5, 0, 0, now - 60_000, 1)
@@ -2196,19 +2305,12 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             app.query_one(tui.TabbedContent).active = "tab-usage"
             await pilot.pause()
             note = str(app.query_one("#usage-note").content)
-            self.assertIn("showing 1–100 of 120", note)
-            self.assertIn("PgDn for more", note)
+            self.assertIn("showing 100 of 120", note)
+            self.assertIn("sort: time", note)
+            self.assertNotIn("Pg", note)
             self.assertEqual(
                 len(all_rows(app.query_one("#t-usage", tui.DataTable))), 100)
-            # PgDn pages; PgUp comes back.
             await pilot.press("pagedown")
-            await pilot.pause()
-            note = str(app.query_one("#usage-note").content)
-            self.assertIn("showing 101–120 of 120", note)
-            self.assertIn("PgUp to go back", note)
-            self.assertEqual(
-                len(all_rows(app.query_one("#t-usage", tui.DataTable))), 20)
-            await pilot.press("pageup")
             await pilot.pause()
             self.assertEqual(
                 len(all_rows(app.query_one("#t-usage", tui.DataTable))), 100)
@@ -2456,7 +2558,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             cache={f"m{i}": (88000 + i, 30000 + i, 1200 + i) for i in range(6)},
             ptotals={f"m{i}": 135000 + i for i in range(6)})
         app = TrackerApp(str(self.db_path))
-        async with app.run_test(size=(160, 30)) as pilot:
+        async with app.run_test(size=(220, 30)) as pilot:
             await pilot.pause()
             for tab, tid, note_id, cols in (
                     ("tab-tokens", "#t-tokens", "#colnote-tokens", tui.TOKEN_COLUMNS),
@@ -2488,7 +2590,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             narrow_labels = [str(c.label) for c in t.columns.values()]
             rows = t.row_count
             self.assertLess(len(narrow_labels), len(tui.TOKEN_COLUMNS))
-            await pilot.resize_terminal(160, 30)
+            await pilot.resize_terminal(220, 30)
             await pilot.pause()
             self.assertEqual([str(c.label) for c in t.columns.values()],
                              list(tui.TOKEN_COLUMNS),
@@ -2893,8 +2995,7 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             (f"c{i}", f"s{i}", f"{BASE}/proj-{i}", LONG_TOOL, "builtin",
              now - i * 60_000, 10, "completed") for i in range(2)])
         app = TrackerApp(str(self.db_path), config={
-            "top_n": 5, "log_limit": 100, "detail_limit": 200, "refresh_secs": 5,
-            "sync_secs": 30, "name_cap": 12})
+            "top_n": 5, "log_limit": 100, "detail_limit": 200, "name_cap": 12})
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             self.assertEqual(app.name_cap, 12)

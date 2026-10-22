@@ -276,10 +276,11 @@ BUILTIN_AGENTS = {
 MODEL_RESPONSE_TYPES = ("function_call", "message", "model-usage")
 
 # Token fields read from ``providerData.rawUsage``, in persistence order.
-# Deliberately excluded: ``credit`` (billing, not tokens) and everything derived
-# from ``turn-metrics.tokenDelta``. ``total_tokens`` is now persisted separately
-# as ``provider_total_tokens`` (the provider's own total, verbatim) but is kept
-# out of this tuple so the legacy ``missing`` diagnostic keeps its meaning.
+# Deliberately excluded: everything derived from ``turn-metrics.tokenDelta``.
+# ``total_tokens`` is now persisted separately as ``provider_total_tokens`` (the
+# provider's own total, verbatim) but is kept out of this tuple so the legacy
+# ``missing`` diagnostic keeps its meaning. ``credit`` is billing rather than a
+# token and is stored in its own column, never added to or derived from these.
 USAGE_FIELDS = (
     "prompt_tokens",
     "completion_tokens",
@@ -314,7 +315,8 @@ NESTED_USAGE_FIELDS = frozenset(NESTED_CACHE_HIT)
 # --- field mirrors: the record shape we read, by object --------------------
 # Read dynamically in ``_record_model_response`` (``raw.get(k)``), so they never
 # appear as a literal ``.get()`` key; each must still land in a column.
-RAW_USAGE_FIELDS = frozenset(USAGE_FIELDS) | frozenset(CACHE_USAGE_FIELDS) | {"total_tokens"}
+RAW_USAGE_FIELDS = (frozenset(USAGE_FIELDS) | frozenset(CACHE_USAGE_FIELDS)
+                    | {"total_tokens", "credit"})
 
 RECORD_FIELDS = frozenset({
     "type", "sessionId", "cwd", "timestamp", "name", "arguments",
@@ -1106,7 +1108,8 @@ def _record_model_response(conn, rec, sid, project, ts, model_hosts=None) -> Non
       is not known yet (``INSERT OR IGNORE``), never fabricating tokens.
 
     Missing token fields are stored as NULL and named in ``missing``. ``credit``
-    and ``turn-metrics.tokenDelta`` are never read here. The cache hit is the one
+    is stored verbatim in its own column (billing, never a token) and
+    ``turn-metrics.tokenDelta`` is never read here. The cache hit is the one
     field with two spellings: the nested copy is read only when the top level is
     absent, so a record carrying both is counted once (see ``NESTED_CACHE_HIT``).
 
@@ -1139,9 +1142,9 @@ def _record_model_response(conn, rec, sid, project, ts, model_hosts=None) -> Non
             " prompt_tokens, completion_tokens,"
             " cache_read_input_tokens, cache_creation_input_tokens,"
             " prompt_cache_hit_tokens, prompt_cache_miss_tokens,"
-            " prompt_cache_write_tokens, provider_total_tokens,"
+            " prompt_cache_write_tokens, provider_total_tokens, credit,"
             " ts, project, source, usage_available, missing)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'transcript',1,?)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'transcript',1,?)"
             " ON CONFLICT(message_id) DO UPDATE SET"
             "   session_id = COALESCE(excluded.session_id, session_id),"
             "   conversation_request_id ="
@@ -1156,6 +1159,7 @@ def _record_model_response(conn, rec, sid, project, ts, model_hosts=None) -> Non
             "   prompt_cache_miss_tokens = excluded.prompt_cache_miss_tokens,"
             "   prompt_cache_write_tokens = excluded.prompt_cache_write_tokens,"
             "   provider_total_tokens = excluded.provider_total_tokens,"
+            "   credit = COALESCE(excluded.credit, credit),"
             "   ts = COALESCE(excluded.ts, ts),"
             "   project = COALESCE(excluded.project, project),"
             "   usage_available = 1,"
@@ -1167,6 +1171,7 @@ def _record_model_response(conn, rec, sid, project, ts, model_hosts=None) -> Non
              cache["prompt_cache_miss_tokens"],
              cache["prompt_cache_write_tokens"],
              raw.get("total_tokens"),          # provider's own total, verbatim
+             raw.get("credit"),                # billing, verbatim
              ts, project, ",".join(missing) or None),
         )
     else:

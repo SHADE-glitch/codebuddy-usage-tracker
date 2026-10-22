@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # --- locations -------------------------------------------------------------
 
@@ -62,8 +62,6 @@ DEFAULTS = {
     "name_cap": 28,       # widest cell a table renders; 28 is measured on real data,
                           # not a round number — every entity name fits it, only the
                           # project path does not. See NAME_CAP in cbut-tui.py.
-    "refresh_secs": 5,    # TUI redraw timer
-    "sync_secs": 30,      # TUI auto-sync timer
 }
 
 ENV_NAMES = {
@@ -71,8 +69,6 @@ ENV_NAMES = {
     "log_limit": "CBUT_LOG_LIMIT",
     "detail_limit": "CBUT_DETAIL_LIMIT",
     "name_cap": "CBUT_NAME_CAP",
-    "refresh_secs": "CBUT_REFRESH_SECS",
-    "sync_secs": "CBUT_SYNC_SECS",
 }
 
 # (low, high, accepted types). Ranges are wide enough to be useful and tight enough that
@@ -83,8 +79,6 @@ _BOUNDS = {
     "detail_limit": (1, 1000, int),
     # below 8 nothing readable survives the cut; above ~200 the cap is not a cap
     "name_cap": (8, 200, int),
-    "refresh_secs": (0.5, 3600, (int, float)),
-    "sync_secs": (1, 86400, (int, float)),
 }
 
 
@@ -184,6 +178,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- from credit, turn-metrics.tokenDelta, context-window estimates or model
 -- multipliers. A missing field is stored as NULL (never a fabricated 0) and is
 -- named in `missing`; `usage_available` is 0 when the response carried no usage.
+-- `credit` (schema v11) is billing, not tokens: stored as reported beside them and
+-- never converted into a token count. A route that reports no credit stores NULL.
 --
 -- In real transcripts prompt_tokens is *approximately* partitioned as
 --   prompt_tokens = prompt_cache_hit_tokens
@@ -218,6 +214,9 @@ CREATE TABLE IF NOT EXISTS model_responses (
     -- providerData.rawUsage.total_tokens. Absent -> NULL; a real 0 stays 0.
     -- Never derived here (the derived fallback is applied at query time).
     provider_total_tokens      INTEGER,
+    -- The provider's own credit for the response (schema v11), verbatim from
+    -- providerData.rawUsage.credit. NULL when the route did not report one.
+    credit                     REAL,
     ts                         INTEGER,
     project                    TEXT,
     source                     TEXT DEFAULT 'transcript',
@@ -710,6 +709,7 @@ _NEW_MODEL_COLUMNS = {
     "prompt_cache_write_tokens": "INTEGER",
     "provider_total_tokens": "INTEGER",
     "provider": "TEXT",
+    "credit": "REAL",
 }
 
 # Columns the current schema no longer has. v5 removed both of these because
@@ -740,7 +740,8 @@ def _migrate_model_responses(conn: sqlite3.Connection) -> bool:
 
     SQLite has no ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``, so check
     ``PRAGMA table_info`` first. Each column's type comes from
-    ``_NEW_MODEL_COLUMNS`` (all INTEGER but ``provider``, which is TEXT). When any
+    ``_NEW_MODEL_COLUMNS`` (INTEGER, except ``provider`` TEXT and ``credit``
+    REAL). When any
     column is actually added (i.e. an old database is being upgraded), clear
     ``sync_state`` so the next incremental ``cbut sync`` re-reads the transcripts
     and backfills the new columns via the existing messageId UPSERT — row counts
@@ -1209,7 +1210,8 @@ def q_model_responses(conn, limit=50, model=None, start_ts=None, end_ts=None,
         " prompt_cache_write_tokens, provider_total_tokens,"
         f" {_TOTAL_EXPR} AS total_tokens,"
         f" {_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
-        " ts, project, source, usage_available, missing"
+        f" {_USAGE_TOTAL_EXPR} AS usage_total_tokens,"
+        " credit, ts, project, source, usage_available, missing"
         " FROM model_responses"
     )
     params = [p for _, p in conds]
@@ -1306,6 +1308,8 @@ def q_model_summary(conn, model, start_ts=None, end_ts=None, provider=None):
         " SUM(prompt_cache_hit_tokens) AS cache_hit,"
         " SUM(prompt_cache_miss_tokens) AS cache_miss,"
         " SUM(prompt_cache_write_tokens) AS cache_write,"
+        " SUM(credit) AS credits,"
+        " SUM(CASE WHEN credit IS NOT NULL THEN 1 ELSE 0 END) AS credit_rows,"
         " MIN(ts) AS first_used, MAX(ts) AS last_used"
         f" FROM model_responses{where}",
         [p for _, p in conds],
@@ -1340,7 +1344,7 @@ _MODEL_DETAIL_COLS = (
     "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
     "prompt_cache_write_tokens",
     "cache_read_input_tokens", "cache_creation_input_tokens",
-    "provider_total_tokens",
+    "provider_total_tokens", "credit",
 )
 
 
@@ -1409,8 +1413,9 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
     here, for as long as the database keeps them.
 
     ``SUM`` skips NULLs, so responses recorded with ``usage_available=0`` add
-    nothing instead of a fabricated zero. ``tokenDelta`` and credit are never
-    part of these sums.
+    nothing instead of a fabricated zero. ``tokenDelta`` is never part of these
+    sums; ``credits`` is the provider's own billing measure, summed beside the
+    tokens and never converted between the two.
 
     ``total_tokens`` is the **API Total**: the sum of the per-row totals, i.e.
     the provider's own ``provider_total_tokens`` where present, else
@@ -1439,6 +1444,9 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
         " SUM(prompt_cache_hit_tokens) AS prompt_cache_hit_tokens,"
         " SUM(prompt_cache_miss_tokens) AS prompt_cache_miss_tokens,"
         " SUM(prompt_cache_write_tokens) AS prompt_cache_write_tokens,"
+        " SUM(credit) AS credits,"
+        " SUM(CASE WHEN credit IS NOT NULL THEN 1 ELSE 0 END) AS credit_rows,"
+        " MAX(ts) AS last_used,"
         f" {_AGG_TOTAL_EXPR} AS total_tokens,"
         f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
         f" {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens"
@@ -1740,6 +1748,8 @@ def q_usage_summary(conn, start_ts, end_ts) -> dict:
         " SUM(prompt_cache_hit_tokens) AS cache_hit,"
         " SUM(prompt_cache_miss_tokens) AS cache_miss,"
         " SUM(prompt_cache_write_tokens) AS cache_write,"
+        " SUM(credit) AS credits,"
+        " SUM(CASE WHEN credit IS NOT NULL THEN 1 ELSE 0 END) AS credit_rows,"
         " SUM(CASE WHEN prompt_tokens IS NULL THEN 1 ELSE 0 END) AS missing_prompt,"
         " SUM(CASE WHEN completion_tokens IS NULL THEN 1 ELSE 0 END)"
         " AS missing_completion"
@@ -1770,16 +1780,65 @@ def q_usage_kpi(conn, start_ts=None, end_ts=None) -> dict:
         "agents": one(f"SELECT COUNT(*) FROM agent_usage{where}"),
         "mcp": one(f"SELECT COUNT(*) FROM mcp_usage{where}"),
         "plugins": one(f"SELECT COUNT(DISTINCT plugin) FROM plugin_usage{where}"),
+        # The usage-facing reach: sessions and projects that produced a model
+        # response in the window, apart from the tool-call reach Runtime shows.
+        "model_sessions": one(
+            f"SELECT COUNT(DISTINCT session_id) FROM model_responses{where}"),
+        "model_projects": one(
+            f"SELECT COUNT(DISTINCT project) FROM model_responses{where}"),
     }
 
 
-def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0):
-    """Per-response rows in the window, newest first (never re-parses logs).
+def q_project_board(conn, start_ts=None, end_ts=None, limit=None):
+    """Per-project requests, usage, credits and reach for the Dashboard board.
+
+    Grouped by the decoded project path, newest activity as ``last_used``. The
+    token and credit parts stay in their own units; this query never converts
+    one into the other.
+    """
+    where, params = _time_filter(start_ts, end_ts)
+    sql = (
+        "SELECT COALESCE(project, '(no project)') AS project,"
+        " COUNT(*) AS requests,"
+        " COUNT(DISTINCT session_id) AS sessions,"
+        f" {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,"
+        " SUM(credit) AS credits,"
+        " SUM(CASE WHEN credit IS NOT NULL THEN 1 ELSE 0 END) AS credit_rows,"
+        " MAX(ts) AS last_used"
+        f" FROM model_responses{where}"
+        " GROUP BY project"
+        " ORDER BY usage_total_tokens DESC, requests DESC, project"
+    )
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return conn.execute(sql, params).fetchall()
+
+
+_USAGE_LOG_ORDER = {
+    "time": "ts DESC, message_id",
+    "tokens": "COALESCE(usage_total_tokens, 0) DESC, ts DESC, message_id",
+    "model": "model COLLATE NOCASE ASC, ts DESC, message_id",
+}
+
+
+def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0,
+                         text=None, order_by="time"):
+    """Per-response rows in the window (never re-parses logs).
 
     Carries both ``total_tokens`` (API total) and ``usage_total_tokens`` (the
     display-only re-add of cache hit), plus the raw cache parts.
+
+    ``text`` filters in SQL, not over the loaded page: the list is capped at
+    ``limit``, and a client-side filter over 100 rows would report "no match"
+    for a request that exists below the cut. ``order_by`` is whitelisted for
+    the same reason every other order here is.
     """
     where, params = _ts_where(start_ts, end_ts)
+    if text:
+        like = f"%{text}%"
+        where += " AND (model LIKE ? OR project LIKE ? OR COALESCE(provider, '') LIKE ?)"
+        params += [like, like, like]
+    order = _USAGE_LOG_ORDER.get(order_by, _USAGE_LOG_ORDER["time"])
     sql = (
         f"SELECT ts, model, {_PROVIDER_DISPLAY_EXPR} AS provider,"
         " prompt_tokens, completion_tokens,"
@@ -1787,9 +1846,10 @@ def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0):
         f" {_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
         f" {_USAGE_TOTAL_EXPR} AS usage_total_tokens,"
         " prompt_cache_hit_tokens, prompt_cache_miss_tokens,"
-        " prompt_cache_write_tokens, usage_available, source, message_id, project"
+        " prompt_cache_write_tokens, credit, usage_available, source,"
+        " message_id, project"
         f" FROM model_responses WHERE {where}"
-        " ORDER BY ts DESC, message_id LIMIT ? OFFSET ?"
+        f" ORDER BY {order} LIMIT ? OFFSET ?"
     )
     return conn.execute(sql, params + [int(limit), int(offset)]).fetchall()
 
@@ -1817,7 +1877,9 @@ def q_usage_model_stats(conn, start_ts, end_ts, order_by="total_tokens"):
         f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
         " SUM(prompt_cache_hit_tokens) AS cache_hit,"
         " SUM(prompt_cache_miss_tokens) AS cache_miss,"
-        " SUM(prompt_cache_write_tokens) AS cache_write"
+        " SUM(prompt_cache_write_tokens) AS cache_write,"
+        " SUM(credit) AS credits,"
+        " SUM(CASE WHEN credit IS NOT NULL THEN 1 ELSE 0 END) AS credit_rows"
         f" FROM model_responses WHERE {where}"
         f" GROUP BY model, {_PROVIDER_DISPLAY_EXPR} ORDER BY {order}",
         params,

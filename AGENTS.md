@@ -27,9 +27,9 @@ CLI). Three layers, in dependency order:
 3. `scripts/cbut-tui.py` (Textual) and `scripts/cbut-stats.py` (headless CLI).
 
 **There are two writers, not one.** `cbut sync` is the only thing that indexes the logs (transcripts and OTel traces), but the
-TUI also writes: `on_mount` runs `db.migrate()` (a read-write connection, DDL included) and its
-30-second auto-sync worker calls the same indexer the CLI does. Anything that assumes "the TUI is
-read-only" is wrong — reason about locks and migrations accordingly. The headless CLI is read-only
+TUI also writes: `on_mount` runs `db.migrate()` (a read-write connection, DDL included) and the
+sync worker it starts on launch (or on `r`) calls the same indexer the CLI does. Anything that
+assumes "the TUI is read-only" is wrong — reason about locks and migrations accordingly. The headless CLI is read-only
 except for its explicit maintenance subcommands (`backup`, `restore`, `format --write`).
 
 `bin/cbut` is a bash dispatcher. **It is bash on purpose**: it must still run and print a useful
@@ -139,6 +139,12 @@ tool runs from a checkout, so the version only needs to move when a documented c
   A response that carries no `requestModelId` has no stored route; the panels read it as
   `builtin` through `db._PROVIDER_DISPLAY_EXPR`, so a model is not split into a `Built-in`
   and a `-` row. That is a display rule: the stored column stays NULL.
+- **Credits are stored as reported, beside tokens, never converted.** `providerData.rawUsage.credit`
+  is persisted verbatim in `model_responses.credit` (schema v11); a route that sends none stores
+  NULL, not 0. It is never added to a token total and tokens are never derived from it. The
+  Dashboard (Usage + Tokens + project board + Top models), Tokens, Usage, the model-response
+  drill-down and `cbut models`/`cbut show` print it; an aggregate whose contributing rows carry no
+  credit reads `-`, never a fabricated `0`.
 - **Tokens is usage-only.** Every other panel's query unions installed ∪ ever used; a model is
   different, because its catalogue is a package snapshot and its custom entries are route
   ids, not models. A row exists only for a (model, provider) that answered, which also means
@@ -170,8 +176,9 @@ tool runs from a checkout, so the version only needs to move when a documented c
   local 00:00 (`"1d"` = today, `"2d"` = from yesterday's 00:00, …) and ends at the current time;
   each tab keeps its own window. Do not switch to rolling hours or a shared range — the
   natural-day boundary and per-tab independence are both deliberate.
-- **A table never shows a half column.** Every `DataTable` in the app — nine: the seven that live in
-  the eight tabs (Dashboard draws panels, not a table) plus one on each pushed detail screen — is
+- **A table never shows a half column.** Every `DataTable` in the app — ten: the eight that live in
+  the eight tabs (the Dashboard now carries the Projects board) plus one on each pushed detail
+  screen — is
   filled through `_fill_wide`, which keeps the longest **prefix** of its
   columns and names the dropped ones on the note line above the table. Two columns are
   protected and can only be dropped when the table is already at its floor: column 0

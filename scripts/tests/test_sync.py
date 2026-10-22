@@ -426,6 +426,8 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual(row["cache_creation_input_tokens"], 0)
         # rawUsage.total_tokens is persisted verbatim as provider_total_tokens
         self.assertEqual(row["provider_total_tokens"], 120)
+        # ...and credit verbatim in its own billing column
+        self.assertEqual(row["credit"], 3.5)
         self.assertEqual(row["usage_available"], 1)
         self.assertIsNone(row["missing"])
         self.assertEqual(row["session_id"], "s1")
@@ -497,18 +499,18 @@ class IndexerTest(unittest.TestCase):
         self.index()
         self.assertEqual(self.model_row("m7")["prompt_tokens"], 11)
 
-    def test_credit_is_never_stored(self):
+    def test_credit_is_stored_beside_tokens_never_as_one(self):
         raw = {"prompt_tokens": 1, "completion_tokens": 1,
                "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
                "credit": 42.0}
         write_records(self.tr, [model_rec("m8", raw=raw)])
         self.index()
-        cols = [r[1] for r in self.conn.execute(
-            "PRAGMA table_info(model_responses)")]
-        self.assertNotIn("credit", cols)
-        dump = json.dumps(dict(self.model_row("m8")))
-        self.assertNotIn("credit", dump)
-        self.assertNotIn("42.0", dump)
+        row = self.model_row("m8")
+        self.assertEqual(row["credit"], 42.0)
+        # The billing figure lives in its own column and changes no token field.
+        self.assertEqual(row["prompt_tokens"], 1)
+        self.assertEqual(row["completion_tokens"], 1)
+        self.assertIsNone(row["provider_total_tokens"])
 
     def test_token_delta_is_not_model_tokens(self):
         # turn-metrics.tokenDelta is a context metric, not prompt/completion
@@ -672,16 +674,14 @@ class IndexerTest(unittest.TestCase):
         r = db.q_model_responses(self.conn, model="test-model")[0]
         self.assertIsNone(r["total_tokens"])
 
-    def test_credit_not_in_any_token_field_or_total(self):
+    def test_credit_is_never_added_into_a_token_total(self):
         raw = {"prompt_tokens": 5, "completion_tokens": 5, "credit": 12.5,
                "prompt_cache_hit_tokens": 1}
         write_records(self.tr, [model_rec("c7", raw=raw)])
         self.index()
         r = db.q_model_responses(self.conn, model="test-model")[0]
         self.assertEqual(r["total_tokens"], 10)
-        dump = json.dumps(dict(r))
-        self.assertNotIn("credit", dump)
-        self.assertNotIn("12.5", dump)
+        self.assertEqual(r["credit"], 12.5)
 
     def test_token_delta_not_in_model_total(self):
         write_records(self.tr, [

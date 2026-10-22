@@ -79,8 +79,6 @@ class DefaultsTest(unittest.TestCase):
         self.assertEqual(cfg["log_limit"], 100)
         self.assertEqual(cfg["detail_limit"], 200)
         self.assertEqual(cfg["name_cap"], 28, "the cap is a measured default, not a round number")
-        self.assertEqual(cfg["refresh_secs"], 5)
-        self.assertEqual(cfg["sync_secs"], 30)
 
     def test_the_defaults_match_the_tuis_own_constants(self):
         """The defaults are not a second opinion about what the app does.
@@ -104,16 +102,12 @@ class FileTest(unittest.TestCase):
             path = write_config(tmp, (
                 'top_n = 3\n'
                 'log_limit = 25\n'
-                'refresh_secs = 1.5\n'
-                'sync_secs = 120\n'
                 'detail_limit = 50\n'
                 'name_cap = 40\n'
             ))
             cfg = db.load_config(path)
         self.assertEqual(cfg["top_n"], 3)
         self.assertEqual(cfg["log_limit"], 25)
-        self.assertEqual(cfg["refresh_secs"], 1.5)
-        self.assertEqual(cfg["sync_secs"], 120)
         self.assertEqual(cfg["detail_limit"], 50)
         self.assertEqual(cfg["name_cap"], 40)
 
@@ -152,8 +146,8 @@ class BrokenFileTest(unittest.TestCase):
 
     def test_an_out_of_range_value_is_refused(self):
         """Zero rows of Top tools is not a preference, it is a broken panel."""
-        for key, bad in (("top_n", 0), ("log_limit", -5), ("refresh_secs", 0),
-                         ("sync_secs", -1), ("name_cap", 0), ("name_cap", 4000)):
+        for key, bad in (("top_n", 0), ("log_limit", -5),
+                         ("detail_limit", 0), ("name_cap", 0), ("name_cap", 4000)):
             # a cap of 0 hides every value, a cap of 4000 is not a cap: both are typos,
             # and a typo has to fail loudly rather than render a blank screen
             with self.subTest(key=key), tempfile.TemporaryDirectory() as tmp:
@@ -190,18 +184,6 @@ class PrecedenceTest(unittest.TestCase):
         self.assertIn("CBUT_NAME_CAP", str(ctx.exception),
                       f"the refusal names the file, not the variable: {ctx.exception}")
 
-    def test_a_fractional_interval_can_come_from_the_environment(self):
-        """The env path parses with ``int()`` first, so a fraction is the fallback's case.
-
-        Without it the reader cannot tell whether `CBUT_REFRESH_SECS=1.5` is honoured
-        or silently dropped back to the default.
-        """
-        with no_settings_env():
-            os.environ["CBUT_REFRESH_SECS"] = "1.5"
-            cfg = db.load_config(Path("/nonexistent/cbut/config.toml"))
-        self.assertEqual(cfg["refresh_secs"], 1.5)
-
-
 class WiringTest(unittest.TestCase):
     """A loader nobody calls is not a settings layer."""
 
@@ -215,7 +197,7 @@ class WiringTest(unittest.TestCase):
 
     def test_the_app_reads_its_limits_from_the_config(self):
         app = self._app({"top_n": 2, "log_limit": 7, "detail_limit": 11,
-                         "refresh_secs": 5, "sync_secs": 30, "name_cap": 15})
+                         "name_cap": 15})
         self.assertEqual(app.DASH_TOP, 2)
         self.assertEqual(app.USAGE_LOG_LIMIT, 7)
         self.assertEqual(app.DETAIL_LIMIT, 11)

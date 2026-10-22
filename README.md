@@ -49,8 +49,8 @@
 - 🗃️ **One local SQLite file** — no network, no upload, no telemetry.
 - ⚡ **Fast incremental sync** — ~5 s to index ~300 sessions / ~420 MB; only new bytes after that.
 - 🖥️ **TUI + headless** — an eight-tab Textual UI for humans, JSON reports for scripts.
-- 🔢 **Real model tokens** — per-model input / output / total plus cache hit / miss / write, straight from `providerData.rawUsage`, with a **Provider** column (Built-in, or a third-party label from `providerData.requestModelId`); total prefers the provider's own reported value.
-- 📊 **Calendar-day windows, per tab** — the top-bar range (Today / 2 days / 3 days / 7 days / 30 days / All time) is kept **per tab**, so changing one never moves another: entity tabs default to **7 days**, the Dashboard and the Usage page to **Today**. Plugins has a window too — its list is all-time, its counts are not. Windows are whole local calendar days (00:00 → now), never "now minus N hours". A window only shrinks the **counts** — the list stays full.
+- 🔢 **Real model tokens and credits** — per-model input / output / total plus cache hit / miss / write, straight from `providerData.rawUsage`, with a **Provider** column (Built-in, or a third-party label from `providerData.requestModelId`); total prefers the provider's own reported value. The provider's own **`credit`** is stored verbatim beside the tokens and shown on the Dashboard, Tokens, Usage, Top models, the project board and the model drill-downs — never converted into tokens.
+- 📊 **Calendar-day windows, per tab** — the top-bar range (Today / 2 days / 3 days / 7 days / 14 days / 30 days / All time) is kept **per tab**, so changing one never moves another: entity tabs default to **7 days**, the Dashboard and the Usage page to **Today**. Plugins has a window too — its list is all-time, its counts are not. Windows are whole local calendar days (00:00 → now), never "now minus N hours". A window only shrinks the **counts** — the list stays full.
 - 📅 **Custom date range** — the top bar's 📅 control (or **Custom…** in the range list) opens a picker with shortcut chips, an editable **START TIME** and **END TIME** (a date plus a 24-hour time), and a month calendar: ‹ › step the month and, at the year's ends, the year. Under each card a quick-time row puts the day's edges one click away — the start offers `00:00`/`06:00`/`12:00`/`18:00`/`23:59`, the end adds **now** — and a 24-cell hour grid under the calendar sets the hour of whichever card is active, so a date and its hour are picked the same way. Clicking a card aims both grids, so the next day *or hour* you click lands in that card; ↑/↓ and the wheel nudge the focused field by the step you pick (`1m` / `10m` / `1h`). Dates and times may be typed loosely — `10-1` is `10/01`, `9:5 AM` and `21:05` are both `21:05`. The choice is kept per tab, and the top bar always shows the span it is showing.
 - 🔎 **Two-level drill-down** — <kbd>Enter</kbd> or double-click a row on the Tools, Skills, Agents, Plugins, MCP or Tokens tab: the first screen summarises that entity (its counts and totals **in the tab's own window**) above its recent calls; <kbd>Enter</kbd> a call to see **every field of that single call**, laid out to fill the screen.
 - 🔐 **Metadata only** — names, timings, statuses, projects. Never message bodies or argument values.
@@ -103,14 +103,14 @@ because every tab is keyed by name.
 
 | | Tab | What it shows |
 |---|-----|---------------|
-| 🧭 | **Dashboard** | a grid of panels, all for the Dashboard's own window: usage KPIs (tool/skill/agent/MCP/plugin counts), a token summary (requests, input/output, API total, usage total, cache hit rate), absolute cache hit/miss/write, runtime health (completed/incomplete, average tool ms, distinct sessions/projects), Top 5 models and Top 5 tools, and a per-day call sparkline |
+| 🧭 | **Dashboard** | four rows for the Dashboard's own window: Usage (requests, credits, sessions, projects, tool/skill/agent/MCP/plugin counts), Tokens (usage total, input/output, API total, credits, cache hit rate), absolute cache hit/miss/write, Top 5 models and Top 5 tools, runtime health (completed/incomplete/pending, average tool ms, distinct sessions/projects), a per-day call sparkline, and the **Projects board** (requests · usage total · credits · sessions · last used) |
 | 🧰 | **Tools** | tool calls by name, completion, average duration, last used |
 | 🎯 | **Skills** | skill invocations by name (merged across owners), last use |
 | 🤖 | **Agents** | subagent types by name, call count, last use |
 | 🧩 | **Plugins** | every plugin — installed **and** ever used — with its skills/agents/commands; all-time list, windowed counts, no version column |
 | 🔌 | **MCP** | MCP servers and tools, invocation counts |
-| 🔢 | **Tokens** | per-model **usage total**, requests, input, output, **API total**, cache hit/miss/write — one row per (model, provider) that answered in the tab's window |
-| 📊 | **Usage** | request log with summary panels (cc-switch-style columns) |
+| 🔢 | **Tokens** | per-model **usage total · credits**, requests, input, output, **API total**, cache hit/miss/write, cache hit rate and last used — one row per (model, provider) that answered in the tab's window |
+| 📊 | **Usage** | request log with summary panels: window/requests/sessions/projects, model tokens **+ credits**, cache breakdown, runtime |
 
 Press <kbd>Enter</kbd> (or double-click) on any row for a **two-level drill-down**.
 The first screen summarises the entity — its counts and totals **in that tab's own
@@ -130,9 +130,20 @@ credited to a plugin only when the plugin inventory maps that name to it.
 
 The TUI shows that union **used-only by default** — a row with 0 calls in the tab's
 window is hidden, and <kbd>a</kbd> toggles the installed-but-unused half back in,
-per tab (Tokens is usage-only and has no toggle). <kbd>/</kbd> opens a name filter
-that narrows as you type: <kbd>Enter</kbd> applies it and hands focus back to the
-table, <kbd>Esc</kbd> clears it. The Usage request log paginates — <kbd>PgDn</kbd>/<kbd>PgUp</kbd> page through it.
+per tab (Tokens is usage-only and has no toggle). <kbd>/</kbd> opens a filter that
+narrows as you type and matches the rendered values (a name, a category or a state).
+While a filter is applied its bar stays visible and the summary line names the match
+count and the active sort; each edit starts the list at its first match, so the page
+never scrolls away from it. <kbd>Enter</kbd> keeps the filter and hands focus back to
+the table, <kbd>Esc</kbd> clears it. The Usage request log shows the newest 100 rows
+and says so when the window holds more; there is no page key.
+
+The tab bar and footer are the key surface: <kbd>q</kbd> quits, <kbd>r</kbd> syncs and
+reloads, <kbd>s</kbd> cycles the active tab's sort, <kbd>a</kbd> toggles the full list,
+<kbd>/</kbd> filters, <kbd>d</kbd> opens the date picker, <kbd>tab</kbd>/<kbd>shift+tab</kbd>
+switch tabs, <kbd>Enter</kbd> drills in, and <kbd>Esc</kbd>/<kbd>q</kbd> goes back from a
+detail screen. The TUI syncs once when it opens and then stays still — no background
+refresh timer; new rows arrive on <kbd>r</kbd>.
 
 The last column of every entity tab is **state** — the one thing that separates "still
 here" from "never left": `in use` (installed, and called **inside this tab's window**),
@@ -154,6 +165,14 @@ nobody had called. History is the durable side: a model that leaves the catalogu
 `requestModelId` is absent reads as `Built-in`, so one model never splits into
 `Built-in` and `-` rows.
 
+**Credits are billing, not tokens.** When a response carries `providerData.rawUsage.credit`, the
+value is stored verbatim in its own column and shown beside the token totals on every surface that
+can carry it. It is never added into a token count, and no token number is ever derived from it. A
+route that reports no credit leaves `-` (NULL), never a fabricated `0`; an aggregate reads `-` when
+none of its contributing rows carried the field. An older index upgrades in place (schema v11):
+the next `cbut sync` re-reads the transcripts and backfills the credit column from responses it
+already knows.
+
 > **API Total** = the provider's reported total when present, otherwise Input + Output.
 > **Usage Total** is a display-only metric (`Input + Output + cache hit`) that
 > **re-adds cache hit** — which is already inside Input — so it lands at ~2× the API
@@ -174,18 +193,20 @@ the transcripts on disk:
 
 - **The Usage page keeps its own range** (default **Today**), shown in the shared top
   bar while the Usage tab is active; every other tab keeps its own too, so moving one
-  never moves another. Options are Today / 2 days / 3 days / 7 days / 30 days / All time —
+  never moves another. Options are Today / 2 days / 3 days / 7 days / 14 days / 30 days / All time —
   **whole local calendar days** ending at the current time (00:00 → now), **not**
   "now minus N hours" and **not** from when the tracker first ran. Pick **Custom…** (or
   the 📅 control) to choose any start/end down to the minute. Its **Window /
-  Requests** panel shows the dates of the active range.
-- **One Request Logs list**, newest first. The columns follow cc-switch's request
-  records — time · model · usage total · input · output · API total · cache hit (read) ·
-  cache miss · cache write · cache hit rate. cc-switch's provider, cost, duration and
-  HTTP-status columns have no transcript source, so they are omitted rather than
-  estimated. The priority columns sit leftmost, and on a narrow terminal a column plan
-  drops the tail instead of cutting it mid-label — the line above the table then names
-  what is hidden and how wide the terminal has to be to show all of it.
+  Requests** panel shows the dates of the active range, plus the window's sessions and
+  projects.
+- **One Request Logs list**, newest first. The columns follow the family layout —
+  time · model · provider · usage total · **credits** · input · output · API total ·
+  cache hit (read) · cache miss · cache write · cache hit rate. cc-switch's cost,
+  duration and HTTP-status columns have no transcript source, so they are omitted rather
+  than estimated; the provider and the credit are real transcript fields. The priority
+  columns sit leftmost, and on a narrow terminal a column plan drops the tail instead of
+  cutting it mid-label — the line above the table then names what is hidden and how wide
+  the terminal has to be to show all of it.
 - **Same accuracy rules as Tokens** — **API Total** = provider total when present, else
   `Input + Output`. A separate **Usage Total** (`Input + Output + cache hit`) is shown for
   reference, explicitly labelled as re-adding cache hit (~2× the API total). Cache
@@ -195,13 +216,13 @@ the transcripts on disk:
 - **The summary panels are height-capped and scroll internally**, so the Request Logs
   table below them stays visible even on a small terminal. Measured at 80×24: the panels
   go two-up and stay capped, the table keeps 9 rows (a test holds the floor at 6), and the
-  column plan shows the first **5 of its 10** columns with a note above the table naming the
-  other five. Which five depends on the data — the widths are measured from the rows, not
-  assumed — so both counts here are readings from this machine's own database at 80×24, and
+  column plan keeps a **prefix of its 12** columns with a note above the table naming the
+  rest. Which prefix depends on the data — the widths are measured from the rows, not
+  assumed — so the row count is a reading from this machine's own database at 80×24, and
   yours will differ. Nothing is cut mid-label.
-- **The plan covers every table, not the two that were complained about** — the seven tables
-  that live in the eight tabs (Dashboard draws panels, not a table) and both detail screens
-  (a row's history, a model's responses): nine in all, counted out of the source rather than
+- **The plan covers every table, not the two that were complained about** — the eight tables
+  that live in the eight tabs (the Dashboard's Projects board included) and both detail screens
+  (a row's history, a model's responses): ten in all, counted out of the source rather than
   estimated, and a test fails if a table ever appears without a plan. A name long enough to push
   a column off the screen therefore costs columns, not legibility. The name/key column(s) and the
   entity `state` column are protected: a narrow terminal drops `last used` or `avg` first, so a
@@ -302,12 +323,10 @@ top_n = 5            # rows in the Dashboard's Top models / Top tools
 log_limit = 100      # request rows on the Usage page
 detail_limit = 200   # rows on a history / model-response screen
 name_cap = 28        # widest cell a table renders before it cuts the value
-refresh_secs = 5     # TUI redraw timer
-sync_secs = 30       # TUI auto-sync timer
 ```
 
 - **Precedence is environment > file > default.** Each key also reads from `CBUT_TOP_N`,
-  `CBUT_LOG_LIMIT`, `CBUT_DETAIL_LIMIT`, `CBUT_NAME_CAP`, `CBUT_REFRESH_SECS` and `CBUT_SYNC_SECS`.
+  `CBUT_LOG_LIMIT`, `CBUT_DETAIL_LIMIT` and `CBUT_NAME_CAP`.
 - **A broken file stops the TUI** with the path and the reason rather than quietly starting on
   defaults — being ignored while you edit it is the worst outcome a settings layer can offer.
   `cbut health` prints the same verdict, including which file it read.
@@ -325,7 +344,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 550 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 553 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -343,13 +362,14 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
   running placeholder upgraded and never downgraded on replay, the final file's
   `trace.sessionId` linking what the stream could not, re-reads
   idempotent, the full `_run` integration |
-| `test_tui.py` | 131 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness, the used-only default with the per-tab `a` toggle, the `/` name filter (Enter applies, Esc cancels), the
-  Usage request-log pagination, provider suffixes on shared model names |
-| `test_usage.py` | 113 | the calendar-day windows (Today / 2 / 3 / 7 / 14 / 30 days / all) and their custom-range labels, the typed date/time normalisation (24-hour display, 12-hour still accepted on input), the token totals and provider grouping, the Dashboard queries, the drill-down queries (windowed per-entity summaries, plugin use counts, a single call's full row), the schema gate, and which indexes earn their keep, the headless session list (window,
+| `test_tui.py` | 132 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness, the used-only default with the per-tab `a` toggle, the `/` name filter (Enter applies, Esc cancels),
+  the Usage log's newest-100 cap with no page key, provider suffixes on shared model names,
+  the Dashboard's Projects board and the credit cells that read `-` when a route reported none |
+| `test_usage.py` | 116 | the calendar-day windows (Today / 2 / 3 / 7 / 14 / 30 days / all) and their custom-range labels, the typed date/time normalisation (24-hour display, 12-hour still accepted on input), the token totals and provider grouping, the Dashboard queries, the drill-down queries (windowed per-entity summaries, plugin use counts, a single call's full row), the schema gate, and which indexes earn their keep, the headless session list (window,
   newest-first order, limit) |
 | `test_indexes.py` | 4 | the rule the two earlier index cuts relied on a hand-taken reading for: every statement the report surface really runs is captured and planned with `EXPLAIN QUERY PLAN`, and a declared index no plan names fails — plus the structural rule that caught the v9 cut, a key that is a strict prefix of a wider declared key |
 | `test_stats.py` | 33 | the headless report CLI (`cbut stats`): the overview and the per-category tables, the model/token report and the cache columns it drops on a narrow terminal, `show`/`recent`/`inventory`/`export`, `health` (schema version, settings line, unparsed accounting), the `backup`→`restore` round trip, `vacuum` (snapshot first, reclaimed bytes, rows unchanged), the generated `format` surface, and the empty-state `(none)` notice |
-| `test_config.py` | 23 | the settings layer: defaults unchanged, file, env precedence and bounds, a broken file that stops `main()` before the TUI starts, the keys the app actually reads, and every key `cbut health` reports — with the environment hidden, so a configured shell cannot turn these into false failures |
+| `test_config.py` | 22 | the settings layer: defaults unchanged, file, env precedence and bounds, a broken file that stops `main()` before the TUI starts, the keys the app actually reads, and every key `cbut health` reports — with the environment hidden, so a configured shell cannot turn these into false failures |
 | `test_dispatcher.py` | 12 | `bin/cbut`: subcommand routing, venv resolution, help without a resolvable install |
 | `test_format_registry.py` | 10 | the CodeBuddy format registry and the parser agree, both directions |
 | `test_privacy.py` | 11 | import allowlist **plus the calls that bypass it** (`__import__`/`eval`/`import_module`), no free-text value in any column, CodeBuddy's own files untouched |
