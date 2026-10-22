@@ -103,13 +103,13 @@ because every tab is keyed by name.
 
 | | Tab | What it shows |
 |---|-----|---------------|
-| 🧭 | **Dashboard** | four rows for the Dashboard's own window: Usage (requests, credits, sessions, projects, tool/skill/agent/MCP/plugin counts), Tokens (usage total, input/output, API total, credits, cache hit rate), absolute cache hit/miss/write, Top 5 models and Top 5 tools, runtime health (completed/incomplete/pending, average tool ms, distinct sessions/projects), a per-day call sparkline, and the **Projects board** (requests · usage total · credits · sessions · last used) |
+| 🧭 | **Dashboard** | three rows for the Dashboard's own window: Usage (requests, credits, sessions, projects, tool/skill/agent/MCP/plugin counts), Tokens (usage total, input/output, credits, cache hit rate), absolute cache hit/miss/write, Top 5 models and Top 5 tools, and the **Projects board** (requests · usage total · credits · sessions · last used). The board grows with its rows and the pane scrolls, so a long project list is never silently cut |
 | 🧰 | **Tools** | tool calls by name, completion, average duration, last used |
 | 🎯 | **Skills** | skill invocations by name (merged across owners), last use |
 | 🤖 | **Agents** | subagent types by name, call count, last use |
 | 🧩 | **Plugins** | every plugin — installed **and** ever used — with its skills/agents/commands; all-time list, windowed counts, no version column |
 | 🔌 | **MCP** | MCP servers and tools, invocation counts |
-| 🔢 | **Tokens** | per-model **usage total · credits**, requests, input, output, **API total**, cache hit/miss/write, cache hit rate and last used — one row per (model, provider) that answered in the tab's window |
+| 🔢 | **Tokens** | per-model **usage total · credits**, requests, input, output, cache hit/miss/write, cache hit rate and last used — one row per (model, provider) that answered in the tab's window |
 | 📊 | **Usage** | request log with summary panels: window/requests/sessions/projects, model tokens **+ credits**, cache breakdown, runtime |
 
 Press <kbd>Enter</kbd> (or double-click) on any row for a **two-level drill-down**.
@@ -173,12 +173,14 @@ none of its contributing rows carried the field. An older index upgrades in plac
 the next `cbut sync` re-reads the transcripts and backfills the credit column from responses it
 already knows.
 
-> **API Total** = the provider's reported total when present, otherwise Input + Output.
-> **Usage Total** is a display-only metric (`Input + Output + cache hit`) that
-> **re-adds cache hit** — which is already inside Input — so it lands at ~2× the API
-> Total. Never read it as the API total. Cache hit/miss/write are reported
-> **separately** and are never added into the API total. Fields absent from a response
-> are shown as `-`, never as a fabricated `0`.
+> **One token total: Usage Total.** Every surface that shows a token number without
+> naming a part shows **Usage Total** — a display-only `Input + Output + cache hit`
+> that **re-adds the cache hit** (already inside Input), so it lands at ~2× the
+> provider's own total. That provider total (`providerTotalTokens`, what an
+> earlier release called *API Total*) is no longer printed anywhere: two unlabelled
+> totals on one screen invited the reader to pick the wrong one. Cache hit/miss/write
+> are still reported **separately** and are never folded into a total. Fields absent
+> from a response are shown as `-`, never as a fabricated `0`.
 
 **A malformed name cannot break a row.** A tool name that is empty, over 200
 characters, or contains whitespace or a control character is counted as
@@ -200,17 +202,17 @@ the transcripts on disk:
   Requests** panel shows the dates of the active range, plus the window's sessions and
   projects.
 - **One Request Logs list**, newest first. The columns follow the family layout —
-  time · model · provider · usage total · **credits** · input · output · API total ·
+  time · model · provider · usage total · **credits** · input · output ·
   cache hit (read) · cache miss · cache write · cache hit rate. cc-switch's cost,
   duration and HTTP-status columns have no transcript source, so they are omitted rather
   than estimated; the provider and the credit are real transcript fields. The priority
   columns sit leftmost, and on a narrow terminal a column plan drops the tail instead of
   cutting it mid-label — the line above the table then names what is hidden and how wide
   the terminal has to be to show all of it.
-- **Same accuracy rules as Tokens** — **API Total** = provider total when present, else
-  `Input + Output`. A separate **Usage Total** (`Input + Output + cache hit`) is shown for
-  reference, explicitly labelled as re-adding cache hit (~2× the API total). Cache
-  hit/miss/write are never folded into the API total, and missing values stay `-`.
+- **Same accuracy rules as Tokens** — the token column is **Usage Total**
+  (`Input + Output + cache hit`), the same number the Tokens tab and the dashboard
+  print, so a row here and a row there never disagree. Cache hit/miss/write are never
+  folded into it, and missing values stay `-`.
 - **Cache hit rate** = `cache hit / (cache hit + cache miss + cache write)` — the
   cacheable input, matching cc-switch. It shows `-` when a row has no cache data.
 - **The summary panels are height-capped and scroll internally**, so the Request Logs
@@ -344,7 +346,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 554 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 553 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -362,7 +364,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
   running placeholder upgraded and never downgraded on replay, the final file's
   `trace.sessionId` linking what the stream could not, re-reads
   idempotent, the full `_run` integration |
-| `test_tui.py` | 133 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness, the used-only default with the per-tab `a` toggle, the `/` name filter (Enter applies, Esc cancels),
+| `test_tui.py` | 132 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness, the used-only default with the per-tab `a` toggle, the `/` name filter (Enter applies, Esc cancels),
   the Usage log's newest-100 cap with no page key, provider suffixes on shared model names,
   the Dashboard's Projects board and the credit cells that read `-` when a route reported none |
 | `test_usage.py` | 116 | the calendar-day windows (Today / 2 / 3 / 7 / 14 / 30 days / all) and their custom-range labels, the typed date/time normalisation (24-hour display, 12-hour still accepted on input), the token totals and provider grouping, the Dashboard queries, the drill-down queries (windowed per-entity summaries, plugin use counts, a single call's full row), the schema gate, and which indexes earn their keep, the headless session list (window,

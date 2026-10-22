@@ -1430,3 +1430,41 @@ Cost     A table is now `Table` or `DataTable` by hand, and picking wrong is sil
          directions: `DataTable` where a detail exists hides the key, `Table` where none exists
          offers a dead one. The guard covers registration, not this choice.
 Commit   3204991
+
+### D-059 · 2026-10-22 · taste
+Symptom  Two unlabelled token totals on one screen. The Tokens and Usage tables, the
+         dashboard's Tokens panel and the response drill-down each carried an "API Total"
+         beside the Usage Total, and the dashboard ranked its Top models by the API total —
+         a figure the reader could no longer find in the columns it was supposed to explain.
+Change   One token total everywhere: the API Total column is gone from both tables, the
+         dashboard and the response list; the stored per-row total survives on the
+         single-call screen renamed "reported total" (it is what the host wrote, not a
+         rival answer). `q_usage_model_stats` gains `usage_total_tokens` in its SELECT and
+         a whitelisted ordering, and ranks by it — the dashboard now orders by the number
+         the reader sees.
+Evidence L0 2026-10-22: `test_one_token_total_and_no_api_total` (exactly one "Total" label
+         on the Tokens tab), `test_usage_logs_row_shape` (cell-by-cell order without the
+         API column), `test_tokens_tab_columns`, and the suite green (553 tests).
+Cost     The per-row total is still stored and still feeds nothing visible; a reader who
+         wants the provider's own figure must open the single-call screen, where it is
+         labelled. The dashboard ordering and the visible columns now share one number, so
+         a future divergence between them would be a bug in one place, not two.
+Commit   4ad3fae
+
+### D-060 · 2026-10-22 · taste
+Symptom  The dashboard spent its second row on figures other tabs answer better and its
+         third on a chart that read the retired API total: Runtime (completed/incomplete/
+         pending, average tool ms) duplicated the Tools tab's counts, the calls-per-day
+         sparkline duplicated the Usage page's window, and the Projects board was a fixed
+         nine rows inside a fixed-height panel — a tenth project was silently invisible.
+Change   The Runtime row and the sparkline are removed and the dashboard re-flows into
+         three rows (headline counts · leaderboards · project board). The board's panel is
+         `height: auto`, so it takes the height its rows need, and the surrounding
+         `#dash-box` scrolls once the screen is full.
+Evidence L0 2026-10-22: the dashboard layout test asserts the three rows and the absence
+         of `#dash-rt-*` / `#dash-activity`; the removed ids are asserted gone by name.
+         Suite green (553 tests).
+Cost     Failure and pending counts are one keystroke further (the Tools tab) and the
+         per-day shape of usage is visible only through window changes. In exchange the
+         dashboard is three rows that all answer the window it is set to.
+Commit   4ad3fae
