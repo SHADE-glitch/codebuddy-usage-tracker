@@ -1411,3 +1411,22 @@ Cost     Syncs queue behind each other instead of racing, so a stuck sync delays
          leaves no lockfile to clean up. The `.lock` file itself stays on disk — harmless
          by design.
 Commit   7c20e22
+
+### D-058 · 2026-10-22 · fix
+Symptom  The footer is the key list, but the one key that opens a row's detail was the
+         one key never in it: Textual binds `enter` on `DataTable` with `show=False`, so the
+         table's own binding wins `active_bindings` and hides every other `enter`. An app-level
+         binding cannot fix it — the focused table shadows it — so the six entity tabs and the two
+         drill-down screens answered a key the footer never named.
+Change   A two-line `Table(DataTable)` subclass re-declares the same `select_cursor`
+         action under a visible name, used only by the tables whose rows really open something
+         (the entity tabs, `hist-table`, `resp-table`). The Dashboard ledger and `t-usage` carry
+         no row key and stay plain `DataTable`, so the footer cannot advertise a dead key.
+Evidence L0 2026-10-22: `test_enter_is_in_the_footer_only_where_a_row_opens` — `("enter", "Open")`
+         is absent on the Dashboard and on `t-usage`, present on an entity tab; the AST guard
+         `test_every_datatable_in_the_source_is_registered` now counts `Table` as a table; the
+         suite was green the same day.
+Cost     A table is now `Table` or `DataTable` by hand, and picking wrong is silent in both
+         directions: `DataTable` where a detail exists hides the key, `Table` where none exists
+         offers a dead one. The guard covers registration, not this choice.
+Commit   3204991
