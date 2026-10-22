@@ -2505,6 +2505,26 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                                "the ledger never took the spare height")
             self.assertEqual(note.region.bottom, box.region.bottom,
                              "the ledger did not reach the bottom of the box")
+            # The fit is re-run when the box itself resizes: the app's resize
+            # event arrives before the box is laid out at its new height, so a
+            # fit measured there would use the previous window's spare.
+            await pilot.resize_terminal(160, 60)
+            await pilot.pause()
+            await pilot.pause()
+            self.assertEqual(box.max_scroll_y, 0)
+            self.assertEqual(note.region.bottom, box.region.bottom,
+                             "growing the terminal left the ledger behind")
+            await pilot.resize_terminal(120, 20)
+            await pilot.pause()
+            await pilot.pause()
+            self.assertGreater(box.max_scroll_y, 0,
+                               "shrinking the terminal did not scroll")
+            await pilot.resize_terminal(120, 45)
+            await pilot.pause()
+            await pilot.pause()
+            self.assertEqual(box.max_scroll_y, 0)
+            self.assertEqual(note.region.bottom, box.region.bottom,
+                             "the ledger did not take the height back")
         app = TrackerApp(str(self.db_path))
         async with app.run_test(size=(120, 20)) as pilot:
             await pilot.pause()
