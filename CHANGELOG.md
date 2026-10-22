@@ -1470,15 +1470,17 @@ Cost     Failure and pending counts are one keystroke further (the Tools tab) an
 Commit   4ad3fae
 
 ### D-061 · 2026-10-22 · fix
-Symptom  At 140 columns the top-models line was one cell wider than its panel, so the
+Symptom  The top-models line was wider than its panel at both common widths, so the
          request count wrapped onto a line of its own and the ranking read as broken — a
          layout that passed every test because no test measured the panel.
-Change   The label field drops from 26 to 24 cells and the request count from 5 to 4, so
-         the line is 58 cells inside a 64-cell panel. The ellipsis test moves with the
-         field edge (index 26).
+Change   The line is 54 cells: label 20, usage total 12, credits 7 + " cr", requests 4 +
+         " req". That is the widest line that still fits the two-up leaderboard panel at
+         120 columns (55 cells), and it leaves room at 140. The ellipsis test moves with
+         the field edge (index 22).
 Evidence L0 2026-10-22: the same test asserts one line length across the leaderboard and
-         the ellipsis landing exactly on the field edge; rendered at 140x42 in tmux and
-         read back, no wrapped "req". Suite green (553 tests).
-Cost     A model name longer than 24 cells is clipped one character earlier. The full name
-         is still on the Tokens tab and in the drill-down.
-Commit   5a59b16
+         the ellipsis landing exactly on the field edge; rendered at 140x42 and 120x34 in
+         tmux and read back, no wrapped "req" at either. Suite green (553 tests).
+Cost     A model name longer than 20 cells is clipped earlier and the credit column is
+         narrower. The full name and the exact credit are on the Tokens tab and in the
+         drill-down.
+Commit   5a59b16 036ad2a
