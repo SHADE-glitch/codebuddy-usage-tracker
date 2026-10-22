@@ -2444,8 +2444,10 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             # the short name must be padded to that same edge.
             cut = [l for l in models if "…" in l]
             self.assertEqual(len(cut), 1, models)
-            self.assertEqual(cut[0][28], "…")
-            self.assertEqual([l for l in models if l not in cut][0][28], " ")
+            # 3 for "1. " plus a 24-cell label field: the ellipsis is the last
+            # cell of the name, and a short name is padded to the same edge.
+            self.assertEqual(cut[0][26], "…")
+            self.assertEqual([l for l in models if l not in cut][0][26], " ")
             tools = str(app.query_one("#dash-tools").content).splitlines()
             self.assertEqual(len(set(map(len, tools))), 1, f"ragged: {tools}")
             cut = [l for l in tools if "…" in l]

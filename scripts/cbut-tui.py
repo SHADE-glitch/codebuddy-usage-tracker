@@ -2336,9 +2336,12 @@ if HAVE_TEXTUAL:
                 self.query_one("#dash-models", Static).update("nothing in this window")
                 return
             labels = model_leader_labels(top)
-            lines = [f"{i}. {clip(label, 26):<26}{fmt_n(r['usage_total_tokens']):>12}"
+            # 24 + 12 + 10 + 3 + 1 + 4 + 4 = 58 inside the border, so the line
+            # never wraps at the 140-column layout this panel is drawn for: a
+            # wrapped "req" on its own row made the ranking look broken.
+            lines = [f"{i}. {clip(label, 24):<24}{fmt_n(r['usage_total_tokens']):>12}"
                      f"{fmt_credit_total(r['credits'], r['credit_rows']):>10} cr"
-                     f"  {r['requests']:>5} req"
+                     f" {r['requests']:>4} req"
                      for i, (label, r) in enumerate(zip(labels, top), 1)]
             self.query_one("#dash-models", Static).update("\n".join(lines))
 
