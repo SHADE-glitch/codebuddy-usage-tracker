@@ -1484,3 +1484,21 @@ Cost     A model name longer than 20 cells is clipped earlier and the credit col
          narrower. The full name and the exact credit are on the Tokens tab and in the
          drill-down.
 Commit   5a59b16 036ad2a
+
+### D-062 · 2026-10-22 · fix
+Symptom  The leaderboard was laid out for numbers that stop growing. At All time the top
+         model's exact count is 7,917,931,247 — 13 cells in a 12-cell field — so the line
+         was 56 cells in a 53-cell panel at 120 columns and `req` wrapped onto a row of
+         its own, where it read as another entry. D-061 measured 54 as the bound; the
+         panel is 53.
+Change   `fmt_compact_n` (T/B/M/K, two decimals) keeps the token field at seven cells, and
+         both leaderboards take their name width from the panel's measured width less one
+         reserved column and the widths of the fields the data needs. `#status` is one row
+         with an ellipsis: at 208 cells it wrapped to a second row and took that row from
+         the tab above it.
+Evidence L0 2026-10-22: the dashboard rendered with the picker on All time at 120x45 and
+         160x45, every Static measured against its own width — 6 overflows before (five
+         model rows and the status bar), 0 after. Suite green (555 tests).
+Cost     The name field is 20 cells at 120 columns (wider at 140+) and the status line is
+         clipped at the tail on any terminal narrower than its 208 cells.
+Commit   e525ab9
