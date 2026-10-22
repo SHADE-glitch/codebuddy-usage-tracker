@@ -2336,11 +2336,12 @@ if HAVE_TEXTUAL:
                 self.query_one("#dash-models", Static).update("nothing in this window")
                 return
             labels = model_leader_labels(top)
-            # 24 + 12 + 10 + 3 + 1 + 4 + 4 = 58 inside the border, so the line
-            # never wraps at the 140-column layout this panel is drawn for: a
-            # wrapped "req" on its own row made the ranking look broken.
-            lines = [f"{i}. {clip(label, 24):<24}{fmt_n(r['usage_total_tokens']):>12}"
-                     f"{fmt_credit_total(r['credits'], r['credit_rows']):>10} cr"
+            # 3 + 20 + 12 + 7 + 3 + 1 + 4 + 4 = 54 cells: the widest this line can
+            # be and still fit the two-up leaderboard panel at 120 columns. At 58
+            # the request count wrapped onto a row of its own and the ranking read
+            # as broken; the panel is half the terminal, so the bound is 120/2.
+            lines = [f"{i}. {clip(label, 20):<20}{fmt_n(r['usage_total_tokens']):>12}"
+                     f"{fmt_credit_total(r['credits'], r['credit_rows']):>7} cr"
                      f" {r['requests']:>4} req"
                      for i, (label, r) in enumerate(zip(labels, top), 1)]
             self.query_one("#dash-models", Static).update("\n".join(lines))
