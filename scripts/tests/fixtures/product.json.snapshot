@@ -57,6 +57,7 @@
     "TeamDelete",
     "ToolSearch",
     "VideoGen",
+    "ViewImage",
     "WaitForMcpServers",
     "WeChatReply",
     "WeComReply",
@@ -82,7 +83,8 @@
     "securityReviewer",
     "statusline-setup",
     "summaryGenerator",
-    "terminalTitleGenerator"
+    "terminalTitleGenerator",
+    "viewImageDescriber"
   ],
   "models": [
     "balanced-model",
