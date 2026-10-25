@@ -38,6 +38,7 @@
 - [📁 Repository layout](#-repository-layout)
 - [⚠️ Limitations & roadmap](#️-limitations--roadmap)
 - [🧹 Uninstall](#-uninstall)
+- [🤝 Contributing](#-contributing)
 - [📄 License](#-license)
 
 ## ✨ Features
@@ -436,6 +437,13 @@ rm -rf ~/.local/share/codebuddy-usage-tracker                      # the SQLite 
 
 Deleting the repository directory (with its `.venv`) finishes it. CodeBuddy's own files
 were only ever read, so there is nothing to restore there. 🗑️
+
+## 🤝 Contributing
+
+This is a personal tool, not a project with a roadmap and a review queue. Bug reports and patches
+are still welcome: open an issue with the output of `cbut health` and the version you run. Read
+[AGENTS.md](AGENTS.md) before sending code — the invariants there (read-only access to CodeBuddy's
+files, no second parser, the eight tabs and their keys) are what a patch has to keep.
 
 ## 📄 License
 
