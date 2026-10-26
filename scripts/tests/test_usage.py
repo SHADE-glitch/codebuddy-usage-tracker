@@ -1411,6 +1411,49 @@ class IndexTest(unittest.TestCase):
         self.assertEqual(version, str(db.SCHEMA_VERSION))
 
 
+    def test_migrating_collapses_plugin_uses_the_old_key_could_not_dedup(self):
+        """v12: the old key ended in two nullable columns, so for an agent span —
+        no session id, no timestamp — it deduped nothing, and the per-sync
+        backfill added the same use again on every run.
+
+        The migration keeps the oldest row of each use and installs a key that
+        holds from then on: a use with a different timestamp is still its own
+        row, and a repeat of the NULL-session one is now ignored.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = Path(tmp.name) / "usage.db"
+            conn = db.open_db(path)
+            db.ensure_schema(conn)
+            # Put the v11 key back, so this database looks like one indexed
+            # before the repair.
+            conn.executescript(
+                "DROP INDEX ux_plugin_usage;"
+                "CREATE UNIQUE INDEX ux_plugin_usage"
+                "  ON plugin_usage(plugin, kind, target, session_id, ts);"
+                "UPDATE meta SET value='11' WHERE key='schema_version';")
+            conn.executemany(
+                "INSERT INTO plugin_usage(plugin, kind, target, session_id, ts)"
+                " VALUES(?,?,?,?,?)",
+                [("plug", "agent", "my-agent", None, None)] * 3
+                + [("plug", "agent", "my-agent", None, 500)])
+            conn.commit()
+            status = db.ensure_schema(conn)
+            kept = [r["ts"] for r in conn.execute(
+                "SELECT ts FROM plugin_usage ORDER BY id")]
+            conn.execute(
+                "INSERT OR IGNORE INTO plugin_usage(plugin, kind, target,"
+                " session_id, ts) VALUES('plug','agent','my-agent',NULL,NULL)")
+            conn.commit()
+            after = conn.execute(
+                "SELECT COUNT(*) FROM plugin_usage").fetchone()[0]
+            conn.close()
+        finally:
+            tmp.cleanup()
+        self.assertEqual(status, "migrated")
+        self.assertEqual(kept, [None, 500], "the duplicates did not collapse")
+        self.assertEqual(after, 2, "the new key still lets a NULL-session use in")
+
     def test_migrating_nulls_a_duration_its_own_result_record_preceded(self):
         """v10: a negative duration is not a short call, it is two records
         disagreeing about their order — so the migration makes it unknown.

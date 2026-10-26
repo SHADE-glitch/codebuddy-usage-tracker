@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # --- locations -------------------------------------------------------------
 
@@ -305,8 +305,12 @@ CREATE TABLE IF NOT EXISTS plugin_usage (
     project     TEXT,
     ts          INTEGER
 );
+-- COALESCE, not the bare columns (schema v12): SQLite treats every NULL as
+-- distinct in a unique index, so the same agent span — which carries no session
+-- id — was inserted again by every sync's backfill, forever. An empty string and
+-- -1 can never be a real session id or timestamp here.
 CREATE UNIQUE INDEX IF NOT EXISTS ux_plugin_usage
-    ON plugin_usage(plugin, kind, target, session_id, ts);
+    ON plugin_usage(plugin, kind, target, COALESCE(session_id, ''), COALESCE(ts, -1));
 
 CREATE TABLE IF NOT EXISTS commands (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -889,12 +893,49 @@ def _null_negative_durations(conn: sqlite3.Connection) -> bool:
     return changed > 0
 
 
-MIGRATIONS = (    ("model_responses cache and total columns", _migrate_model_responses),
+PLUGIN_USAGE_INDEX = "ux_plugin_usage"
+
+
+def _plugin_usage_key_without_nulls(conn: sqlite3.Connection) -> bool:
+    """v12: a unique key that can dedup a NULL session id or timestamp.
+
+    SQLite treats every NULL as distinct in a unique index, so
+    ``UNIQUE(plugin, kind, target, session_id, ts)`` never stopped the per-sync
+    backfill from re-inserting a use whose ``session_id`` was NULL — which is
+    every agent span. The key is now the same five columns with ``COALESCE``, and
+    an index that already has one is left alone.
+
+    The duplicates have to go first: the new index cannot be created while two
+    rows collide on the key it defines. Keeping ``MIN(id)`` keeps the oldest
+    record of each use, which is the one the panels would have shown.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+        (PLUGIN_USAGE_INDEX,),
+    ).fetchone()
+    if row is not None and "COALESCE" in (row[0] or ""):
+        return False                    # already the v12 shape
+    conn.execute(
+        "DELETE FROM plugin_usage WHERE id NOT IN ("
+        "  SELECT MIN(id) FROM plugin_usage"
+        "   GROUP BY plugin, kind, target, COALESCE(session_id, ''),"
+        "            COALESCE(ts, -1))")
+    if row is not None:
+        conn.execute(f"DROP INDEX {PLUGIN_USAGE_INDEX}")
+    conn.execute(
+        f"CREATE UNIQUE INDEX {PLUGIN_USAGE_INDEX} ON plugin_usage"
+        "(plugin, kind, target, COALESCE(session_id, ''), COALESCE(ts, -1))")
+    return True
+
+
+MIGRATIONS = (
+    ("model_responses cache and total columns", _migrate_model_responses),
     ("prose columns removed", _drop_prose_columns),
     ("dead session indexes dropped", _drop_dead_session_indexes),
     ("dead tool-category index dropped", _drop_dead_category_index),
     ("dead model index dropped", _drop_dead_model_index),
     ("negative durations nulled", _null_negative_durations),
+    ("plugin_usage key without nullable columns", _plugin_usage_key_without_nulls),
 )
 
 

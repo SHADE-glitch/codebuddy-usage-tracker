@@ -1121,6 +1121,39 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM model_responses").fetchone()[0], 0)
 
+    # -- F2: a plugin use with no session id must still dedup ---------------
+
+    def test_plugin_backfill_dedups_a_use_without_a_session(self):
+        """The per-sync backfill re-inserts every attributed use it can see.
+
+        The unique key on plugin_usage ends with session_id and ts, and SQLite
+        treats every NULL as distinct in a unique index — an agent span carries
+        no session id at all. Each run added the same use again: a +1 every 15
+        minutes that never healed.
+        """
+        self.conn.execute(
+            "INSERT INTO inventory(kind, name, owner_plugin, source)"
+            " VALUES('agent','my-agent','plug','plugin')")
+        self.conn.execute(
+            "INSERT INTO agent_usage(call_id, agent_type, session_id, project,"
+            " ts, source) VALUES('a1','my-agent',NULL,'/p',NULL,'span')")
+        self.conn.commit()
+        for _ in range(3):
+            sync.backfill_plugin_usage(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM plugin_usage").fetchone()[0], 1,
+            "the same use was recorded once per sync")
+
+        # A genuinely different use — same plugin, same target, different time —
+        # is still its own row: the key must not collapse those.
+        self.conn.execute(
+            "INSERT INTO agent_usage(call_id, agent_type, session_id, project,"
+            " ts, source) VALUES('a2','my-agent',NULL,'/p',500,'span')")
+        self.conn.commit()
+        sync.backfill_plugin_usage(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM plugin_usage").fetchone()[0], 2)
+
     def test_sync_state_and_sessions_cleared_together_is_idempotent(self):
         # The migration/--full contract clears sync_state AND sessions together;
         # the re-read then rebuilds the accumulated totals exactly once.
