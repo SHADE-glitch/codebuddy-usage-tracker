@@ -1851,10 +1851,41 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
                 await pilot.press(ch)
                 await pilot.pause()
             self.assertEqual([r[1] for r in all_rows(t)], ["alpha"])
-            self.assertIn('filter "alpha" · 1 matches', str(note.content))
+            self.assertIn('filter "alpha" · 1 of 2', str(note.content))
             await pilot.press("escape")
             await pilot.pause()
             self.assertEqual(len(all_rows(t)), 2)
+
+    async def test_the_requests_note_counts_matches_not_the_visible_page(self):
+        """The list is capped at log_limit; the count beside the filter is not.
+
+        It used the length of the loaded page, so filtering a window with more
+        matches than the cap reported the cap — "2 matches" for a filter that
+        really matched four requests.
+        """
+        now = int(time.time() * 1000)
+        make_db(self.db_path, [
+            (f"r{i}", "s1", "alpha", 1, 1, 0, 0, now - 60_000 + i, 1)
+            for i in range(4)
+        ])
+        app = TrackerApp(str(self.db_path),
+                         config=dict(db.DEFAULTS, log_limit=2))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one(tui.TabbedContent).active = "tab-usage"
+            await pilot.pause()
+            t = app.query_one("#t-usage", tui.DataTable)
+            self.assertEqual(len(all_rows(t)), 2, "the page is not capped")
+            note = app.query_one("#usage-note")
+            self.assertIn("showing 2 of 4", str(note.content))
+            await pilot.press("/")
+            await pilot.pause()
+            for ch in "alpha":
+                await pilot.press(ch)
+                await pilot.pause()
+            self.assertEqual(len(all_rows(t)), 2)
+            self.assertIn('filter "alpha" · 4 of 4', str(note.content),
+                          "the match count was the capped page, not the window")
 
     # 39e. the page never scrolls into blank space when its content fits
     async def test_the_main_screen_cannot_scroll_when_its_content_fits(self):

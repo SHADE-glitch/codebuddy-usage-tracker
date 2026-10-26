@@ -2480,7 +2480,7 @@ if HAVE_TEXTUAL:
             frac = db.cache_hit_rate(hit, miss, write)
             return "-" if frac is None else f"{frac * 100:.1f}%"
 
-        def _fill_usage_logs(self, conn, start, end, total=None) -> None:
+        def _fill_usage_logs(self, conn, start, end, total) -> None:
             """Fill the request log, and say so when the list is cut short.
 
             ``total`` is the window's request count (``q_usage_summary`` already
@@ -2501,8 +2501,13 @@ if HAVE_TEXTUAL:
                 parts.append("cache hit=read, write=create · no cost/duration/status")
                 parts.append(f"sort: {label}")
                 if query:
-                    parts.append(f'filter "{query}" · {len(rows):,} matches')
-                elif total is not None and total > len(rows):
+                    # Counted over the whole window, never the loaded page: the
+                    # list is capped, and the length of a capped list answers a
+                    # different question from "how many match".
+                    matched = db.q_usage_request_log_count(
+                        conn, start, end, text=query)
+                    parts.append(f'filter "{query}" · {matched:,} of {total:,}')
+                elif total > len(rows):
                     parts.append(f"showing {len(rows):,} of {total:,}")
             note = " · ".join(parts)
             self.query_one("#usage-note", Static).update(note)

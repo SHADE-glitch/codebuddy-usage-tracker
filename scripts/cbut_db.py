@@ -1888,6 +1888,26 @@ _USAGE_LOG_ORDER = {
 }
 
 
+def _usage_log_where(start_ts, end_ts, text=None):
+    """WHERE clause shared by the request log and its match count.
+
+    ``text`` is matched with LIKE over the three columns the list shows, and the
+    user's own ``%``, ``_`` and backslash are escaped: a filter for ``_`` must find
+    an underscore, not every row. Sharing the clause is what keeps the count and
+    the page from disagreeing about what "matches" means.
+    """
+    where, params = _ts_where(start_ts, end_ts)
+    if text:
+        escaped = (text.replace("\\", "\\\\")
+                       .replace("%", "\\%").replace("_", "\\_"))
+        like = f"%{escaped}%"
+        where += (" AND (model LIKE ? ESCAPE '\\'"
+                  " OR project LIKE ? ESCAPE '\\'"
+                  " OR COALESCE(provider, '') LIKE ? ESCAPE '\\')")
+        params += [like, like, like]
+    return where, params
+
+
 def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0,
                          text=None, order_by="time"):
     """Per-response rows in the window (never re-parses logs).
@@ -1900,11 +1920,7 @@ def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0,
     for a request that exists below the cut. ``order_by`` is whitelisted for
     the same reason every other order here is.
     """
-    where, params = _ts_where(start_ts, end_ts)
-    if text:
-        like = f"%{text}%"
-        where += " AND (model LIKE ? OR project LIKE ? OR COALESCE(provider, '') LIKE ?)"
-        params += [like, like, like]
+    where, params = _usage_log_where(start_ts, end_ts, text)
     order = _USAGE_LOG_ORDER.get(order_by, _USAGE_LOG_ORDER["time"])
     sql = (
         f"SELECT ts, model, {_PROVIDER_DISPLAY_EXPR} AS provider,"
@@ -1919,6 +1935,19 @@ def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0,
         f" ORDER BY {order} LIMIT ? OFFSET ?"
     )
     return conn.execute(sql, params + [int(limit), int(offset)]).fetchall()
+
+
+def q_usage_request_log_count(conn, start_ts, end_ts, text=None) -> int:
+    """How many requests the window holds, filtered exactly as the log is.
+
+    The list is capped at the caller's limit, so its length cannot answer "how
+    many match" — a filter over a 100-row page reported 100 for a window with
+    thousands. Same clause, same parameters, no LIMIT.
+    """
+    where, params = _usage_log_where(start_ts, end_ts, text)
+    return conn.execute(
+        f"SELECT COUNT(*) FROM model_responses WHERE {where}", params
+    ).fetchone()[0]
 
 
 # Whitelisted orderings for q_usage_model_stats (never user-supplied SQL).

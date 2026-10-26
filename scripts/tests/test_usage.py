@@ -177,6 +177,40 @@ class QueryTest(unittest.TestCase):
         self.assertEqual(rows["zero"]["prompt_cache_hit_tokens"], 0)
         self.assertIsNone(rows["null"]["prompt_cache_hit_tokens"])
 
+    def test_a_filter_wildcard_matches_itself_only(self):
+        """A user typing `_` means an underscore, not "any single character".
+
+        The pattern was built by wrapping the raw text in %, so `_` matched every
+        non-empty value and `%` matched everything: the filter looked broken
+        rather than looked like a search.
+        """
+        make_db(self.p, [
+            ("a", "gpt_4", 1, 1, 0, 0, 0, self.now - HOUR, 1),
+            ("b", "gpt-4", 1, 1, 0, 0, 0, self.now - HOUR, 1),
+        ])
+        conn = self._conn()
+        under = db.q_usage_request_logs(conn, *self._all(), text="_")
+        percent = db.q_usage_request_logs(conn, *self._all(), text="%")
+        conn.close()
+        self.assertEqual([r["message_id"] for r in under], ["a"],
+                         "an underscore in the filter matched every row")
+        self.assertEqual(percent, [], "a percent sign matched every row")
+
+    def test_the_match_count_covers_the_window_not_the_page(self):
+        """The list is capped; the number beside the filter is not.
+
+        The note used the length of the loaded page, so a filter matching more
+        rows than the cap claimed the cap as its match count.
+        """
+        make_db(self.p, [(f"r{i}", "gpt-4", 1, 1, 0, 0, 0,
+                          self.now - HOUR, 1) for i in range(5)])
+        conn = self._conn()
+        matched = db.q_usage_request_log_count(conn, *self._all(), text="gpt")
+        all_rows = db.q_usage_request_log_count(conn, *self._all())
+        none = db.q_usage_request_log_count(conn, *self._all(), text="nope")
+        conn.close()
+        self.assertEqual((matched, all_rows, none), (5, 5, 0))
+
     def test_model_stats_aggregates(self):
         make_db(self.p, [
             ("a", "mA", 10, 2, 80, 20, 0, self.now - 1 * HOUR, 1),
