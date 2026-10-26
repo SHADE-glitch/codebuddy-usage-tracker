@@ -1535,3 +1535,130 @@ Evidence L0 2026-10-22: 120x45 -> 160x60 -> 120x20 -> 120x45 on the real index: 
 Cost     One subclass and a private call (`getattr(app, "_fit_dashboard")`) instead of the
          app-level hook; the app no longer knows when its own dashboard was resized.
 Commit   c59039a
+### D-065 · 2026-10-26 · fix
+Symptom  A transcript rewritten in place makes `cbut sync` re-read every file from zero, and that
+         rebuild cleared `sessions` and took no snapshot. A session whose transcripts CodeBuddy had
+         already pruned had nothing left to rebuild it from: the row vanished while its calls stayed,
+         because `tool_calls` and `model_responses` are keyed by call id. On a copy of this machine's
+         index the session list fell while the call totals did not — 3,985 tool calls and 2,732 model
+         responses belonged to no session any screen could show, and there was no way back.
+Change   The rebuild snapshots first (`pre-rebuild`), carries across every session row no surviving
+         file rebuilds, and then prunes the usage rows those lost sessions left behind. Pruning, not
+         keeping: a call with no session cannot be listed anywhere, and keeping it is what made the
+         Dashboard and the status bar disagree. Rows with no project are spared — they were never
+         eligible for a session row, so a missing session there is not a loss.
+Evidence L2 2026-10-26, on a copy of the live index with `CBUT_CODEBUDDY_DIR` pointed at the real
+         logs: 1,034 sessions / 3,985 tool-call orphans / 2,732 response orphans before a forced
+         rebuild, 1,037 sessions (none lost) and 0 / 0 orphans after it, with both snapshots written.
+         L0 suite green (591 tests), including three new cases for the pruned-file path.
+Cost     A pruned row is gone from the database; the snapshot is the way back. 104 agent spans carry a
+         session id but no project, so the rule leaves them in place and they still count with no
+         session row — deliberate, because the same shape is what a machine without `cwd` in its
+         transcripts would produce, and deleting those would be far worse than counting them.
+Commit   226a0d6
+
+### D-066 · 2026-10-26 · fix
+Symptom  `plugin_usage` was keyed by `UNIQUE(plugin, kind, target, session_id, ts)`, and SQLite treats
+         every NULL as distinct in a unique index. An agent span carries no session id, so the
+         per-sync backfill's `INSERT OR IGNORE` added the same use again on every run: a +1 every 15
+         minutes, one-way, with nothing to tell the copies apart.
+Change   Schema v12 keys the same five columns through `COALESCE(session_id, '')` and
+         `COALESCE(ts, -1)`. The migration collapses the copies already there first — the new index
+         cannot be created while two rows collide on it — keeping the oldest of each use, then
+         rebuilds the index. A use with a different timestamp stays its own row.
+Evidence L0 2026-10-26: three backfills over one NULL-session agent use produced 3 rows before and 1
+         after; a second use at a different `ts` still produces its own row. L2 on a copy of the live
+         index: it holds 14 `plugin_usage` rows and no NULL session id, so the dedupe had nothing to
+         collapse there — the defect was latent on this machine, not absent.
+Cost     `ux_commands` has the same shape (`UNIQUE(command, session_id, ts)`) and was left alone: no
+         command row on this machine has a NULL session id, so the repair has nothing to measure
+         against yet.
+Commit   bc8a4af
+
+### D-067 · 2026-10-26 · fix
+Symptom  `sessions.started_at`/`ended_at` accumulate with `MIN`/`MAX`, and the two-argument scalar form
+         in SQLite returns NULL if either side is NULL — unlike the aggregate. A message that names a
+         model inserts the session row with no date, so a session whose first dated record arrived
+         that way stayed undated for good. `q_sessions` windows on `started_at >= ?`, which excludes
+         NULL: the session counted in every total and appeared in no list.
+Change   Both sides of every `MIN`/`MAX` are coalesced, on the turn-metrics accumulation path and on
+         the shared start/end update, so the first stamp that arrives wins and a missing one never
+         erases a stored date.
+Evidence L0 2026-10-26: a transcript whose only record is a model message now stores `(1000, 1000)`
+         and is reachable through `q_sessions`, and a row created without a date takes the next
+         record's. L2 on a copy of the live index: 0 of 1,034 sessions had a NULL `started_at`, so
+         nothing there needed repairing — the row was reachable only by a transcript this machine
+         did not have.
+Cost     Rows already locked at NULL are not repaired by a migration (there is nothing in the row to
+         recover them from); the next rebuild re-reads their transcripts.
+Commit   0cace82
+
+### D-068 · 2026-10-26 · fix
+Symptom  `sessions.tokens` and `duration_ms` are accumulated from turn-metrics, but the columns
+         defaulted to 0 and the writer stored `rec.get(...) or 0`. A session that never reported one
+         was indistinguishable from a session that reported zero: on this machine 914 of 1,034
+         sessions read "0 context tokens" and 901 read "0 ms" because the number was absent.
+Change   The columns are nullable, the writer stores what the record carried, and the accumulation
+         keeps "neither side has a number" as NULL while a reported 0 stays 0. Schema v13 nulls the
+         zeros an older database holds: every 0 there is ambiguous, because only the sum of the
+         turn-metrics records was kept and never the records themselves.
+Evidence L2 2026-10-26, on a copy of the live index: 914 sessions read 0 context tokens before the
+         upgrade and read `-` after it, while the 3 sessions the next sync added reported a real 0
+         and kept it. L0 suite green, including a case that pins a reported 0 at 0.
+Cost     A session that really reported a session-wide 0 loses that 0 on upgrade and reads unknown
+         until a rebuild re-reads its transcripts. The alternative was to keep claiming a measurement
+         the ingest could not tell from an absence.
+Commit   0a201b2
+
+### D-069 · 2026-10-26 · fix
+Symptom  The Usage page's filter note counted the rows it had loaded, and the list is capped at
+         `log_limit`, so a filter matching more requests than the cap reported the cap. The LIKE
+         pattern was also built by wrapping the raw text in `%`, so a user typing `_` searched with a
+         wildcard — it matched every non-empty model, and `%` matched every row.
+Change   A shared `_usage_log_where` builds the clause for both the page and a new
+         `q_usage_request_log_count`, with the user's `%`, `_` and backslash escaped and `ESCAPE`
+         declared on each `LIKE`. The note reads `filter "x" · N of M`, the same shape the entity tabs
+         use, with N counted over the window rather than the page.
+Evidence L0 2026-10-26: with `log_limit=2` and four matching requests, the note reads "4 of 4" while
+         the table holds 2; `_` matches only a model that contains an underscore and `%` matches
+         nothing.
+Cost     The wording changed from "N matches" to "N of M", so the count now also names the window it
+         is a count of.
+Commit   f8c0eb2
+
+### D-070 · 2026-10-26 · fix
+Symptom  `table(...) or "(none)"` never reached its right-hand side: `table()` always returns a header
+         and a separator line, so the idiom was dead and every empty report printed a header with
+         nothing under it. Six call sites still used it — the overview's Top tools and Plugins
+         sections, and the tools / plugins / recent / inventory commands.
+Change   All six use `table_or`, which branches on the rows. `cbut stats` on an empty database now
+         draws no table at all.
+Evidence L0 2026-10-26: the empty-state case runs every one of those commands against an empty
+         database and fails on both a bare header and a separator line.
+Cost     None. The helper already existed; this is the call sites catching up with it.
+Commit   2987a4e
+
+### D-071 · 2026-10-26 · fix
+Symptom  The MCP tab keys a row by `(server, tool)` and the pushed screen is titled "server · tool", but
+         `q_history` mapped the kind to `mcp_usage.tool` and filtered on the tool alone. Two servers
+         exporting the same tool name mixed into one list under a heading that named only one of
+         them, and the summary above it counted both.
+Change   `q_history` and `q_entity_summary` take an optional `server`, applied only for the `mcp`
+         kind, and `HistoryScreen` carries it from the row key. Without one the scope stays
+         tool-only, which is what the headless `cbut show mcp <tool>` asks for.
+Evidence L0 2026-10-26: two servers with a `query-docs` call each — the drill-down for one lists one
+         call and its summary says 1, while the unsourced query still returns both.
+Cost     `cbut show mcp <tool>` remains tool-only: the CLI has no way to name a server, so the
+         headless path can still mix two servers under one name.
+Commit   2b7cd8b
+
+### D-072 · 2026-10-26 · fix
+Symptom  `builtin` is a stored sentinel, and `db.provider_label` turns it into "Built-in" for every
+         panel that lists responses. The single-response detail bypassed it and printed the raw
+         column, so one route was named two ways depending on which screen it was opened from.
+Change   The detail renderer maps `provider` through `db.provider_label`, which also turns the
+         no-stored-route case into `-`.
+Evidence L0 2026-10-26: a response with `provider='builtin'` reads "Built-in" on the detail screen
+         and one with a vendor label reads the label.
+Cost     None.
+Commit   59bc96c
