@@ -16,7 +16,9 @@ settings surface (every key with its shipped default, every variable that overri
 because that list in the README is hand-copied and the loader is the only complete copy.
 """
 
+import contextlib
 import importlib.util
+import io
 import re
 import sys
 import unittest
@@ -30,6 +32,11 @@ TESTS_DIR = SCRIPTS / "tests"
 sys.path.insert(0, str(SCRIPTS))
 
 import cbut_db as db  # noqa: E402  — the settings surface the READMEs must document
+
+_stats_spec = importlib.util.spec_from_file_location(
+    "cbut_stats_for_readme", SCRIPTS / "cbut-stats.py")
+stats = importlib.util.module_from_spec(_stats_spec)
+_stats_spec.loader.exec_module(stats)
 
 ROW = re.compile(r"^\| `(test_\w+)\.py` \| (\d+) \|", re.M)
 AGGREGATE = re.compile(r"Ran (\d+) tests")
@@ -105,6 +112,39 @@ class ReadmeCountsTest(unittest.TestCase):
             self.assertFalse(missing_env,
                              f"{name} never names the variable that overrides these: "
                              f"{missing_env}")
+
+
+class ReadmeSurfaceTest(unittest.TestCase):
+    """The READMEs list the CLI surface, and the CLI is the authority on it.
+
+    `cbut stats` grew a `vacuum` subcommand and the repository-layout row was
+    never updated — while a later section of the same page listed it, so one
+    page contradicted itself. The list is derived from the parser here, not from
+    someone remembering to add a name.
+    """
+
+    def _subcommands(self):
+        """Every subcommand `cbut-stats.py` accepts, read from its own parser."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit):
+                stats.main(["--help"])
+        match = re.search(r"\{([a-z,\-]+)\}", out.getvalue())
+        self.assertIsNotNone(match, f"cannot read the subcommand list: {out.getvalue()!r}")
+        return set(match.group(1).split(","))
+
+    def test_both_readmes_list_every_stats_subcommand(self):
+        real = self._subcommands()
+        self.assertGreater(len(real), 10, "the parser reported no subcommands")
+        for name in ("README.md", "README.zh-CN.md"):
+            text = (REPO / name).read_text(encoding="utf-8")
+            row = next(line for line in text.splitlines()
+                       if "`scripts/cbut-stats.py`" in line)
+            listed = set(re.findall(r"`([a-z]+)`", row))
+            self.assertFalse(
+                real - listed,
+                f"{name} does not list these subcommands: {sorted(real - listed)}",
+            )
 
 
 if __name__ == "__main__":
