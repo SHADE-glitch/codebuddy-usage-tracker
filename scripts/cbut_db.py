@@ -1235,15 +1235,32 @@ _HISTORY_TABLE = {
 }
 
 
-def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None):
+def _history_conds(kind, name, server=None):
+    """(table, conditions) for one entity's drill-down.
+
+    ``server`` narrows an MCP drill-down to the server the row was opened from:
+    two servers can export the same tool name, and the tab keys the row by
+    (server, tool) — filtering on the tool alone listed another server's calls
+    under a heading that named this one. Ignored for every other kind, whose
+    key is the name.
+    """
+    table, col = _HISTORY_TABLE[kind]
+    conds = [(f"{col} = ?", name)]
+    if kind == "mcp" and server is not None:
+        conds.append(("server = ?", server))
+    return table, conds
+
+
+def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None,
+              server=None):
     """Recent calls for one entity in a window, newest first. kind in tool|skill|agent|mcp.
 
     ``call_id`` rides along so a row can open the single-call detail screen; it
     is not one of the columns the list shows. The window is half-open
     (``ts >= start AND ts < end``); both bounds ``None`` is all-time.
     """
-    table, col = _HISTORY_TABLE[kind]
-    conds = [(f"{col} = ?", name)] + _time_conds(start_ts, end_ts, col="ts")
+    table, conds = _history_conds(kind, name, server)
+    conds += _time_conds(start_ts, end_ts, col="ts")
     where = " WHERE " + " AND ".join(c for c, _ in conds)
     return conn.execute(
         "SELECT ts, project, session_id, status, duration_ms, call_id"
@@ -1289,7 +1306,8 @@ def q_model_responses(conn, limit=50, model=None, start_ts=None, end_ts=None,
     return conn.execute(sql, params).fetchall()
 
 
-def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None):
+def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None,
+                     server=None):
     """Windowed aggregates for one entity — the numbers the drill-down header shows.
 
     Every entity table carries ``status`` and ``duration_ms``, so one shape fits
@@ -1297,8 +1315,8 @@ def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None):
     calls completed" is true, not unknown; ``avg_ms`` and the first/last stamps
     stay NULL over an empty window (never a fabricated 0 or epoch).
     """
-    table, col = _HISTORY_TABLE[kind]
-    conds = [(f"{col} = ?", name)] + _time_conds(start_ts, end_ts, col="ts")
+    table, conds = _history_conds(kind, name, server)
+    conds += _time_conds(start_ts, end_ts, col="ts")
     where = " WHERE " + " AND ".join(c for c, _ in conds)
     return conn.execute(
         "SELECT COUNT(*) AS calls,"

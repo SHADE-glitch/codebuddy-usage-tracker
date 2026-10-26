@@ -1836,6 +1836,33 @@ class DrilldownQueryTest(unittest.TestCase):
     def _window(self):
         return self.NOW - 24 * HOUR, self.NOW
 
+    def _mcp(self, cid, server, tool, ts, dur=10):
+        self.conn.execute(
+            "INSERT INTO mcp_usage(call_id, server, tool, session_id, project,"
+            " ts, status, duration_ms) VALUES(?,?,?,?,?,?,?,?)",
+            (cid, server, tool, "s1", "/p/a", ts, "completed", dur))
+
+    def test_q_history_can_scope_mcp_to_one_server(self):
+        """Two servers can export the same tool name.
+
+        The MCP tab keys a row by (server, tool) and the drill-down is titled
+        "server · tool", but the query filtered on the tool alone — so opening
+        one server's `query-docs` listed another server's calls under that
+        heading. The summary above the list was wrong the same way.
+        """
+        self._mcp("m1", "context7", "query-docs", self.NOW - HOUR)
+        self._mcp("m2", "memory", "query-docs", self.NOW - 2 * HOUR)
+        self._mcp("m3", "memory", "create_entities", self.NOW - 3 * HOUR)
+        self.conn.commit()
+        rows = db.q_history(self.conn, "mcp", "query-docs", server="context7")
+        self.assertEqual([r["call_id"] for r in rows], ["m1"])
+        summary = dict(db.q_entity_summary(self.conn, "mcp", "query-docs",
+                                           server="context7"))
+        self.assertEqual(summary["calls"], 1)
+        # Without a server the scope stays tool-only, which is what the
+        # headless `cbut show mcp <tool>` still asks for.
+        self.assertEqual(len(db.q_history(self.conn, "mcp", "query-docs")), 2)
+
     def test_q_history_carries_the_call_id(self):
         rows = db.q_history(self.conn, "tool", "Bash")
         self.assertEqual([r["call_id"] for r in rows], ["c2", "c1", "c3"])

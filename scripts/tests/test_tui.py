@@ -3059,6 +3059,34 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(scr.entity, f"{SHARED}-second",
                              "the capped cell was used as the key — both rows route to one tool")
 
+    # 71b. the MCP drill-down is scoped to the server it was opened from
+    async def test_the_mcp_drilldown_lists_only_its_own_server(self):
+        """The row key is (server, tool) and the title says so.
+
+        The screen used to filter on the tool alone, so a second server
+        exporting the same tool name appeared under a heading naming the first.
+        """
+        now = int(time.time() * 1000)
+        insert_mcp_usage(self.db_path, [
+            ("m1", "context7", "query-docs", "s1", "/p", now - 60_000,
+             "completed", 10),
+            ("m2", "memory", "query-docs", "s1", "/p", now - 120_000,
+             "completed", 20),
+        ])
+        app = TrackerApp(str(self.db_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(tui.HistoryScreen(
+                "mcp", "query-docs", display="context7 · query-docs",
+                server="context7"))
+            await pilot.pause()
+            scr = app.screen_stack[-1]
+            t = scr.query_one("#hist-table", tui.DataTable)
+            self.assertEqual(t.row_count, 1,
+                             "another server's calls were listed under this one")
+            summary = str(scr.query_one("#hist-summary", tui.Static).content)
+            self.assertIn("1 call", summary)
+
     # 70. the note says when it cut characters rather than columns
     async def test_the_note_announces_that_cells_were_capped(self):
         now = int(time.time() * 1000)

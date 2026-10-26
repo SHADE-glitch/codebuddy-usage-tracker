@@ -1238,9 +1238,13 @@ if HAVE_TEXTUAL:
             return self.app.name_cap
 
         def __init__(self, kind: str, name: str, display: str | None = None,
-                     start_ts=None, end_ts=None, window_label: str = "all time"):
+                     start_ts=None, end_ts=None, window_label: str = "all time",
+                     server: str | None = None):
             super().__init__()
             self.kind = kind
+            # An MCP row is keyed by (server, tool), so the tool alone does not
+            # identify it: two servers can export the same name.
+            self.server = server
             self.entity = name              # the value queried against the DB
             self.heading = display or name  # what the title shows
             self.start_ts = start_ts        # the tab's window; None = all-time
@@ -1285,7 +1289,8 @@ if HAVE_TEXTUAL:
                 else:
                     found = db.q_history(
                         conn, self.kind, self.entity, self.app.DETAIL_LIMIT,
-                        start_ts=self.start_ts, end_ts=self.end_ts)
+                        start_ts=self.start_ts, end_ts=self.end_ts,
+                        server=self.server)
                     rows = [[ts(r["ts"]), r["project"] or "-",
                              (r["session_id"] or "")[:8], r["status"] or "-",
                              ms(r["duration_ms"])]
@@ -1293,7 +1298,7 @@ if HAVE_TEXTUAL:
                     keys = [[self.kind, r["call_id"]] for r in found]
                     summary = db.q_entity_summary(
                         conn, self.kind, self.entity, start_ts=self.start_ts,
-                        end_ts=self.end_ts)
+                        end_ts=self.end_ts, server=self.server)
             finally:
                 conn.close()
             self.query_one("#hist-summary", Static).update(
@@ -2600,12 +2605,12 @@ if HAVE_TEXTUAL:
                 self.push_screen(ModelResponsesScreen(
                     model, start, end, label, provider=provider))
             elif kind == "mcp":
-                # Key is mcp\t<server>\t<tool>. q_history maps "mcp" to the
-                # mcp_usage.tool column, so query by the TOOL and show
-                # "server · tool" as the title.
+                # Key is mcp\t<server>\t<tool>. Both halves travel: the tool name
+                # alone is not unique across servers, so querying on it listed
+                # another server's calls under a "server · tool" title.
                 server, _, tool = rest.partition("\t")
                 self.push_screen(HistoryScreen(
-                    "mcp", tool, display=f"{server} · {tool}",
+                    "mcp", tool, display=f"{server} · {tool}", server=server,
                     start_ts=start, end_ts=end, window_label=label))
             else:
                 self.push_screen(HistoryScreen(kind, rest, start_ts=start,
