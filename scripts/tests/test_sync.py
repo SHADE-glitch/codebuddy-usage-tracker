@@ -1198,6 +1198,47 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual((row["started_at"], row["ended_at"]), (5000, 5000))
         self.assertEqual(row["tokens"], 3)
 
+    # -- F4: an unreported total is unknown, not zero -----------------------
+
+    def test_a_session_without_turn_metrics_keeps_an_unknown_total(self):
+        """sessions.tokens/duration_ms are accumulated from turn-metrics only.
+
+        The column defaulted to 0 and the writer stored `tokenDelta or 0`, so a
+        session that never reported either one was indistinguishable from a
+        session that reported zero: 914 of 1034 sessions on this machine read
+        "0 context tokens" because the number was absent, not because it was 0.
+        """
+        write_records(self.tr, [model_rec("m1", rtype="message", session_id="s1",
+                                          ts=1000)])
+        self.index()
+        row = self.conn.execute(
+            "SELECT tokens, duration_ms FROM sessions WHERE session_id='s1'"
+        ).fetchone()
+        self.assertIsNone(row["tokens"], "an absent token total was stored as 0")
+        self.assertIsNone(row["duration_ms"], "an absent duration was stored as 0")
+
+    def test_a_turn_metric_that_reports_zero_is_still_zero(self):
+        """The other half: a real 0 is a measurement and must stay one."""
+        self._write_tm(self.tr, "s1", 0, 0, 1000)
+        self.index()
+        row = self.conn.execute(
+            "SELECT tokens, duration_ms FROM sessions WHERE session_id='s1'"
+        ).fetchone()
+        self.assertEqual((row["tokens"], row["duration_ms"]), (0, 0))
+
+    def test_a_missing_delta_does_not_swallow_a_reported_one(self):
+        """Accumulating must skip the absent half, not NULL the whole sum."""
+        write_records(self.tr, [
+            {"type": "turn-metrics", "timestamp": 1000, "durationMs": 10,
+             "cwd": "/proj", "_meta": {"baggage": "codebuddy.session_id=s1"}},
+            {"type": "turn-metrics", "timestamp": 2000, "tokenDelta": 40,
+             "cwd": "/proj", "_meta": {"baggage": "codebuddy.session_id=s1"}},
+        ])
+        self.index()
+        row = self.conn.execute(
+            "SELECT tokens, duration_ms FROM sessions").fetchone()
+        self.assertEqual((row["tokens"], row["duration_ms"]), (40, 10))
+
     def test_sync_state_and_sessions_cleared_together_is_idempotent(self):
         # The migration/--full contract clears sync_state AND sessions together;
         # the re-read then rebuilds the accumulated totals exactly once.

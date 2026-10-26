@@ -114,6 +114,25 @@ class StatsCliTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_sessions_renders_an_unreported_total_as_unknown(self):
+        """A session that never reported a context total or a duration reads `-`.
+
+        The row is real — it made calls — but those two columns are accumulated
+        from turn-metrics and nothing reported them. A 0 there would claim the
+        session used no context and took no time.
+        """
+        conn = db.open_db(self.db_path)
+        conn.execute("DELETE FROM sessions")
+        conn.execute("INSERT INTO sessions(session_id, project, started_at)"
+                     " VALUES('s1', '/proj', ?)", (TS,))
+        conn.commit()
+        conn.close()
+        rc, out, err = run("--db", self.db_path, "sessions")
+        self.assertEqual(rc, 0, err)
+        cells = out.strip().splitlines()[-1].split()
+        self.assertEqual(cells[-2:], ["-", "-"],
+                         "an unknown total was printed as a measurement")
+
     def test_stats_prints_every_section(self):
         rc, out, err = run("--db", self.db_path, "stats")
         self.assertEqual(rc, 0, err)

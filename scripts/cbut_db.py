@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # --- locations -------------------------------------------------------------
 
@@ -168,8 +168,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at  INTEGER,          -- epoch ms
     ended_at    INTEGER,
     model       TEXT,
-    tokens      INTEGER DEFAULT 0,
-    duration_ms INTEGER DEFAULT 0
+    -- Accumulated from turn-metrics (schema v13): the session's context-token
+    -- metric and the time its turns took. NULL means it never reported one, which
+    -- is not the same as a reported 0 -- the writer used to store 0 for both.
+    tokens      INTEGER,
+    duration_ms INTEGER
 );
 
 -- One row per model response, keyed by providerData.messageId (globally unique
@@ -928,6 +931,28 @@ def _plugin_usage_key_without_nulls(conn: sqlite3.Connection) -> bool:
     return True
 
 
+def _null_unreported_session_totals(conn: sqlite3.Connection) -> bool:
+    """v13: a 0 in sessions.tokens/duration_ms is not evidence of a measurement.
+
+    The old writer stored ``rec.get("tokenDelta") or 0`` and the column defaulted
+    to 0, so "this session never reported one" and "it reported zero" both landed
+    as 0 — and nothing in the row can tell them apart afterwards, because only the
+    sum of the turn-metrics records is kept, never the records themselves.
+
+    Every 0 therefore becomes NULL, which is the honest reading and what the
+    panels already render as ``-``. Measured on this machine 2026-10-26: 914 of
+    1034 sessions read 0 context tokens and 901 read 0 ms, and the ingest cannot
+    produce a session-wide 0 any other way except from a turn that reported one.
+    A session that really did report 0 loses its 0 here; a rebuild re-reads its
+    transcripts, and the writer now stores the two cases apart.
+    """
+    changed = 0
+    for col in ("tokens", "duration_ms"):
+        changed += conn.execute(
+            f"UPDATE sessions SET {col} = NULL WHERE {col} = 0").rowcount or 0
+    return changed > 0
+
+
 MIGRATIONS = (
     ("model_responses cache and total columns", _migrate_model_responses),
     ("prose columns removed", _drop_prose_columns),
@@ -936,6 +961,7 @@ MIGRATIONS = (
     ("dead model index dropped", _drop_dead_model_index),
     ("negative durations nulled", _null_negative_durations),
     ("plugin_usage key without nullable columns", _plugin_usage_key_without_nulls),
+    ("unreported session totals nulled", _null_unreported_session_totals),
 )
 
 

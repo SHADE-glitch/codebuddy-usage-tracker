@@ -1454,6 +1454,39 @@ class IndexTest(unittest.TestCase):
         self.assertEqual(kept, [None, 500], "the duplicates did not collapse")
         self.assertEqual(after, 2, "the new key still lets a NULL-session use in")
 
+    def test_migrating_makes_an_unreported_session_total_unknown(self):
+        """v13: the writer stored 0 for "never reported", so every 0 in these two
+        columns is ambiguous and becomes NULL — the marker the panels already
+        print as `-`. A session that did report a number keeps it, and a row
+        inserted with no total at all now stays NULL instead of defaulting to 0.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = Path(tmp.name) / "usage.db"
+            conn = db.open_db(path)
+            db.ensure_schema(conn)
+            conn.execute(
+                "INSERT INTO sessions(session_id, tokens, duration_ms)"
+                " VALUES('a', 0, 0), ('b', 150, 20)")
+            conn.execute("UPDATE meta SET value='12' WHERE key='schema_version'")
+            conn.commit()
+            status = db.ensure_schema(conn)
+            rows = {r["session_id"]: (r["tokens"], r["duration_ms"])
+                    for r in conn.execute(
+                        "SELECT session_id, tokens, duration_ms FROM sessions")}
+            conn.execute("INSERT INTO sessions(session_id) VALUES('c')")
+            conn.commit()
+            fresh = conn.execute(
+                "SELECT tokens, duration_ms FROM sessions"
+                " WHERE session_id='c'").fetchone()
+            conn.close()
+        finally:
+            tmp.cleanup()
+        self.assertEqual(status, "migrated")
+        self.assertEqual(rows, {"a": (None, None), "b": (150, 20)})
+        self.assertEqual(tuple(fresh), (None, None),
+                         "the column still defaults an absent total to 0")
+
     def test_migrating_nulls_a_duration_its_own_result_record_preceded(self):
         """v10: a negative duration is not a short call, it is two records
         disagreeing about their order — so the migration makes it unknown.

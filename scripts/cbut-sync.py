@@ -1356,10 +1356,20 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
                 "                   COALESCE(excluded.started_at, started_at)),"
                 "   ended_at   = MAX(COALESCE(ended_at, excluded.ended_at),"
                 "                   COALESCE(excluded.ended_at, ended_at)),"
-                "   tokens     = tokens + excluded.tokens,"
-                "   duration_ms= duration_ms + excluded.duration_ms",
-                (sid, project, ts, ts, rec.get("tokenDelta") or 0,
-                 rec.get("durationMs") or 0),
+                # Absent stays absent: a turn that reports no delta must not
+                # turn the session's unknown total into 0, and a reported 0 must
+                # stay 0. Only when neither side has a number does the sum stay
+                # NULL.
+                "   tokens     = CASE WHEN tokens IS NULL"
+                "                     AND excluded.tokens IS NULL THEN NULL"
+                "                     ELSE COALESCE(tokens, 0)"
+                "                        + COALESCE(excluded.tokens, 0) END,"
+                "   duration_ms= CASE WHEN duration_ms IS NULL"
+                "                       AND excluded.duration_ms IS NULL THEN NULL"
+                "                     ELSE COALESCE(duration_ms, 0)"
+                "                        + COALESCE(excluded.duration_ms, 0) END",
+                (sid, project, ts, ts, rec.get("tokenDelta"),
+                 rec.get("durationMs")),
             )
 
     elif rtype == "message":
