@@ -1154,6 +1154,50 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM plugin_usage").fetchone()[0], 2)
 
+    # -- F3: a session that starts with a model message still gets a date ---
+
+    def test_a_session_starting_on_a_model_message_still_dates_itself(self):
+        """started_at/ended_at are a MIN/MAX over the records that carry a stamp.
+
+        A message that names a model inserts the session row with no date, and
+        MIN(NULL, ts) is NULL in SQLite — so a session whose first dated record
+        arrived that way stayed undated for good. `q_sessions` windows on
+        `started_at >= ?`, which excludes NULL: the session was counted in every
+        total and listed in none.
+        """
+        write_records(self.tr, [model_rec("m1", rtype="message", session_id="s1",
+                                          ts=1000)])
+        self.index()
+        row = self.conn.execute(
+            "SELECT started_at, ended_at FROM sessions WHERE session_id='s1'"
+        ).fetchone()
+        self.assertEqual((row["started_at"], row["ended_at"]), (1000, 1000))
+        listed = [r["session_id"] for r in db.q_sessions(self.conn, start_ts=0)]
+        self.assertEqual(listed, ["s1"],
+                         "the session exists but no window can reach it")
+
+    def test_an_undated_session_row_still_takes_the_next_record_date(self):
+        """The same repair on the accumulation path, not only the insert.
+
+        turn-metrics is where a session accumulates, and it can arrive after a
+        row that was created without a date; MIN/MAX must take the first stamp
+        that shows up rather than staying NULL.
+        """
+        self.conn.execute(
+            "INSERT INTO sessions(session_id, project, model)"
+            " VALUES('s1', '/proj', 'test-model')")
+        self.conn.commit()
+        write_records(self.tr, [
+            {"type": "turn-metrics", "timestamp": 5000, "tokenDelta": 3,
+             "durationMs": 30, "cwd": "/proj",
+             "_meta": {"baggage": "codebuddy.session_id=s1"}}])
+        self.index()
+        row = self.conn.execute(
+            "SELECT started_at, ended_at, tokens FROM sessions"
+        ).fetchone()
+        self.assertEqual((row["started_at"], row["ended_at"]), (5000, 5000))
+        self.assertEqual(row["tokens"], 3)
+
     def test_sync_state_and_sessions_cleared_together_is_idempotent(self):
         # The migration/--full contract clears sync_state AND sessions together;
         # the re-read then rebuilds the accumulated totals exactly once.

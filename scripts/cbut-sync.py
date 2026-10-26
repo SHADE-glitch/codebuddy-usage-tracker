@@ -1347,8 +1347,15 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
                 "(session_id, project, started_at, ended_at, tokens, duration_ms)"
                 " VALUES(?,?,?,?,?,?)"
                 " ON CONFLICT(session_id) DO UPDATE SET"
-                "   started_at = MIN(started_at, excluded.started_at),"
-                "   ended_at   = MAX(ended_at, excluded.ended_at),"
+                # MIN/MAX ignore NULLs only as *aggregates*: the two-argument
+                # scalar form returns NULL if either side is, so a session row
+                # created without a date would never take one. Both sides are
+                # coalesced so the first stamp that arrives wins and a missing
+                # one never erases a stored date.
+                "   started_at = MIN(COALESCE(started_at, excluded.started_at),"
+                "                   COALESCE(excluded.started_at, started_at)),"
+                "   ended_at   = MAX(COALESCE(ended_at, excluded.ended_at),"
+                "                   COALESCE(excluded.ended_at, ended_at)),"
                 "   tokens     = tokens + excluded.tokens,"
                 "   duration_ms= duration_ms + excluded.duration_ms",
                 (sid, project, ts, ts, rec.get("tokenDelta") or 0,
@@ -1394,8 +1401,13 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
         conn.execute(
             "INSERT INTO sessions(session_id, project, started_at, ended_at)"
             " VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET"
-            "   started_at = MIN(started_at, excluded.started_at),"
-            "   ended_at   = MAX(ended_at, excluded.ended_at),"
+            # COALESCE on both sides, for the reason spelled out in the
+            # turn-metrics branch above: a row created without a date (a message
+            # that named a model) would otherwise never take one.
+            "   started_at = MIN(COALESCE(started_at, excluded.started_at),"
+            "                   COALESCE(excluded.started_at, started_at)),"
+            "   ended_at   = MAX(COALESCE(ended_at, excluded.ended_at),"
+            "                   COALESCE(excluded.ended_at, ended_at)),"
             "   project    = COALESCE(project, excluded.project)",
             (sid, project, ts, ts),
         )
