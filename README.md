@@ -170,7 +170,7 @@ nobody had called. History is the durable side: a model that leaves the catalogu
 value is stored verbatim in its own column and shown beside the token totals on every surface that
 can carry it. It is never added into a token count, and no token number is ever derived from it. A
 route that reports no credit leaves `-` (NULL), never a fabricated `0`; an aggregate reads `-` when
-none of its contributing rows carried the field. An older index upgrades in place (schema v11):
+none of its contributing rows carried the field. An older index upgrades in place (schema v13):
 the next `cbut sync` re-reads the transcripts and backfills the credit column from responses it
 already knows.
 

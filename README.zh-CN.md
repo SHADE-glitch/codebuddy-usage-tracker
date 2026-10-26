@@ -112,7 +112,7 @@ tab 栏和页脚就是全部按键面：<kbd>q</kbd> 退出，<kbd>r</kbd> 同�
 
 **Tokens 记录的是真正回答过的模型，不是目录里有什么。** 每个至少回答过一次的 (模型, provider) 占一行。已安装包的 `product.json` 会随升级和账号地区变化，而 `~/.codebuddy/models.json` 里的是路由 id（`ark-code-latest`），它实际回答时是另一个模型（`deepseek-v4-1-flash`）—— 把两者任何一边列进来，都会产生「没人调用过」的 0 请求行。历史才是持久的一侧：从目录里消失的模型（`glm-5.1`）保留它自己挣到的每一行和每一笔合计。没有 `requestModelId` 的响应当作 `Built-in` 读，所以同一个模型不会裂成 `Built-in` 和 `-` 两行。
 
-**Credits 是计费，不是 token。** 当响应带有 `providerData.rawUsage.credit` 时，原值存入独立列，并显示在所有能承载它的页面上、紧挨 token 合计。它绝不会被加进任何 token 计数，也不会由它反推 token。没有上报 credit 的路由显示 `-`（NULL），绝不伪造 `0`；一个聚合里若没有任何一行带过该字段，同样显示 `-`。旧索引会原地升级（schema v11）：下一次 `cbut sync` 会重读转录，为已知的响应补上 credit 列。
+**Credits 是计费，不是 token。** 当响应带有 `providerData.rawUsage.credit` 时，原值存入独立列，并显示在所有能承载它的页面上、紧挨 token 合计。它绝不会被加进任何 token 计数，也不会由它反推 token。没有上报 credit 的路由显示 `-`（NULL），绝不伪造 `0`；一个聚合里若没有任何一行带过该字段，同样显示 `-`。旧索引会原地升级（schema v13）：下一次 `cbut sync` 会重读转录，为已知的响应补上 credit 列。
 
 > **API 总计** = 有 provider 原始值时用原始值，否则用 `输入 + 输出`。
 > **Usage 总计** 是仅展示的指标（`输入 + 输出 + 缓存 hit`），它**重复加了一次缓存 hit**（hit 本就包含在输入里），所以约为 API 总计的 2 倍 —— 绝不要把它当作 API 总计。
