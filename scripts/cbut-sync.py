@@ -1716,6 +1716,13 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
     # contribution cannot be subtracted in isolation; clearing sync_state +
     # sessions makes the main loop re-read every file from zero exactly once, so
     # the accumulated turn-metrics totals are rebuilt (never lost or doubled).
+    #
+    # This is the only destructive step a plain ``cbut sync`` can take, so it
+    # snapshots first, and it carries across the sessions it cannot rebuild: a
+    # session whose every transcript CodeBuddy has pruned has no source left, and
+    # re-reading the survivors must not be read as "that session never existed".
+    carried: list = []
+    rebuilt = False
     for path, _kind in files:
         try:
             st = path.stat()
@@ -1726,6 +1733,13 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
             (str(path),),
         ).fetchone()
         if row is not None and _needs_reset(path, st, row):
+            # SQLite's backup API cannot read a connection holding uncommitted
+            # writes, and the inventory scan above wrote some.
+            conn.commit()
+            db.snapshot(conn, reason="pre-rebuild")
+            carried = [tuple(r) for r in conn.execute(
+                "SELECT session_id, project, started_at, ended_at, model,"
+                " tokens, duration_ms FROM sessions")]
             conn.execute("DELETE FROM sync_state")
             conn.execute("DELETE FROM sessions")
             # Every file is re-read from zero below, so the unparsed counts would
@@ -1733,6 +1747,7 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
             # that ``sessions`` had to be cleared for.
             conn.execute("DELETE FROM unparsed")
             conn.commit()
+            rebuilt = True
             break
 
     n_files = n_records = n_unparsed = n_finals = 0
@@ -1800,6 +1815,34 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
     for reason, n in final_unparsed.items():
         db.note_unparsed(conn, reason, n)
         n_unparsed += n
+
+    if carried:
+        # Put back the sessions no surviving file rebuilt. Their totals were
+        # accumulated while their transcripts existed and nothing re-adds them,
+        # so they are still the best record of those sessions — and keeping the
+        # row is what keeps their calls attributable. A session that a surviving
+        # file did rebuild already has its row, and is left exactly as rebuilt.
+        conn.executemany(
+            "INSERT OR IGNORE INTO sessions(session_id, project, started_at,"
+            " ended_at, model, tokens, duration_ms) VALUES(?,?,?,?,?,?,?)",
+            carried)
+        conn.commit()
+
+    if rebuilt:
+        # A call whose session is not in ``sessions`` is invisible to every
+        # screen that lists calls by session, yet it still counts in the tool and
+        # model totals — which is how a rebuild left the Dashboard and the status
+        # bar disagreeing. The row is pruned rather than kept, and the snapshot
+        # above is the way back. Only a row that carried a project is eligible: a
+        # row without one was never eligible for a session row in the first place,
+        # so its missing session is not a loss.
+        for table in ("tool_calls", "model_responses", "skill_usage",
+                      "agent_usage", "mcp_usage"):
+            conn.execute(
+                f"DELETE FROM {table} WHERE project IS NOT NULL"
+                " AND session_id IS NOT NULL AND session_id NOT IN"
+                " (SELECT session_id FROM sessions)")
+        conn.commit()
 
     n_records = backfill_plugin_usage(conn)
     stats = {

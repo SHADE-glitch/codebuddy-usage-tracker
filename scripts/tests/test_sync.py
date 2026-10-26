@@ -1030,6 +1030,97 @@ class IndexerTest(unittest.TestCase):
             sync.db.CODEBUDDY_DIR = old
         self.assertEqual(self._session("S"), (45, 450))   # 40 + 5, rebuilt once
 
+    # -- F1c: a rebuild must not throw away what is no longer on disk --------
+    # CodeBuddy prunes old transcripts. A rebuild re-reads every file from zero,
+    # so the session of a pruned transcript cannot be rebuilt -- but it is still
+    # history, and dropping it left its tool calls and model responses behind as
+    # rows no screen could reach: the session count fell while the call totals
+    # did not, and there was no snapshot to go back to.
+
+    def _gone_transcript(self, root, sid, tok, dur, ts):
+        """A transcript in its own project dir, so it can be deleted alone."""
+        d = root / "projects" / f"p-{sid}"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / "s.jsonl"
+        self._write_tm(f, sid, tok, dur, ts)
+        return f
+
+    def test_rebuild_keeps_sessions_whose_transcript_is_gone(self):
+        root = self._cb_root()
+        main = root / "projects" / "p" / "sess.jsonl"
+        self._write_tm(main, "S", 100, 1000, 1000)
+        gone = self._gone_transcript(root, "T", 7, 70, 1500)
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = root
+        try:
+            sync.run(quiet=True, db_path=self.db_path)
+            self.assertEqual(self._session("T"), (7, 70))
+            gone.unlink()                     # CodeBuddy pruned this transcript
+            self._rewrite_tm_compact(main, "S", 40, 400, 5000)   # stale offset
+            sync.run(quiet=True, db_path=self.db_path)
+        finally:
+            sync.db.CODEBUDDY_DIR = old
+        self.assertEqual(self._session("S"), (40, 400))    # rebuilt exactly once
+        self.assertEqual(self._session("T"), (7, 70),
+                         "the rebuild dropped the session of a pruned transcript")
+
+    def test_rebuild_snapshots_before_it_clears_anything(self):
+        root = self._cb_root()
+        main = root / "projects" / "p" / "sess.jsonl"
+        self._write_tm(main, "S", 100, 1000, 1000)
+        self._gone_transcript(root, "T", 7, 70, 1500)
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = root
+        try:
+            sync.run(quiet=True, db_path=self.db_path)
+            self._rewrite_tm_compact(main, "S", 40, 400, 5000)
+            sync.run(quiet=True, db_path=self.db_path)
+        finally:
+            sync.db.CODEBUDDY_DIR = old
+        pre = [p for p in db.list_backups(self.db_path) if "pre-rebuild" in p.name]
+        self.assertEqual(len(pre), 1,
+                         "an automatic rebuild cleared tables without a snapshot")
+        conn = db.open_db(pre[0], readonly=True)
+        try:
+            kept = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(kept, 2, "the snapshot was taken after the tables were cleared")
+
+    def test_rebuild_prunes_calls_of_sessions_already_lost(self):
+        """A call whose session is not in `sessions` cannot be shown anywhere.
+
+        Left in place it kept the call totals above what the session list could
+        account for. A row with no project, or no session id, was never eligible
+        for a session row and is left alone.
+        """
+        root = self._cb_root()
+        main = root / "projects" / "p" / "sess.jsonl"
+        self._write_tm(main, "S", 100, 1000, 1000)
+        old = sync.db.CODEBUDDY_DIR
+        sync.db.CODEBUDDY_DIR = root
+        try:
+            sync.run(quiet=True, db_path=self.db_path)
+            self.conn.executemany(
+                "INSERT INTO tool_calls(call_id, session_id, project, tool_name,"
+                " category, ts, status) VALUES(?,?,?,?,?,?,?)",
+                [("lost", "GONE", "/proj", "Bash", "builtin", 900, "completed"),
+                 ("noproject", "GONE", None, "Bash", "builtin", 901, "completed"),
+                 ("nosession", None, "/proj", "Bash", "builtin", 902, "completed")])
+            self.conn.execute(
+                "INSERT INTO model_responses(message_id, session_id, project, ts)"
+                " VALUES('lostm','GONE','/proj',900)")
+            self.conn.commit()
+            self._rewrite_tm_compact(main, "S", 40, 400, 5000)
+            sync.run(quiet=True, db_path=self.db_path)
+        finally:
+            sync.db.CODEBUDDY_DIR = old
+        left = {r[0] for r in self.conn.execute(
+            "SELECT call_id FROM tool_calls ORDER BY call_id")}
+        self.assertEqual(left, {"noproject", "nosession"})
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM model_responses").fetchone()[0], 0)
+
     def test_sync_state_and_sessions_cleared_together_is_idempotent(self):
         # The migration/--full contract clears sync_state AND sessions together;
         # the re-read then rebuilds the accumulated totals exactly once.

@@ -126,6 +126,10 @@ tool runs from a checkout, so the version only needs to move when a documented c
   because the launcher resolves them independently.
 - **Sync must stay incremental *and* idempotent.** Repeated syncs and schema migrations must not
   inflate `context tokens` or duplicate rows; `cbut sync --full` is the documented rebuild path.
+  A transcript whose stored offset went stale (shrunk, rewritten in place, or no longer on a line
+  boundary) also forces a whole-DB rebuild: it snapshots first, re-reads every surviving file from
+  zero, and carries across the sessions no surviving file can rebuild — CodeBuddy prunes old
+  transcripts, and "no source left" is not "that session never existed".
   The property is pinned by `test_a_real_process_kill_mid_transaction_leaves_no_partial_state`
   (a child that `os._exit`s with the transaction open — not a simulated close): rows and offset
   are lost together, so a retry counts a turn exactly once.
