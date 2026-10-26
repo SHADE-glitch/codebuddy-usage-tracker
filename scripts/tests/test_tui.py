@@ -3278,6 +3278,43 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(values[4], "completed")
             self.assertEqual(values[6], "120ms")
 
+    # 76b. the model detail prints the provider label, not the stored sentinel
+    async def test_the_model_call_detail_labels_the_builtin_route(self):
+        """`builtin` is a stored sentinel, not a name to put on screen.
+
+        The Usage and Tokens tabs read the column through db.provider_label and
+        print "Built-in"; the single-response detail printed the raw value, so
+        the same route was named two ways depending on which screen you opened.
+        """
+        now = self._noon_ms()
+        conn = db.open_db(self.db_path)
+        db.ensure_schema(conn)
+        conn.execute(
+            "INSERT INTO model_responses(message_id, model, provider,"
+            " prompt_tokens, completion_tokens, ts, usage_available)"
+            " VALUES('r1','m','builtin',10,2,?,1)", (now,))
+        conn.execute(
+            "INSERT INTO model_responses(message_id, model, provider, ts,"
+            " usage_available) VALUES('r2','m','Volcano Ark',?,0)", (now,))
+        conn.commit()
+        conn.close()
+        app = TrackerApp(str(self.db_path), clock=lambda: now / 1000)
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            seen = {}
+            for key in ("r1", "r2"):
+                app.push_screen(tui.CallDetailScreen("model", key))
+                await pilot.pause()
+                scr = app.screen_stack[-1]
+                labels = [str(w.render()).strip() for w in scr.query(".call-label")]
+                values = [str(w.render()).strip() for w in scr.query(".call-value")]
+                seen[key] = dict(zip(labels, values))["provider"]
+                app.pop_screen()
+                await pilot.pause()
+        self.assertEqual(seen["r1"], "Built-in",
+                         "the stored sentinel was printed verbatim")
+        self.assertEqual(seen["r2"], "Volcano Ark")
+
     # 77. a long unbreakable value folds rather than clipping
     async def test_a_long_call_value_folds_instead_of_clipping(self):
         now = self._noon_ms()

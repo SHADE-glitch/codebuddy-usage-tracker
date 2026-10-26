@@ -417,6 +417,10 @@ def _call_detail_rows(row):
         label = CALL_DETAIL_LABELS.get(col, col.replace("_", " "))
         if value is None:
             text = "-"
+        elif col == "provider":
+            # The stored sentinel (and a NULL route) has one display form, and
+            # every other screen already uses it: one route, one name.
+            text = db.provider_label(value)
         elif col in _DETAIL_TIME_COLS:
             text = local_time(value)
         elif col in _DETAIL_DURATION_COLS:
