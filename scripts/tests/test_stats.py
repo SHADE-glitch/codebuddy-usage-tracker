@@ -189,7 +189,8 @@ class StatsCliTest(unittest.TestCase):
         conn = db.open_db(empty)
         db.ensure_schema(conn)
         conn.close()
-        for cmd in ("mcp", "skills", "agents"):
+        for cmd in ("mcp", "skills", "agents", "plugins", "tools",
+                    "recent", "inventory", "stats"):
             rc, out, err = run("--db", empty, cmd)
             self.assertEqual(rc, 0, err)
             self.assertIn("(none)", out, f"cbut {cmd} printed a bare header")
@@ -290,8 +291,10 @@ class ModelReportTest(unittest.TestCase):
         self.assertNotIn("cache hit", head)
         self.assertNotIn("cache miss", head)
         self.assertNotIn("cache write", head)
-        # The identity and size columns are never dropped.
-        for kept in ("model", "provider", "resp", "in", "out"):
+        # The identity, size and money columns are never dropped — seven of
+        # them, which is what _MODEL_ALWAYS_KEEP says.
+        for kept in ("model", "provider", "resp", "in", "out", "total",
+                     "credits"):
             self.assertIn(kept, head)
 
     def test_models_says_so_when_no_responses_indexed(self):

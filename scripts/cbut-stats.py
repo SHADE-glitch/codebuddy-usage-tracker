@@ -145,9 +145,10 @@ def cmd_stats(conn, args):
     rows = _rows(db.q_tools(conn, 10),
                  ["tool_name", "calls", "completed", "failed", "avg_ms",
                   "last_used", "installed", "ever_used"])
-    print(table(["tool", "calls", "ok", "fail", "avg", "last used", "state"],
-                [[r[0], r[1], r[2], r[3], ms(r[4]), ts(r[5]),
-                  db.entity_state(r[6], r[7], r[1])] for r in rows]))
+    print(table_or(["tool", "calls", "ok", "fail", "avg", "last used", "state"],
+                   [[r[0], r[1], r[2], r[3], ms(r[4]), ts(r[5]),
+                     db.entity_state(r[6], r[7], r[1])] for r in rows],
+                   empty="  (none)"))
     print()
 
     print("Skills")
@@ -170,9 +171,10 @@ def cmd_stats(conn, args):
     rows = _rows(db.q_plugins(conn),
                  ["plugin", "uses", "skills", "agents", "commands",
                   "installed", "ever_used"])
-    print(table(["plugin", "uses", "skills", "agents", "cmds", "state"],
-                [[r[0], r[1], r[2], r[3], r[4],
-                  db.entity_state(r[5], r[6], r[1])] for r in rows]))
+    print(table_or(["plugin", "uses", "skills", "agents", "cmds", "state"],
+                   [[r[0], r[1], r[2], r[3], r[4],
+                     db.entity_state(r[5], r[6], r[1])] for r in rows],
+                   empty="  (none)"))
     print()
 
     print("MCP")
@@ -190,10 +192,11 @@ def cmd_tools(conn, args):
     rows = _rows(db.q_tools(conn, args.limit),
                  ["tool_name", "calls", "completed", "failed", "pending",
                   "avg_ms", "last_used", "projects", "installed", "ever_used"])
-    print(table(["tool", "calls", "ok", "fail", "pend", "avg", "last used",
-                 "proj", "state"],
-                [[r[0], r[1], r[2], r[3], r[4], ms(r[5]), ts(r[6]), r[7],
-                  db.entity_state(r[8], r[9], r[1])] for r in rows]))
+    print(table_or(["tool", "calls", "ok", "fail", "pend", "avg", "last used",
+                    "proj", "state"],
+                   [[r[0], r[1], r[2], r[3], r[4], ms(r[5]), ts(r[6]), r[7],
+                     db.entity_state(r[8], r[9], r[1])] for r in rows],
+                   empty="  (none)"))
 
 
 def cmd_skills(conn, args):
@@ -246,7 +249,9 @@ _MODEL_ALWAYS_KEEP = 7
 def _fit_model_columns(width, headers, rows):
     """Reduce (headers, rows) to fit ``width`` by dropping the cache columns.
 
-    Never drops below the first five columns (model / provider / resp / in / out).
+    Never drops below the first seven — model / provider / resp / in / out /
+    total / credits, the identity, size and money columns. There are only three
+    droppable columns, so the floor is reached before the loop can go further.
     """
     headers = list(headers)
     rows = [list(r) for r in rows]
@@ -298,10 +303,11 @@ def cmd_plugins(conn, args):
     rows = _rows(db.q_plugins(conn),
                  ["plugin", "uses", "skills", "agents", "commands", "last_used",
                   "installed", "ever_used"])
-    print(table(["plugin", "uses", "skills", "agents", "cmds", "last used",
-                 "state"],
-                [[r[0], r[1], r[2], r[3], r[4], ts(r[5]),
-                  db.entity_state(r[6], r[7], r[1])] for r in rows]))
+    print(table_or(["plugin", "uses", "skills", "agents", "cmds", "last used",
+                    "state"],
+                   [[r[0], r[1], r[2], r[3], r[4], ts(r[5]),
+                     db.entity_state(r[6], r[7], r[1])] for r in rows],
+                   empty="  (none)"))
 
 
 def cmd_show(conn, args):
@@ -349,15 +355,17 @@ def cmd_sessions(conn, args):
 def cmd_recent(conn, args):
     rows = _rows(db.q_recent(conn, args.limit),
                  ["ts", "tool_name", "category", "status", "duration_ms", "project"])
-    print(table(["when", "tool", "category", "status", "dur", "project"],
-                [[ts(r[0]), r[1], r[2], r[3] or "-", ms(r[4]), r[5] or "-"] for r in rows]))
+    print(table_or(["when", "tool", "category", "status", "dur", "project"],
+                   [[ts(r[0]), r[1], r[2], r[3] or "-", ms(r[4]), r[5] or "-"]
+                    for r in rows], empty="  (none)"))
 
 
 def cmd_inventory(conn, args):
     rows = _rows(db.q_inventory(conn, args.kind),
                  ["kind", "name", "owner_plugin", "source", "version"])
-    print(table(["kind", "name", "owner", "source", "version"],
-                [[r[0], r[1], r[2] or "-", r[3], r[4] or "-"] for r in rows]))
+    print(table_or(["kind", "name", "owner", "source", "version"],
+                   [[r[0], r[1], r[2] or "-", r[3], r[4] or "-"] for r in rows],
+                   empty="  (none)"))
 
 
 def cmd_export(conn, args):
