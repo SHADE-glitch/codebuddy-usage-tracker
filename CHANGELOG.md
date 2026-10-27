@@ -1806,3 +1806,27 @@ Cost     Nine helpers where there was one function, so following a number now me
          reached only through `run()`. The split buys reading, not testing — the missing trace
          test is still missing, and is now easier to write.
 Commit   f1f5be9
+
+### D-079 · 2026-10-27 · chore
+Symptom  `TrackerApp` was 1356 lines and 64 methods in one class body: the eight-tab layout, the
+         filter/sort state machine, the dashboard panels, the Usage page, the sync worker and the
+         range picker all shared one namespace, so every `self.` reached everything and nothing
+         marked where one concern ended. `compose` alone was 122 lines of nested `with` blocks.
+Change   Five mixins carry the per-tab work — `FilterSortMixin`, `DashboardMixin`,
+         `UsagePageMixin`, `SyncMixin`, `RangeMixin` — and `TrackerApp` keeps the class
+         attributes, `__init__`, `compose`, the refresh orchestration and the tab cycling. `compose`
+         yields from `_compose_dashboard` and `_compose_usage`, so the layout reads as an outline.
+         Methods were moved by line range, not retyped: 63 of the 64 method bodies are byte-identical
+         by AST comparison, and `compose` is the one that changed on purpose.
+Evidence L0 2026-10-27: 602 tests, OK (`test_tui.py`: 140). `TrackerApp` 1356 → 676 lines, 64 →
+         23 methods; the five mixins hold the other 43. Every method is still reachable on the class
+         (`hasattr` over all 64 names) and Textual dispatches handlers by walking the MRO
+         (`message_pump._get_dispatch_methods`), which is why `on_input_changed`, `on_button_pressed` and
+         `on_select_changed` still fire from inside a mixin.
+Cost     The split marks intent; it does not enforce it. `self.` is still one namespace, so a method
+         can be called across mixins and nothing fails if one lands in the wrong group — the grouping
+         is a reading aid, not a boundary. A handler that stopped being dispatched would fail at
+         mount rather than at import, so the 140 TUI tests are the guard, not the language. `__init__`
+         is still 68 lines: it is state initialisation with its reasons, and cutting it would move
+         the comments away from the fields they explain.
+Commit   1c23751
