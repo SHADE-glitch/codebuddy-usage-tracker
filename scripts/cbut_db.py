@@ -429,6 +429,125 @@ _MCP_NAMES_CTE = (
     "  MAX(ever_used) AS ever_used"
     " FROM pairs GROUP BY server, tool)")
 
+# --- one aggregate text per entity kind ------------------------------------
+#
+# The export view and the ``q_*`` query ask the same question — "for every name,
+# its counts" — so they are one text, not two. Exactly two things differ, and
+# both are spliced in by the caller:
+#
+#   * a view cannot be parameterized, so the time window goes into the JOIN's
+#     ON clause for the query and stays empty for the view;
+#   * a query orders its rows for a screen; the view leaves the order to
+#     whoever selects from it (``cbut export`` dumps the rows as they come).
+#
+# They used to be two copies. The copies agreed on the day they were written and
+# nothing checked that they still did: changing one aggregate expression
+# (``completed``, ``avg_ms``, the pending rule) left the other answering the old
+# question, and the only thing ever compared was the two flags.
+#
+# Shape per kind: (CTE, SELECT … FROM … JOIN …, GROUP BY, ORDER BY).
+_AGGREGATES = {
+    "tool": (
+        _TOOL_NAMES_CTE,
+        "SELECT n.name AS tool_name,"
+        " COUNT(c.call_id) AS calls,"
+        " SUM(CASE WHEN c.status = 'completed' THEN 1 ELSE 0 END) AS completed,"
+        " SUM(CASE WHEN c.status = 'incomplete' THEN 1 ELSE 0 END) AS failed,"
+        " SUM(CASE WHEN c.call_id IS NOT NULL AND c.status IS NULL"
+        "          THEN 1 ELSE 0 END) AS pending,"
+        " CAST(AVG(c.duration_ms) AS INTEGER) AS avg_ms,"
+        " MAX(c.ts) AS last_used,"
+        " MIN(c.ts) AS first_used,"
+        " COUNT(DISTINCT c.project) AS projects,"
+        " COUNT(DISTINCT c.session_id) AS sessions,"
+        " MAX(n.installed) AS installed,"
+        " MAX(n.ever_used) AS ever_used"
+        " FROM names n LEFT JOIN tool_calls c ON c.tool_name = n.name",
+        "GROUP BY n.name",
+        "ORDER BY calls DESC, n.name",
+    ),
+    "skill": (
+        _SKILL_NAMES_CTE,
+        "SELECT n.name AS skill,"
+        " COUNT(s.call_id) AS calls,"
+        " SUM(CASE WHEN s.status = 'completed' THEN 1 ELSE 0 END) AS completed,"
+        " MAX(s.ts) AS last_used,"
+        " MIN(s.ts) AS first_used,"
+        " COUNT(DISTINCT s.project) AS projects,"
+        " COUNT(DISTINCT s.session_id) AS sessions,"
+        " MAX(n.installed) AS installed,"
+        " MAX(n.ever_used) AS ever_used"
+        " FROM names n LEFT JOIN skill_usage s ON s.skill = n.name",
+        "GROUP BY n.name",
+        "ORDER BY calls DESC, n.name",
+    ),
+    "agent": (
+        _AGENT_NAMES_CTE,
+        "SELECT n.name AS agent_type,"
+        " COUNT(a.call_id) AS calls,"
+        " MAX(a.ts) AS last_used,"
+        " MIN(a.ts) AS first_used,"
+        " COUNT(DISTINCT a.project) AS projects,"
+        " COUNT(DISTINCT a.session_id) AS sessions,"
+        " MAX(n.installed) AS installed,"
+        " MAX(n.ever_used) AS ever_used"
+        " FROM names n LEFT JOIN agent_usage a ON a.agent_type = n.name",
+        "GROUP BY n.name",
+        "ORDER BY calls DESC, n.name",
+    ),
+    "mcp": (
+        _MCP_NAMES_CTE,
+        "SELECT p.server,"
+        " p.tool,"
+        " COUNT(m.call_id) AS calls,"
+        " SUM(CASE WHEN m.status = 'completed' THEN 1 ELSE 0 END) AS completed,"
+        " MAX(m.ts) AS last_used,"
+        " MIN(m.ts) AS first_used,"
+        " COUNT(DISTINCT m.project) AS projects,"
+        " COUNT(DISTINCT m.session_id) AS sessions,"
+        " MAX(p.installed) AS installed,"
+        " MAX(p.ever_used) AS ever_used"
+        " FROM names p"
+        " LEFT JOIN mcp_usage m ON m.server = p.server AND m.tool = p.tool",
+        "GROUP BY p.server, p.tool",
+        "ORDER BY calls DESC, p.server, p.tool",
+    ),
+    "plugin": (
+        _PLUGIN_NAMES_CTE,
+        "SELECT n.name AS plugin,"
+        " COUNT(u.id) AS uses,"
+        " MAX(u.ts) AS last_used,"
+        "  (SELECT COUNT(*) FROM inventory x"
+        "     WHERE x.owner_plugin = n.name AND x.kind = 'skill')   AS skills,"
+        "  (SELECT COUNT(*) FROM inventory x"
+        "     WHERE x.owner_plugin = n.name AND x.kind = 'agent')   AS agents,"
+        "  (SELECT COUNT(*) FROM inventory x"
+        "     WHERE x.owner_plugin = n.name AND x.kind = 'command') AS commands,"
+        " MAX(n.installed) AS installed,"
+        " MAX(n.ever_used) AS ever_used"
+        " FROM names n LEFT JOIN plugin_usage u ON u.plugin = n.name",
+        "GROUP BY n.name",
+        "ORDER BY uses DESC, n.name",
+    ),
+}
+
+# (view name, aggregate kind) — the order the views are created in.
+_VIEWS = (
+    ("v_tools", "tool"),
+    ("v_skills", "skill"),
+    ("v_agents", "agent"),
+    ("v_mcp", "mcp"),
+    ("v_plugins", "plugin"),
+)
+
+
+def _entity_aggregate(kind: str, on_time: str = "", order: bool = False) -> str:
+    """The aggregate for one kind; ``on_time`` lands in the JOIN's ON clause."""
+    cte, body, group, ordering = _AGGREGATES[kind]
+    sql = f"{cte} {body}{on_time} {group}"
+    return f"{sql} {ordering}" if order else sql
+
+
 # The one label both front ends render for an entity row. Kept here rather than
 # in either of them because the column header is a per-surface decision but the
 # *meaning* is not: "removed" has to mean the same thing in the TUI, in
@@ -463,92 +582,11 @@ def entity_state(installed, ever_used, calls=None) -> str:
         calls = ever_used
     return ENTITY_STATE_USED if calls else ENTITY_STATE_INSTALLED
 
-VIEWS_SQL = f"""
-DROP VIEW IF EXISTS v_tools;
-CREATE VIEW v_tools AS
-{_TOOL_NAMES_CTE}
-SELECT n.name AS tool_name,
-       COUNT(c.call_id)                                      AS calls,
-       SUM(CASE WHEN c.status = 'completed' THEN 1 ELSE 0 END) AS completed,
-       SUM(CASE WHEN c.status = 'incomplete' THEN 1 ELSE 0 END) AS failed,
-       SUM(CASE WHEN c.call_id IS NOT NULL AND c.status IS NULL THEN 1 ELSE 0 END) AS pending,
-       CAST(AVG(c.duration_ms) AS INTEGER)                   AS avg_ms,
-       MAX(c.ts)                                             AS last_used,
-       MIN(c.ts)                                             AS first_used,
-       COUNT(DISTINCT c.project)                             AS projects,
-       COUNT(DISTINCT c.session_id)                          AS sessions,
-       MAX(n.installed)                                      AS installed,
-       MAX(n.ever_used)                                      AS ever_used
-FROM names n
-LEFT JOIN tool_calls c ON c.tool_name = n.name
-GROUP BY n.name;
-
-DROP VIEW IF EXISTS v_skills;
-CREATE VIEW v_skills AS
-{_SKILL_NAMES_CTE}
-SELECT n.name AS skill,
-       COUNT(s.call_id)                                      AS calls,
-       SUM(CASE WHEN s.status = 'completed' THEN 1 ELSE 0 END) AS completed,
-       MAX(s.ts)                                             AS last_used,
-       MIN(s.ts)                                             AS first_used,
-       COUNT(DISTINCT s.project)                             AS projects,
-       COUNT(DISTINCT s.session_id)                          AS sessions,
-       MAX(n.installed)                                      AS installed,
-       MAX(n.ever_used)                                      AS ever_used
-FROM names n
-LEFT JOIN skill_usage s ON s.skill = n.name
-GROUP BY n.name;
-
-DROP VIEW IF EXISTS v_agents;
-CREATE VIEW v_agents AS
-{_AGENT_NAMES_CTE}
-SELECT n.name AS agent_type,
-       COUNT(a.call_id)                                      AS calls,
-       MAX(a.ts)                                             AS last_used,
-       MIN(a.ts)                                             AS first_used,
-       COUNT(DISTINCT a.project)                             AS projects,
-       COUNT(DISTINCT a.session_id)                          AS sessions,
-       MAX(n.installed)                                      AS installed,
-       MAX(n.ever_used)                                      AS ever_used
-FROM names n
-LEFT JOIN agent_usage a ON a.agent_type = n.name
-GROUP BY n.name;
-
-DROP VIEW IF EXISTS v_mcp;
-CREATE VIEW v_mcp AS
-{_MCP_NAMES_CTE}
-SELECT p.server,
-       p.tool,
-       COUNT(m.call_id)                                      AS calls,
-       SUM(CASE WHEN m.status = 'completed' THEN 1 ELSE 0 END) AS completed,
-       MAX(m.ts)                                             AS last_used,
-       MIN(m.ts)                                             AS first_used,
-       COUNT(DISTINCT m.project)                             AS projects,
-       COUNT(DISTINCT m.session_id)                          AS sessions,
-       MAX(p.installed)                                      AS installed,
-       MAX(p.ever_used)                                      AS ever_used
-FROM names p
-LEFT JOIN mcp_usage m ON m.server = p.server AND m.tool = p.tool
-GROUP BY p.server, p.tool;
-
-DROP VIEW IF EXISTS v_plugins;
-CREATE VIEW v_plugins AS
-{_PLUGIN_NAMES_CTE}
-SELECT n.name AS plugin,
-       COUNT(u.id)                                           AS uses,
-       MAX(u.ts)                                             AS last_used,
-       (SELECT COUNT(*) FROM inventory x
-          WHERE x.owner_plugin = n.name AND x.kind = 'skill')   AS skills,
-       (SELECT COUNT(*) FROM inventory x
-          WHERE x.owner_plugin = n.name AND x.kind = 'agent')   AS agents,
-       (SELECT COUNT(*) FROM inventory x
-          WHERE x.owner_plugin = n.name AND x.kind = 'command') AS commands,
-       MAX(n.installed)                                      AS installed,
-       MAX(n.ever_used)                                      AS ever_used
-FROM names n
-LEFT JOIN plugin_usage u ON u.plugin = n.name
-GROUP BY n.name;
-"""
+VIEWS_SQL = "\n\n".join(
+    f"DROP VIEW IF EXISTS {view};\nCREATE VIEW {view} AS\n"
+    f"{_entity_aggregate(kind)};"
+    for view, kind in _VIEWS
+)
 
 SCHEMA_SQL = TABLES_SQL + VIEWS_SQL
 
@@ -1070,10 +1108,10 @@ def q_unparsed(conn: sqlite3.Connection):
 
 # --- shared queries (used by both the CLI and the TUI) ---------------------
 #
-# NOTE: the aggregate SQL below intentionally duplicates VIEWS_SQL. The views
-# remain the export/back-compat path (`cbut export`, ViewGroupByTest); these
-# ``q_*`` functions aggregate the base tables directly so they can take an
-# optional time window (SQLite views cannot be parameterized).
+# These aggregate the base tables rather than reading the ``v_*`` views, because a
+# view cannot take a time window and every panel is windowed. The SQL is not a
+# second copy: ``_entity_aggregate`` above builds one text for both, so the view
+# and the query cannot answer different questions.
 
 
 def _on_time(conds) -> tuple[str, list]:
@@ -1090,19 +1128,7 @@ def _on_time(conds) -> tuple[str, list]:
 
 def q_tools(conn, limit=None, start_ts=None, end_ts=None):
     on_time, params = _on_time(_time_conds(start_ts, end_ts, col="c.ts"))
-    sql = (f"{_TOOL_NAMES_CTE}"
-           " SELECT n.name AS tool_name, COUNT(c.call_id) AS calls,"
-           " SUM(CASE WHEN c.status='completed' THEN 1 ELSE 0 END) AS completed,"
-           " SUM(CASE WHEN c.status='incomplete' THEN 1 ELSE 0 END) AS failed,"
-           " SUM(CASE WHEN c.call_id IS NOT NULL AND c.status IS NULL"
-           "          THEN 1 ELSE 0 END) AS pending,"
-           " CAST(AVG(c.duration_ms) AS INTEGER) AS avg_ms,"
-           " MAX(c.ts) AS last_used, MIN(c.ts) AS first_used,"
-           " COUNT(DISTINCT c.project) AS projects,"
-           " COUNT(DISTINCT c.session_id) AS sessions,"
-           " MAX(n.installed) AS installed, MAX(n.ever_used) AS ever_used"
-           " FROM names n LEFT JOIN tool_calls c ON c.tool_name = n.name"
-           f"{on_time} GROUP BY n.name ORDER BY calls DESC, n.name")
+    sql = _entity_aggregate("tool", on_time, order=True)
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, params).fetchall()
@@ -1112,15 +1138,7 @@ def q_skills(conn, limit=None, start_ts=None, end_ts=None):
     """Skills keyed by NAME only — a skill name that ships under several
     plugins is merged into one row (no ``plugin`` column)."""
     on_time, params = _on_time(_time_conds(start_ts, end_ts, col="s.ts"))
-    sql = (f"{_SKILL_NAMES_CTE}"
-           " SELECT n.name AS skill, COUNT(s.call_id) AS calls,"
-           " SUM(CASE WHEN s.status='completed' THEN 1 ELSE 0 END) AS completed,"
-           " MAX(s.ts) AS last_used, MIN(s.ts) AS first_used,"
-           " COUNT(DISTINCT s.project) AS projects,"
-           " COUNT(DISTINCT s.session_id) AS sessions,"
-           " MAX(n.installed) AS installed, MAX(n.ever_used) AS ever_used"
-           " FROM names n LEFT JOIN skill_usage s ON s.skill = n.name"
-           f"{on_time} GROUP BY n.name ORDER BY calls DESC, n.name")
+    sql = _entity_aggregate("skill", on_time, order=True)
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, params).fetchall()
@@ -1134,14 +1152,7 @@ def q_agents(conn, limit=None, start_ts=None, end_ts=None):
     ``active`` (or absent for an unused installed agent) and carries no signal.
     """
     on_time, params = _on_time(_time_conds(start_ts, end_ts, col="a.ts"))
-    sql = (f"{_AGENT_NAMES_CTE}"
-           " SELECT n.name AS agent_type, COUNT(a.call_id) AS calls,"
-           " MAX(a.ts) AS last_used, MIN(a.ts) AS first_used,"
-           " COUNT(DISTINCT a.project) AS projects,"
-           " COUNT(DISTINCT a.session_id) AS sessions,"
-           " MAX(n.installed) AS installed, MAX(n.ever_used) AS ever_used"
-           " FROM names n LEFT JOIN agent_usage a ON a.agent_type = n.name"
-           f"{on_time} GROUP BY n.name ORDER BY calls DESC, n.name")
+    sql = _entity_aggregate("agent", on_time, order=True)
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, params).fetchall()
@@ -1149,17 +1160,7 @@ def q_agents(conn, limit=None, start_ts=None, end_ts=None):
 
 def q_mcp(conn, limit=None, start_ts=None, end_ts=None):
     on_time, params = _on_time(_time_conds(start_ts, end_ts, col="m.ts"))
-    sql = (f"{_MCP_NAMES_CTE}"
-           " SELECT p.server, p.tool, COUNT(m.call_id) AS calls,"
-           " SUM(CASE WHEN m.status='completed' THEN 1 ELSE 0 END) AS completed,"
-           " MAX(m.ts) AS last_used, MIN(m.ts) AS first_used,"
-           " COUNT(DISTINCT m.project) AS projects,"
-           " COUNT(DISTINCT m.session_id) AS sessions,"
-           " MAX(p.installed) AS installed, MAX(p.ever_used) AS ever_used"
-           " FROM names p"
-           " LEFT JOIN mcp_usage m ON m.server = p.server AND m.tool = p.tool"
-           f"{on_time} GROUP BY p.server, p.tool"
-           " ORDER BY calls DESC, p.server, p.tool")
+    sql = _entity_aggregate("mcp", on_time, order=True)
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, params).fetchall()
@@ -1178,19 +1179,7 @@ def q_plugins(conn, start_ts=None, end_ts=None):
     """
     on_time, params = _on_time(_time_conds(start_ts, end_ts, col="u.ts"))
     return conn.execute(
-        f"{_PLUGIN_NAMES_CTE}"
-        " SELECT n.name AS plugin,"
-        " COUNT(u.id) AS uses, MAX(u.ts) AS last_used,"
-        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = n.name AND x.kind = 'skill')  AS skills,"
-        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = n.name AND x.kind = 'agent')  AS agents,"
-        "  (SELECT COUNT(*) FROM inventory x WHERE x.owner_plugin = n.name AND x.kind = 'command') AS commands,"
-        " MAX(n.installed) AS installed, MAX(n.ever_used) AS ever_used"
-        " FROM names n"
-        " LEFT JOIN plugin_usage u ON u.plugin = n.name"
-        f"{on_time}"
-        " GROUP BY n.name ORDER BY uses DESC, n.name",
-        params,
-    ).fetchall()
+        _entity_aggregate("plugin", on_time, order=True), params).fetchall()
 
 
 def q_sessions(conn, limit=None, start_ts=None, end_ts=None):

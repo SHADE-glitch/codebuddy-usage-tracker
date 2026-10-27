@@ -96,35 +96,38 @@ in; a tool name that no table can render is rejected as `invalid_tool_name` rath
 
 ## 2. Store — `cbut_db.py`, schema half
 
-`SCHEMA_VERSION = 13` (`:25`); 12 tables and 5 views (`TABLES_SQL` `:155`, `VIEWS_SQL` `:466`).
-`ensure_schema` (`:983`) is additive and runs on every open; `migrate` (`:1013`) applies the
-per-step functions above it (`:745-980`), each of which returns whether it changed anything.
-`reset` (`:1032`) empties the derived tables for `--full` without touching `inventory` or `meta`.
+`SCHEMA_VERSION = 13` (`:25`); 12 tables and 5 views (`TABLES_SQL` `:155`, `VIEWS_SQL` `:585`).
+`ensure_schema` (`:1021`) is additive and runs on every open; `migrate` (`:1051`) applies the
+per-step functions above it (`:783-1018`), each of which returns whether it changed anything.
+`reset` (`:1070`) empties the derived tables for `--full` without touching `inventory` or `meta`.
+The five views are not written out by hand: `_entity_aggregate` (`:544`) holds each kind's
+aggregate once, and the same text backs the view and that kind's `q_*` function — the view leaves
+out only the time window (a view cannot be parameterized) and the `ORDER BY`.
 
 Two rules are worth knowing before reading a query:
 
 - **Name is the key, except Tokens.** `_names_cte` (`:394`) builds the installed ∪ ever-used union
-  per entity kind; `entity_state` (`:443`) turns `(installed, ever_used, calls)` into the `state`
+  per entity kind; `entity_state` (`:562`) turns `(installed, ever_used, calls)` into the `state`
   cell, and it takes the *windowed* call count so a row never reads `in use` beside a `0`.
-- **A snapshot is the way back.** `snapshot` (`:619`) copies the database beside itself before
+- **A snapshot is the way back.** `snapshot` (`:657`) copies the database beside itself before
   every destructive step (`--full`, pre-rebuild, `restore`, `vacuum`).
 
 ## 3. Query — `cbut_db.py`, query half
 
 The windowed queries take `(start_ts, end_ts)` in epoch milliseconds and filter with `_time_filter`
-(`:1808`). Windows are whole local calendar days: `window_bounds` (`:1751`) starts at local 00:00,
-and `CustomWindow` (`:1625`) carries an absolute span from the date picker, optionally with its end
+(`:1797`). Windows are whole local calendar days: `window_bounds` (`:1740`) starts at local 00:00,
+and `CustomWindow` (`:1614`) carries an absolute span from the date picker, optionally with its end
 pinned to `now`.
 
-The one expression worth naming is the display total. `_USAGE_TOTAL_EXPR` (`:1617`) is
+The one expression worth naming is the display total. `_USAGE_TOTAL_EXPR` (`:1606`) is
 `prompt + completion + cache hit`; because `prompt_tokens` already contains the cache hit, this is
-deliberately *not* the provider's total. `q_model_tokens` (`:1488`) returns both: `total_tokens`
+deliberately *not* the provider's total. `q_model_tokens` (`:1477`) returns both: `total_tokens`
 (the API total, provider-reported where present) and `usage_total_tokens` (the display figure). The
 Tokens tab reads the second; the model-response drill-down also carries the first, labelled
 `reported total`, which is why the two screens can quote different numbers for one model.
 
-`overview` (`:2062`) is the status bar's source; `q_usage_summary` (`:1816`) and `q_usage_kpi`
-(`:1847`) back the Dashboard and the Usage page.
+`overview` (`:2051`) is the status bar's source; `q_usage_summary` (`:1805`) and `q_usage_kpi`
+(`:1836`) back the Dashboard and the Usage page.
 
 ## 4. Present — `cbut-tui.py` and `cbut-stats.py`
 
@@ -164,10 +167,10 @@ instead of quietly editing this page.
 
 The Tokens tab, window `7d`, the row for one model:
 
-1. `_bounds_for("tab-tokens")` (`cbut-tui.py:2168`) → `window_bounds("7d", now)` (`cbut_db.py:1751`).
-2. `_fill_entity` (`cbut-tui.py:1818`) → `db.q_model_tokens(conn, start_ts, end_ts)` (`cbut_db.py:1488`).
+1. `_bounds_for("tab-tokens")` (`cbut-tui.py:2168`) → `window_bounds("7d", now)` (`cbut_db.py:1740`).
+2. `_fill_entity` (`cbut-tui.py:1818`) → `db.q_model_tokens(conn, start_ts, end_ts)` (`cbut_db.py:1477`).
 3. That query groups `model_responses` by `(model, provider)` and computes `usage_total_tokens`
-   with `_AGG_USAGE_TOTAL_EXPR` (`cbut_db.py:1622`).
+   with `_AGG_USAGE_TOTAL_EXPR` (`cbut_db.py:1611`).
 4. The rows come from `_record_model_response` (`cbut-sync.py:1099`) reading
    `providerData.rawUsage` out of a `message` record.
 5. `_token_row` (`cbut-tui.py:368`) formats the cells; `_fill_wide` (`cbut-tui.py:1123`) decides
@@ -183,7 +186,7 @@ expression (step 3). The one case that is neither: the context-token total comes
 |---|---|
 | A panel is empty that used to have rows | `cbut health` → `unparsed` reasons (`cbut-stats.py:388`); a new `type:` is a format change |
 | Rows exist but a count is `0` | the window (`_bounds_for`) before the query |
-| Two screens disagree | API total vs Usage Total (`cbut_db.py:1617`) — they are different measurements |
-| A model has two rows | `(model, provider)` keying (`cbut_db.py:1488`); one model served by two routes is two rows |
+| Two screens disagree | API total vs Usage Total (`cbut_db.py:1606`) — they are different measurements |
+| A model has two rows | `(model, provider)` keying (`cbut_db.py:1477`); one model served by two routes is two rows |
 | Totals doubled after a rebuild | `carried` sessions (`cbut-sync.py:1841`) — the path that must not re-add them |
 | Numbers stop moving | the sync worker only runs on launch and on `r` (`cbut-tui.py:2792`) |

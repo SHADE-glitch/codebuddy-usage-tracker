@@ -933,18 +933,93 @@ class EntityStateTest(unittest.TestCase):
         self.assertEqual(db.entity_state(quiet["installed"], quiet["ever_used"]),
                          db.ENTITY_STATE_INSTALLED)
 
-    # -- the flags are read, not looked up somewhere else ------------------
+    # -- the view and the query are one text; their output has to prove it ---
 
-    def test_the_export_views_agree_with_the_queries(self):
+    VIEW_OF_KIND = {
+        "tool": ("v_tools", db.q_tools),
+        "skill": ("v_skills", db.q_skills),
+        "agent": ("v_agents", db.q_agents),
+        "mcp": ("v_mcp", db.q_mcp),
+        "plugin": ("v_plugins", db.q_plugins),
+    }
+
+    def _seed_every_column(self):
+        """Rows that give every aggregate column a value of its own.
+
+        Each kind gets one name with three calls (completed, incomplete, and
+        one with no status at all — the pending rule), spread over two projects
+        and two sessions, plus a name that is installed and never called and a
+        name that was called and is no longer installed. Two calls of the same
+        shape would let a column agree by accident.
+        """
+        at = self.NOW
         self._installed("tool", "Read")
-        self._used("tool", "Read")
-        self._used("tool", "gone")
+        self.conn.executemany(
+            "INSERT INTO tool_calls(call_id, session_id, project, tool_name,"
+            " category, ts, duration_ms, status) VALUES(?,?,?,?,?,?,?,?)",
+            [("c1", "s1", "/p", "Read", "builtin", at - 3 * HOUR, 100, "completed"),
+             ("c2", "s2", "/q", "Read", "builtin", at - 2 * HOUR, 300, "incomplete"),
+             ("c3", "s1", "/p", "Read", "builtin", at - HOUR, None, None),
+             ("c4", "s3", "/r", "gone", "builtin", at, 50, "completed")])
+        self.conn.executemany(
+            "INSERT INTO skill_usage(call_id, skill, plugin, session_id, project,"
+            " ts, status, duration_ms) VALUES(?,?,?,?,?,?,?,?)",
+            [("k1", "alpha", "p1", "s1", "/p", at - 3 * HOUR, "completed", 10),
+             ("k2", "alpha", "p1", "s2", "/q", at - 2 * HOUR, "incomplete", 20),
+             ("k3", "gone", "p1", "s1", "/p", at, "completed", 30)])
+        self._installed("agent", "explore")
+        self.conn.executemany(
+            "INSERT INTO agent_usage(call_id, agent_type, kind, source, session_id,"
+            " project, ts, status, duration_ms)"
+            " VALUES(?,?,'active','tool',?,?,?,?,?)",
+            [("a1", "explore", "s1", "/p", at - 3 * HOUR, "completed", 10),
+             ("a2", "explore", "s2", "/q", at - 2 * HOUR, "incomplete", 20),
+             ("a3", "gone", "s1", "/p", at, "completed", 30)])
+        self._installed("mcp", "srv")
+        self.conn.executemany(
+            "INSERT INTO mcp_usage(call_id, server, tool, session_id, project, ts,"
+            " status, duration_ms) VALUES(?,?,?,?,?,?,?,?)",
+            [("m1", "srv", "query", "s1", "/p", at - 3 * HOUR, "completed", 10),
+             ("m2", "srv", "query", "s2", "/q", at - 2 * HOUR, "incomplete", 20),
+             ("m3", "srv", "other", "s1", "/p", at - HOUR, "completed", 30),
+             ("m4", "dead", "x", "s1", "/p", at, "completed", 40)])
+        self._installed("plugin", "p1")
+        self.conn.executemany(
+            "INSERT INTO plugin_usage(plugin, marketplace, kind, target, session_id,"
+            " project, ts) VALUES(?,'mkt',?,?,?,?,?)",
+            [("p1", "skill", "alpha", "s1", "/p", at - 3 * HOUR),
+             ("p1", "command", "run", "s2", "/q", at - 2 * HOUR),
+             ("gone", "skill", "x", "s1", "/p", at)])
+        self.conn.executemany(
+            "INSERT INTO inventory(kind, name, owner_plugin, source)"
+            " VALUES(?,?,'p1','plugin')", [("skill", "alpha"), ("command", "run")])
         self.conn.commit()
-        queried = {r["tool_name"]: (r["installed"], r["ever_used"])
-                   for r in db.q_tools(self.conn)}
-        exported = {r["tool_name"]: (r["installed"], r["ever_used"])
-                    for r in self.conn.execute("SELECT * FROM v_tools")}
-        self.assertEqual(exported, queried)
+
+    def test_every_view_answers_exactly_what_its_query_answers(self):
+        """The export view and the tab's query are one aggregate, not two.
+
+        They are built from one text (`_entity_aggregate`), so this compares
+        what each *produces*: same columns in the same order, same rows in the
+        same values. It cannot tell whether an expression is the right one —
+        that is the spec's job — only that the view did not go back to being a
+        second copy. Both sides used to be written out separately and only the
+        two flags were ever compared; every other column could drift silently.
+        """
+        self._seed_every_column()
+        for kind, (view, query) in self.VIEW_OF_KIND.items():
+            with self.subTest(kind=kind):
+                rows = query(self.conn)
+                self.assertTrue(rows, f"the fixture produced no {kind} rows")
+                view_cols = [c[1] for c in
+                             self.conn.execute(f"PRAGMA table_info({view})")]
+                self.assertEqual(view_cols, list(rows[0].keys()),
+                                 f"{view} and q_{kind} disagree on columns")
+                exported = sorted((tuple(r) for r in
+                                   self.conn.execute(f"SELECT * FROM {view}")),
+                                  key=repr)
+                queried = sorted((tuple(r) for r in rows), key=repr)
+                self.assertEqual(exported, queried,
+                                 f"{view} and q_{kind} disagree on rows")
 
     def test_every_entity_view_carries_the_two_flags(self):
         for view, key in (("v_tools", "tool_name"), ("v_skills", "skill"),
