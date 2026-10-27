@@ -1701,9 +1701,9 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
         try:
             return _run(conn, full=full, quiet=quiet)
         finally:
-            # The TUI calls this from a worker thread every 30 seconds, so an
-            # exception that skipped the close would leak a read-write
-            # connection on every failed poll rather than once per process.
+            # The TUI calls this from a worker thread (on launch, and on `r`), so
+            # an exception that skipped the close would leak a read-write
+            # connection per run rather than once per process.
             conn.close()
     finally:
         _release_sync_lock(lock_fd)

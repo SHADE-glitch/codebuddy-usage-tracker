@@ -18,10 +18,12 @@ A **passive** usage tracker for CodeBuddy Code: it parses the logs CodeBuddy alr
 builds a local SQLite index, then shows it in an eight-tab Textual TUI (plus a headless `cbut stats`
 CLI). Three layers, in dependency order:
 
-1. `scripts/cbut-sync.py` — the parser and indexer. Reads **only**
-   `~/.codebuddy/projects/**/*.jsonl`, read-only, and classifies tools/skills/agents/plugins/MCP
-   calls into `~/.local/share/codebuddy-usage-tracker/usage.db`. `~/.codebuddy/traces/` is **not
-   ingested** (see "Internal agents" below) — do not describe it as an input.
+1. `scripts/cbut-sync.py` — the parser and indexer. Reads `~/.codebuddy/projects/**/*.jsonl` and
+   `~/.codebuddy/traces/*/trace_*.{jsonl,json}`, read-only, and classifies
+   tools/skills/agents/plugins/MCP calls into `~/.local/share/codebuddy-usage-tracker/usage.db`.
+   Traces are read for **agent spans only**: the tool and generation spans beside them are
+   deliberately skipped because the transcripts already count those calls (see "Internal agents"
+   below).
 2. `scripts/cbut_db.py` — the shared data layer (schema, queries, calendar-day windows, snapshots).
    Imported by the TUI, the stats CLI and the tests.
 3. `scripts/cbut-tui.py` (Textual) and `scripts/cbut-stats.py` (headless CLI).
@@ -219,12 +221,13 @@ tool runs from a checkout, so the version only needs to move when a documented c
   wrong.
 - **MCP detection follows the real call shape**: `mcp__<server>__<tool>`, including calls wrapped
   by the deferred-tool mechanism (`DeferExecuteTool`). A sparse MCP tab is honest, not broken.
-- **Internal agents** (`autoModeClassifier`, `summaryGenerator`, …) live only in the OTel traces
-  under `~/.codebuddy/traces/`, which this tool does not read (see "What this is": traces are not
-  an input). Their counts are therefore **0 by construction**, not missing data — do not fabricate
-  them from transcripts, and do not describe trace ingestion as part of v1. Wiring traces in is a
-  design task: the tree holds both `.jsonl` and `.json` files and needs a session-linking decision
-  before it can be counted honestly.
+- **Internal agents** (`autoModeClassifier`, `summaryGenerator`, …) appear only as agent spans
+  in the OTel traces under `~/.codebuddy/traces/` — the one thing the transcripts never carry, and
+  the only reason traces are read at all. Their *token* counts are still **0 by construction**, not
+  missing data: the generation spans beside them are skipped on purpose (indexing them would double
+  every call the transcripts already count), so do not fabricate those numbers from transcripts
+  either. Counting their tokens is a design task, not a gap to paper over: it needs a way to tell a
+  runtime model call from an agent invocation, and a session link the stream does not carry.
 - **Never commit runtime state or working notes** — `~/.agents/standards/STANDARD.md` §4 and §2 hold the ignore
   list and the process-draft location; this repo adds `usage.db` and generated systemd units
   in user paths to the ignored set. Those are working documents, not artifacts: the repository

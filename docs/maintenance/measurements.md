@@ -306,7 +306,7 @@ time ./.venv/bin/python scripts/cbut-sync.py --db /tmp/reindex.db   # L1: throwa
 
 ≈ 500 transcripts (≈ half a GiB of `projects/` on disk) into a fresh ≈ 15 MiB database: **~7 s**, once.
 An incremental `cbut sync` with nothing new is dominated by the inventory scan and takes well under
-that; the TUI runs one every 30 s in a worker thread.
+that; the TUI runs one on launch and on `r`, in a worker thread.
 
 ## Growth, and what it implies
 

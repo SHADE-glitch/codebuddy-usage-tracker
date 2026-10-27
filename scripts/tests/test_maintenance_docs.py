@@ -258,5 +258,115 @@ class CiMatrixIsDocumentedAsItRuns(unittest.TestCase):
         self.assertNotIn(2, [hit[0] for hit in found])
 
 
+PIPELINE = REPO / "docs" / "maintenance" / "pipeline.md"
+
+# A citation is a backticked ``:123`` (the file comes from the enclosing section's
+# heading) or ``name.py:123``; a range is allowed. Requiring both the backticks and
+# the colon is what keeps prose such as "local 00:00" out of the scan.
+CITATION_RE = re.compile(r"`(?:(?P<file>[\w./-]+\.py):)?:(?P<start>\d+)(?:-(?P<end>\d+))?`")
+HEADING_FILE_RE = re.compile(r"`([\w./-]+\.py)`")
+# The symbol the sentence claims the cited line carries: the last backticked
+# identifier before the citation, with nothing but a comma or spaces in between.
+# A citation preceded by prose ("reasons (`x.py:388`)") makes no such claim.
+SYMBOL_RE = re.compile(r"`([A-Za-z_][\w.]*)(?:\([^`]*\))?`[,\s(]*$")
+
+
+class PipelineCitationsTest(unittest.TestCase):
+    """`pipeline.md` is a map of file:line pointers, so it rots when code moves.
+
+    A prose page about code is checked by nothing — that is how a document goes on
+    describing a function renamed three releases ago, and how `schema_version`
+    once became a number no code read. The checks here are mechanical: the cited
+    line must exist, must not be blank, and where the sentence names the symbol it
+    must carry that name. Nothing parses prose for meaning; every claim the page
+    makes in the form this test understands is checked.
+    """
+
+    def setUp(self):
+        self.text = PIPELINE.read_text(encoding="utf-8")
+
+    def sections(self):
+        """``(heading, body lines)`` per ``## `` section, in document order.
+
+        The preamble before the first heading is a section with an empty heading:
+        it can cite a file by name but cannot use the short form, and skipping it
+        would leave those citations unchecked.
+        """
+        out, head, body = [], "", []
+        for line in self.text.splitlines():
+            if line.startswith("## "):
+                out.append((head, body))
+                head, body = line, []
+            else:
+                body.append(line)
+        out.append((head, body))
+        return out
+
+    def citations(self):
+        """``(file, start, end, symbol, sentence)`` with the file resolved."""
+        out = []
+        for head, body in self.sections():
+            named = HEADING_FILE_RE.search(head)
+            default = named.group(1) if named else None
+            for line in body:
+                for match in CITATION_RE.finditer(line):
+                    symbol = SYMBOL_RE.search(line[:match.start()])
+                    out.append((
+                        match.group("file") or default,
+                        int(match.group("start")),
+                        int(match.group("end") or match.group("start")),
+                        symbol.group(1) if symbol else None,
+                        line.strip(),
+                    ))
+        return out
+
+    def path_of(self, name):
+        path = REPO / name
+        return path if path.is_file() else SCRIPTS / name
+
+    def test_every_citation_names_a_file(self):
+        """The short form is readable only because the heading names the file."""
+        bare = [cite for cite in self.citations() if cite[0] is None]
+        self.assertEqual(bare, [],
+                         f"citations in a section that names no file: {bare}")
+
+    def test_every_citation_lands_on_a_line(self):
+        for name, start, end, _symbol, sentence in self.citations():
+            if name is None:
+                continue          # reported by test_every_citation_names_a_file
+            path = self.path_of(name)
+            self.assertTrue(path.is_file(), f"{sentence}: {name} does not exist")
+            lines = path.read_text(encoding="utf-8").splitlines()
+            self.assertLessEqual(end, len(lines),
+                                 f"{sentence}: {name} has only {len(lines)} lines")
+            self.assertTrue(lines[start - 1].strip(),
+                            f"{sentence}: {name}:{start} is blank — the code moved "
+                            "and the page did not")
+
+    def test_a_citation_that_names_a_symbol_lands_on_it(self):
+        wrong = []
+        for name, start, end, symbol, sentence in self.citations():
+            if not symbol or name is None:
+                continue
+            lines = self.path_of(name).read_text(encoding="utf-8").splitlines()
+            leaf = symbol.split(".")[-1]
+            window = lines[start - 1:min(end, len(lines))]
+            if not any(leaf in line for line in window):
+                wrong.append(f"{name}:{start} should carry {leaf!r} — {sentence[:60]}")
+        self.assertEqual(wrong, [],
+                         "the page points at lines that no longer hold the symbol:\n"
+                         + "\n".join(wrong))
+
+    def test_the_scan_is_not_empty(self):
+        """Positive control: every check above passes over a page with no citations."""
+        cites = self.citations()
+        self.assertGreaterEqual(len(cites), 40,
+                                f"only {len(cites)} citations found — the scan broke")
+        named = [cite for cite in cites if cite[3]]
+        self.assertGreaterEqual(len(named), 20,
+                                f"only {len(named)} citations name a symbol — the "
+                                "symbol check is nearly blind")
+
+
 if __name__ == "__main__":
     unittest.main()

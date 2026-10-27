@@ -9,8 +9,9 @@ prints "done", and CI stays green.
 | [`codebuddy-format.md`](codebuddy-format.md) | CodeBuddy shipped a new version, or a panel shows nothing it used to show |
 | [`compatibility.md`](compatibility.md) | Choosing what to claim is supported, or a version string needs updating |
 | [`measurements.md`](measurements.md) | Judging a size or performance change, or comparing against the recorded baseline |
+| [`pipeline.md`](pipeline.md) | Tracing where a number on screen comes from, or adding a tab |
 
-Three standing checks cover this area — all part of `python3 -m unittest discover -s scripts/tests`:
+Four standing checks cover this area — all part of `python3 -m unittest discover -s scripts/tests`:
 
 - `test_format_registry.py` — the parser and the registry in `scripts/cbut-sync.py` agree, in both
   directions (nothing read unregistered, nothing registered unread, no inlined layout literal).
@@ -18,3 +19,5 @@ Three standing checks cover this area — all part of `python3 -m unittest disco
   `cbut format` output. Edit the registry, run `cbut format --write`.
 - `test_privacy.py` — nothing is read that could leave the machine, and no free-text value lands in
   any column of any table.
+- `test_maintenance_docs.py` (also) — every `file:line` citation in `pipeline.md` still points at a
+  line that carries the symbol it names, and the tab table there still matches `TAB_IDS`.

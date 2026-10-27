@@ -219,6 +219,36 @@ class TuiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(tc.tab_count, len(TrackerApp.TAB_IDS))
             self.assertEqual(TrackerApp.TAB_IDS[0], "tab-dashboard")
             self.assertEqual(tc.active, "tab-dashboard")   # Dashboard is initial
+            # The list itself, not just its length. A pane renamed, dropped or moved
+            # is a different interface, and the tab count alone never noticed.
+            self.assertEqual(TrackerApp.TAB_IDS, [
+                "tab-dashboard", "tab-tools", "tab-skills", "tab-agents",
+                "tab-plugins", "tab-mcp", "tab-tokens", "tab-usage"])
+            self.assertEqual([t.title for t in tui.ENTITY_TABS],
+                             ["Tools", "Skills", "Agents", "Plugins", "MCP", "Tokens"])
+
+    # 1b. the pipeline page carries the same tab table
+    def test_the_pipeline_page_lists_the_tabs_in_order(self):
+        """`docs/maintenance/pipeline.md` documents the panes; that is a claim.
+
+        The page is written for someone tracing a number, and its first use is
+        finding the pane that shows it. A table there that no longer matches
+        `TAB_IDS` sends them to a pane id that does not exist.
+        """
+        doc = (SCRIPTS.parent / "docs" / "maintenance" / "pipeline.md")
+        rows = [line for line in doc.read_text(encoding="utf-8").splitlines()
+                if re.match(r"\|\s*\d+\s*\|\s*`tab-", line)]
+        self.assertEqual(len(rows), 8, f"the tab table has {len(rows)} rows, not 8")
+        pairs = []
+        for line in rows:
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            pairs.append((cells[1].strip("`"), cells[2]))
+        self.assertEqual([pane for pane, _title in pairs],
+                         ["tab-dashboard"] + [t.pane for t in tui.ENTITY_TABS]
+                         + ["tab-usage"])
+        self.assertEqual([title for _pane, title in pairs],
+                         ["Dashboard"] + [t.title for t in tui.ENTITY_TABS]
+                         + ["Usage"])
 
     # 2. Tokens tab lists each model
     async def test_tokens_tab_lists_models(self):
