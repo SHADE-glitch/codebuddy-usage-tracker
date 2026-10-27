@@ -1778,3 +1778,31 @@ Cost     The SQL no longer reads as five formatted blocks: to see what a view do
          every citation below it in `cbut_db.py`: `docs/maintenance/pipeline.md` was re-pointed
          (+119 above the views, −11 below the queries), and its citation guard is what checks it.
 Commit   b14b38a
+
+### D-078 · 2026-10-27 · chore
+Symptom  `_handle_record` was 180 lines of if/elif with the SQL for five record types inline, and
+         `_run` was 209 lines running nine stages in one body. Both read top to bottom, and both
+         were unreadable in pieces: the pending rule sat forty lines inside a branch, and the
+         rebuild pre-pass sat between two loops that shared five local counters. Neither was wrong —
+         the cost was that reading one stage meant holding the whole function in your head.
+Change   `_handle_record` keeps the dispatch and hands each branch to a handler —
+         `_record_function_call`, `_record_function_result`, `_record_turn_metrics`,
+         `_record_message` — with `_touch_session` for the start/end stamp every record shares.
+         `_run` keeps the order and hands each stage to a helper: `_reset_if_full`,
+         `_source_files`, `_clear_stale_files`, `_index_files`, `_index_final_traces`,
+         `_restore_carried_sessions`, `_prune_orphans`, `_collect_stats`, `_report`.
+         The dispatch chain still names every claimed type as a literal, because
+         test_format_registry derives that set by walking the AST — the first version of this split
+         moved the three no-op types into a frozenset and the guard failed, which is the guard
+         working.
+Evidence L0 2026-10-27: 602 tests, OK. Differential against HEAD on a fixture carrying a transcript
+         and a trace, over four run shapes (fresh, incremental append, truncate-then-rebuild,
+         `--full`): the returned stats and every row of every table are identical; the only
+         difference is sync_state's path and mtime, which differ because the two runs read different
+         directories. Trace indexing has no test of its own — the differential is the only thing
+         that exercises that stage.
+Cost     Nine helpers where there was one function, so following a number now means opening the
+         stage that produced it. No new coverage: nothing calls a helper directly, they are still
+         reached only through `run()`. The split buys reading, not testing — the missing trace
+         test is still missing, and is now easier to write.
+Commit   f1f5be9
