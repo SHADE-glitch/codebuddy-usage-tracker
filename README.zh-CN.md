@@ -251,7 +251,7 @@ name_cap = 28        # 单元格最宽渲染多少字符，超出就截断
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 591 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 592 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -267,7 +267,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 591 tests ... OK
   完结文件用 `trace.sessionId` 补上流式拿不到的会话、重读幂等、
   `_run` 集成 |
 | `test_tui.py` | 138 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、每 tab 独立的日期选择器（日历翻月/跨年、当前目标卡片、能整行放下的预设与快选快捷项、输入框读写的 24 小时时钟、小时网格、微调步进选择器、切 tab 后顶栏跨度仍完整）、两级下钻（窗口内汇总头、Enter 打开单条全字段、长值折行不裁剪、插件路径）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、单元格上限与它背后的设置项、状态栏诚实性、默认只显示用过的（每 tab `a` 开关）、`/` 名称过滤（Enter 应用、Esc 取消）、Usage 请求日志只保留最新 100 行且没有翻页键、同名模型的提供方后缀、Dashboard 的 Projects 项目板，以及路由未上报时显示 `-` 的 credits 单元格 |
-| `test_cross_repo_golden.py` | 16 | 跨仓 golden fixture：一组固定输入（NULL / 部分上报 / cache 列缺失的 token 行、不同 model 拼写、本地午夜与跨小时边界、2026 年两个美国夏令时切换日）经过本仓自己的 Usage Total 表达式、窗口聚合、模型 rollup、日期时间输入与自然日窗口，钉在与 ocut、qcut 共享的权威文件上 |
+| `test_cross_repo_golden.py` | 17 | 跨仓 golden fixture：一组固定输入（NULL / 部分上报 / cache 列缺失的 token 行、不同 model 拼写、本地午夜与跨小时边界、2026 年两个美国夏令时切换日）经过本仓自己的 Usage Total 表达式、窗口聚合、模型 rollup、日期时间输入与自然日窗口，钉在与 ocut、qcut 共享的权威文件上 |
 | `test_usage.py` | 121 | 自然日窗口（今天 / 2 / 3 / 7 / 14 / 30 天 / 全部）与自定义范围的标签、日期时间的宽松输入归一化（24 小时显示、输入仍兼容 12 小时）、token 汇总与提供方分组、Dashboard 查询、下钻查询（窗口内按实体汇总、插件使用计数、单条调用的整行）、结构版本门禁、索引值不值得留、无界面会话列表（窗口、最新在前、limit） |
 | `test_indexes.py` | 4 | 前两次切索引只能靠一次手写读数的那条规则：报告面真的会跑的每条语句都被抓下来用 `EXPLAIN QUERY PLAN` 过一遍，声明了却没有任何计划点名的索引一律失败——外加 v9 那次真正用上的结构规则：键是另一个已声明索引键的严格前缀 |
 | `test_stats.py` | 34 | 无界面报告 CLI（`cbut stats`）：总览与各分类表、按模型的 token 报告及窄终端下被丢弃的 cache 列、`show`/`recent`/`inventory`/`export`、`health`（结构版本、设置行、未识别计数）、`backup`→`restore` 往返、`vacuum`（先快照、回收字节数、行数不变）、生成的 `format` 表面，以及空数据时的 `(none)` 提示 |

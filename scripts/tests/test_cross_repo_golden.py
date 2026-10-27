@@ -57,7 +57,7 @@ GOLDEN_PATH = HERE / "fixtures" / "cross_repo_golden.json"
 #: edited on its own fails here, with the digest it actually has in the message; the
 #: update procedure (edit the canonical file, re-copy, update this constant in all three
 #: repos) is written into the golden file itself.
-CANONICAL_SHA256 = "56a6de9eb4cef58426b0835fe7178e9f2a5d5ba7d68d07d965df58330a58db2f"
+CANONICAL_SHA256 = "375e115a63b29fcda567ad5d4a3ec6a02adeb940bbe796a8a1beb9db219eb975"
 
 REPO = "cbut"
 DST_ZONE = "America/New_York"
@@ -157,6 +157,16 @@ class GoldenCopyTest(unittest.TestCase):
             "Edit the canonical copy in all-usage-trackers, re-copy it here, and update "
             "CANONICAL_SHA256 in this file (and in the other two repos' copies of this "
             "test) in the same change.")
+
+    def test_the_family_preset_table_is_shared(self):
+        """USAGE_RANGES is the one table all four repositories copy verbatim.
+
+        A preset added here and not on the board (or the reverse) makes "7d" mean
+        two different things, and neither repository fails on its own. The table
+        lives in the fixture so the four copies cannot drift quietly.
+        """
+        golden = load_golden()
+        self.assertEqual(db.USAGE_RANGES, golden["family_contract"]["ranges"])
 
 
 class UsageTotalTest(unittest.TestCase):
