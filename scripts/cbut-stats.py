@@ -112,6 +112,141 @@ def _rows(cur, keys):
     return [[r[k] for k in keys] for r in cur]
 
 
+# --- entity table spec ------------------------------------------------------
+#
+# One definition per entity kind, shared by the overview and the per-kind
+# report. Until this existed the same five tables were written out twice by
+# hand and had already drifted: the overview's MCP table had no `ok` column, its
+# tool table no `pend`, its plugin table no `last used`. None of that was a
+# decision — two hand-written lists are compared by nobody. A difference now has
+# to be named in OVERVIEW_OMITS to exist at all, and `test_stats.py` reads the
+# printed header lines of both commands to prove it.
+#
+# The spec is also the fetch list: `_entity_rows` reads exactly these keys, so a
+# column naming a key its query does not return fails a test instead of
+# printing a blank cell.
+#
+# NUM prints the integer unchanged. The TUI groups it ("1,204"); the CLI has
+# always printed it bare, and that is a front-end choice, not a drift.
+TEXT, NUM, MS, TS, STATE = "text", "num", "ms", "ts", "state"
+
+ENTITY_COLUMNS = {
+    "tool": (
+        ("tool", "tool_name", TEXT), ("calls", "calls", NUM),
+        ("ok", "completed", NUM), ("fail", "failed", NUM),
+        ("pend", "pending", NUM), ("avg", "avg_ms", MS),
+        ("last used", "last_used", TS), ("proj", "projects", NUM),
+        ("state", None, STATE),
+    ),
+    "skill": (
+        ("skill", "skill", TEXT), ("calls", "calls", NUM),
+        ("ok", "completed", NUM), ("last used", "last_used", TS),
+        ("proj", "projects", NUM), ("state", None, STATE),
+    ),
+    "agent": (
+        ("agent", "agent_type", TEXT), ("calls", "calls", NUM),
+        ("last used", "last_used", TS), ("proj", "projects", NUM),
+        ("state", None, STATE),
+    ),
+    "plugin": (
+        ("plugin", "plugin", TEXT), ("uses", "uses", NUM),
+        ("skills", "skills", NUM), ("agents", "agents", NUM),
+        ("cmds", "commands", NUM), ("last used", "last_used", TS),
+        ("state", None, STATE),
+    ),
+    "mcp": (
+        ("server", "server", TEXT), ("tool", "tool", TEXT),
+        ("calls", "calls", NUM), ("ok", "completed", NUM),
+        ("last used", "last_used", TS), ("state", None, STATE),
+    ),
+}
+
+# kind -> (query on `db`, the count `state` labels the row by, empty notice).
+# The two-space notices are what `tools` and `plugins` have always printed; they
+# are kept as data so this change alters no byte. Normalising them is a
+# separate, visible edit.
+ENTITY_KINDS = {
+    "tool": ("q_tools", "calls", "  (none)"),
+    "skill": ("q_skills", "calls", "(none)"),
+    "agent": ("q_agents", "calls", "(none)"),
+    "plugin": ("q_plugins", "uses", "  (none)"),
+    "mcp": ("q_mcp", "calls", "(none)"),
+}
+
+# Columns the overview leaves out, per kind. The set is the status quo, not an
+# endorsement: `pend` (a call that never finished) and `ok` on MCP are the two a
+# reader is most likely to want back, and each is one line to restore here.
+OVERVIEW_OMITS = {
+    "tool": {"pend", "proj"},
+    "skill": {"ok", "proj"},
+    "agent": {"proj"},
+    "plugin": {"last used"},
+    "mcp": {"ok"},
+}
+
+# The overview is a summary: one limit for every section, and it does not read
+# `top_n` (that setting is the Dashboard's, per the README). Before this, tools
+# were capped at 10 while the other four sections printed every row they had.
+OVERVIEW_LIMIT = 10
+
+OVERVIEW_SECTIONS = (
+    ("tool", "Top tools", None),
+    ("skill", "Skills", None),
+    ("agent", "Agents", None),
+    ("plugin", "Plugins (installed ∪ used, by attributed usage)", None),
+    # The one section with its own empty notice; kept verbatim.
+    ("mcp", "MCP", "  (no MCP tool invocations recorded)"),
+)
+
+
+def _entity_rows(kind, conn, limit=None):
+    """Rows of one entity kind as ``{column: value}``, capped at ``limit``.
+
+    ``q_plugins`` aggregates one row per plugin and takes no LIMIT, so that
+    kind's cap is applied here; the others pass it to the query.
+    """
+    query_name, _count, _empty = ENTITY_KINDS[kind]
+    query = getattr(db, query_name)
+    if kind == "plugin":
+        rows = query(conn)
+        rows = rows if limit is None else rows[:limit]
+    else:
+        rows = query(conn) if limit is None else query(conn, limit)
+    keys = {key for _header, key, _fmt in ENTITY_COLUMNS[kind] if key}
+    keys |= {"installed", "ever_used"}
+    return [{key: row[key] for key in keys} for row in rows]
+
+
+def _cell(fmt, row, key, count_key):
+    """One cell, by the formatter its column declares."""
+    if fmt == STATE:
+        return db.entity_state(row["installed"], row["ever_used"],
+                               row[count_key])
+    if fmt == MS:
+        return ms(row[key])
+    if fmt == TS:
+        return ts(row[key])
+    return row[key]
+
+
+def entity_table(kind, conn, limit=None, omit=()):
+    """``(headers, cells)`` for one entity kind, rendered from the spec.
+
+    ``omit`` names columns this caller does not show; the overview uses it for
+    its summary, the per-kind report passes nothing.
+    """
+    spec = [col for col in ENTITY_COLUMNS[kind] if col[0] not in omit]
+    count_key = ENTITY_KINDS[kind][1]
+    cells = [[_cell(fmt, row, key, count_key) for _header, key, fmt in spec]
+             for row in _entity_rows(kind, conn, limit)]
+    return [header for header, _key, _fmt in spec], cells
+
+
+def _print_entity(kind, conn, limit=None):
+    headers, cells = entity_table(kind, conn, limit)
+    print(table_or(headers, cells, empty=ENTITY_KINDS[kind][2]))
+
+
 # --- subcommands -----------------------------------------------------------
 
 
@@ -141,93 +276,33 @@ def cmd_stats(conn, args):
     print(f"  range              {ts(o['first_ts'])} .. {ts(o['last_ts'])}")
     print()
 
-    print("Top tools")
-    rows = _rows(db.q_tools(conn, 10),
-                 ["tool_name", "calls", "completed", "failed", "avg_ms",
-                  "last_used", "installed", "ever_used"])
-    print(table_or(["tool", "calls", "ok", "fail", "avg", "last used", "state"],
-                   [[r[0], r[1], r[2], r[3], ms(r[4]), ts(r[5]),
-                     db.entity_state(r[6], r[7], r[1])] for r in rows],
-                   empty="  (none)"))
-    print()
-
-    print("Skills")
-    rows = _rows(db.q_skills(conn),
-                 ["skill", "calls", "last_used", "installed", "ever_used"])
-    print(table_or(["skill", "calls", "last used", "state"],
-                   [[r[0], r[1], ts(r[2]), db.entity_state(r[3], r[4], r[1])]
-                    for r in rows], empty="  (none)"))
-    print()
-
-    print("Agents")
-    rows = _rows(db.q_agents(conn),
-                 ["agent_type", "calls", "last_used", "installed", "ever_used"])
-    print(table_or(["agent", "calls", "last used", "state"],
-                   [[r[0], r[1], ts(r[2]), db.entity_state(r[3], r[4], r[1])]
-                    for r in rows], empty="  (none)"))
-    print()
-
-    print("Plugins (installed ∪ used, by attributed usage)")
-    rows = _rows(db.q_plugins(conn),
-                 ["plugin", "uses", "skills", "agents", "commands",
-                  "installed", "ever_used"])
-    print(table_or(["plugin", "uses", "skills", "agents", "cmds", "state"],
-                   [[r[0], r[1], r[2], r[3], r[4],
-                     db.entity_state(r[5], r[6], r[1])] for r in rows],
-                   empty="  (none)"))
-    print()
-
-    print("MCP")
-    rows = _rows(db.q_mcp(conn),
-                 ["server", "tool", "calls", "last_used", "installed", "ever_used"])
-    if rows:
-        print(table(["server", "tool", "calls", "last used", "state"],
-                    [[r[0], r[1], r[2], ts(r[3]),
-                      db.entity_state(r[4], r[5], r[2])] for r in rows]))
-    else:
-        print("  (no MCP tool invocations recorded)")
+    first = True
+    for kind, title, empty in OVERVIEW_SECTIONS:
+        if not first:
+            print()          # one blank line between sections, none at the end
+        first = False
+        print(title)
+        headers, cells = entity_table(kind, conn, limit=OVERVIEW_LIMIT,
+                                      omit=OVERVIEW_OMITS[kind])
+        print(table_or(headers, cells, empty=empty or ENTITY_KINDS[kind][2]))
 
 
 def cmd_tools(conn, args):
-    rows = _rows(db.q_tools(conn, args.limit),
-                 ["tool_name", "calls", "completed", "failed", "pending",
-                  "avg_ms", "last_used", "projects", "installed", "ever_used"])
-    print(table_or(["tool", "calls", "ok", "fail", "pend", "avg", "last used",
-                    "proj", "state"],
-                   [[r[0], r[1], r[2], r[3], r[4], ms(r[5]), ts(r[6]), r[7],
-                     db.entity_state(r[8], r[9], r[1])] for r in rows],
-                   empty="  (none)"))
+    _print_entity("tool", conn, args.limit)
 
 
 def cmd_skills(conn, args):
-    rows = _rows(db.q_skills(conn, args.limit),
-                 ["skill", "calls", "completed", "last_used", "projects",
-                  "installed", "ever_used"])
-    print(table_or(["skill", "calls", "ok", "last used", "proj", "state"],
-                   [[r[0], r[1], r[2], ts(r[3]), r[4],
-                     db.entity_state(r[5], r[6], r[1])] for r in rows]))
+    _print_entity("skill", conn, args.limit)
 
 
 def cmd_agents(conn, args):
-    rows = _rows(db.q_agents(conn, args.limit),
-                 ["agent_type", "calls", "last_used", "projects",
-                  "installed", "ever_used"])
-    print(table_or(["agent", "calls", "last used", "proj", "state"],
-                   [[r[0], r[1], ts(r[2]), r[3],
-                     db.entity_state(r[4], r[5], r[1])] for r in rows]))
+    _print_entity("agent", conn, args.limit)
 
 
 def cmd_mcp(conn, args):
-    rows = _rows(db.q_mcp(conn, args.limit),
-                 ["server", "tool", "calls", "completed", "last_used",
-                  "installed", "ever_used"])
-    print(table_or(["server", "tool", "calls", "ok", "last used", "state"],
-                   [[r[0], r[1], r[2], r[3], ts(r[4]),
-                     db.entity_state(r[5], r[6], r[2])] for r in rows]))
+    _print_entity("mcp", conn, args.limit)
 
 
-# Per-model table: (header, q_model_tokens key). Order matters — the trailing
-# cache columns are the first dropped when the terminal is narrow.
 MODEL_TABLE_COLUMNS = (
     ("model", "model"),
     ("provider", "provider"),
@@ -300,14 +375,8 @@ def cmd_models(conn, args):
 
 
 def cmd_plugins(conn, args):
-    rows = _rows(db.q_plugins(conn),
-                 ["plugin", "uses", "skills", "agents", "commands", "last_used",
-                  "installed", "ever_used"])
-    print(table_or(["plugin", "uses", "skills", "agents", "cmds", "last used",
-                    "state"],
-                   [[r[0], r[1], r[2], r[3], r[4], ts(r[5]),
-                     db.entity_state(r[6], r[7], r[1])] for r in rows],
-                   empty="  (none)"))
+    # No --limit: one row per plugin, and the overview caps its own display.
+    _print_entity("plugin", conn)
 
 
 def cmd_show(conn, args):

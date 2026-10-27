@@ -23,6 +23,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -551,6 +552,148 @@ class FormatCliTest(unittest.TestCase):
         self.assertFalse(stats._replace_generated_block(self.doc, "new body\n"))
         self.assertEqual(self.doc.read_text(encoding="utf-8"),
                          "hand-written prose, no markers\n")
+
+
+class EntityTableSpecTest(unittest.TestCase):
+    """The overview and the per-kind report render from one spec, not two lists.
+
+    Both used to be written out by hand and had already drifted — the overview's
+    MCP table had no `ok` column, its tool table no `pend`, its plugin table no
+    `last used`. The columns each table shows are pinned below, so a change is an
+    edit to a literal in this file rather than a silent divergence between two
+    hand-written lists.
+    """
+
+    # What each table shows, written out. These are the record of a decision, not
+    # a restatement of `ENTITY_COLUMNS`: changing a column means editing a line
+    # here in the same change, which is exactly what nobody did for the five
+    # lists this replaced.
+    PER_KIND_HEADERS = {
+        "tool": ["tool", "calls", "ok", "fail", "pend", "avg", "last used",
+                 "proj", "state"],
+        "skill": ["skill", "calls", "ok", "last used", "proj", "state"],
+        "agent": ["agent", "calls", "last used", "proj", "state"],
+        "plugin": ["plugin", "uses", "skills", "agents", "cmds", "last used",
+                   "state"],
+        "mcp": ["server", "tool", "calls", "ok", "last used", "state"],
+    }
+    # The overview is a summary: fewer columns, and which ones are missing is
+    # declared in OVERVIEW_OMITS rather than implied by a shorter list.
+    OVERVIEW_HEADERS = {
+        "tool": ["tool", "calls", "ok", "fail", "avg", "last used", "state"],
+        "skill": ["skill", "calls", "last used", "state"],
+        "agent": ["agent", "calls", "last used", "state"],
+        "plugin": ["plugin", "uses", "skills", "agents", "cmds", "state"],
+        "mcp": ["server", "tool", "calls", "last used", "state"],
+    }
+    COMMAND_OF = {"tool": "tools", "skill": "skills", "agent": "agents",
+                  "plugin": "plugins", "mcp": "mcp"}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "usage.db"
+        seed_db(self.db_path)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def headers_at(self, lines, start):
+        """Column names of the table whose header line is ``lines[start]``.
+
+        Split by the separator row's dash runs, not by whitespace: "last used"
+        is one column, not two.
+        """
+        header, sep = lines[start], lines[start + 1]
+        return [header[m.start():m.end()].strip()
+                for m in re.finditer(r"-+", sep)]
+
+    def overview_headers(self, title):
+        rc, out, err = run("--db", self.db_path, "stats")
+        self.assertEqual(rc, 0, err)
+        lines = out.splitlines()
+        self.assertIn(title, lines, f"the overview lost its {title} section")
+        return self.headers_at(lines, lines.index(title) + 1)
+
+    def per_kind_headers(self, command):
+        rc, out, err = run("--db", self.db_path, command)
+        self.assertEqual(rc, 0, err)
+        return self.headers_at(out.splitlines(), 0)
+
+    def test_the_per_kind_columns_are_pinned(self):
+        for kind, expected in self.PER_KIND_HEADERS.items():
+            self.assertEqual(
+                self.per_kind_headers(self.COMMAND_OF[kind]), expected,
+                f"cbut {self.COMMAND_OF[kind]} changed its columns; if that was "
+                "intended, update PER_KIND_HEADERS too")
+
+    def test_the_overview_columns_are_pinned(self):
+        for kind, title, _empty in stats.OVERVIEW_SECTIONS:
+            shown = self.overview_headers(title)
+            self.assertEqual(
+                shown, self.OVERVIEW_HEADERS[kind],
+                f"the overview's {title} table changed its columns; if that was "
+                "intended, update OVERVIEW_HEADERS too")
+            # The difference from the per-kind table is declared, not implied.
+            self.assertEqual(
+                set(self.PER_KIND_HEADERS[kind]) - set(shown),
+                stats.OVERVIEW_OMITS[kind],
+                f"{kind}: OVERVIEW_OMITS no longer names the columns the "
+                "summary leaves out")
+
+    def test_every_declared_column_is_returned_by_its_query(self):
+        """A column naming a key the query does not return prints a blank cell."""
+        conn = db.open_db(self.db_path, readonly=True)
+        try:
+            for kind, columns in stats.ENTITY_COLUMNS.items():
+                query = getattr(db, stats.ENTITY_KINDS[kind][0])
+                rows = query(conn)
+                self.assertTrue(rows, f"{kind}: the seeded database returned no rows")
+                keys = set(rows[0].keys())
+                declared = {key for _h, key, _f in columns if key}
+                self.assertLessEqual(
+                    declared, keys,
+                    f"{kind}: the spec names {sorted(declared - keys)}, which its "
+                    "query does not return")
+                self.assertLessEqual(
+                    {"installed", "ever_used"}, keys,
+                    f"{kind}: the state column needs installed and ever_used")
+        finally:
+            conn.close()
+
+    def test_the_overview_caps_every_section(self):
+        """The overview is a summary; four of its sections used to print every row.
+
+        The cap is pinned at 10 rather than read from the constant: a test that
+        inserts ``OVERVIEW_LIMIT + 5`` rows and expects ``OVERVIEW_LIMIT`` back
+        passes for any value, including one that stopped capping at all.
+        """
+        self.assertEqual(stats.OVERVIEW_LIMIT, 10,
+                         "the summary's cap changed — that is a visible decision, "
+                         "not a constant to retune quietly")
+        conn = db.open_db(self.db_path)
+        for i in range(25):
+            conn.execute(
+                "INSERT INTO skill_usage(call_id, skill, has_args, session_id,"
+                " project, ts) VALUES(?,?,'0','s1','/proj',?)",
+                (f"bulk-s{i}", f"bulk-skill-{i:02d}", TS))
+            conn.execute(
+                "INSERT INTO tool_calls(call_id, session_id, project, tool_name,"
+                " category, ts, duration_ms, status)"
+                " VALUES(?,?,'/proj',?,'builtin',?,1,'completed')",
+                (f"bulk-t{i}", "s1", f"bulk-tool-{i:02d}", TS))
+        conn.commit()
+        conn.close()
+        rc, out, err = run("--db", self.db_path, "stats")
+        self.assertEqual(rc, 0, err)
+        lines = out.splitlines()
+        for title in ("Top tools", "Skills"):
+            body = []
+            for line in lines[lines.index(title) + 3:]:
+                if not line.strip():
+                    break
+                body.append(line)
+            self.assertEqual(len(body), 10,
+                             f"{title} printed {len(body)} rows, not 10")
 
 
 if __name__ == "__main__":
