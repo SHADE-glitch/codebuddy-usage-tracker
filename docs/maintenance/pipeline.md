@@ -23,35 +23,36 @@ that reads `tab.query` only agree because both resolve the function at call time
 
 ### One run
 
-`run()` (`:1697`) takes an exclusive lock (`:1664`), opens one read-write connection and closes it in
+`run()` (`:1722`) takes an exclusive lock (`:1689`), opens one read-write connection and closes it in
 `finally`; the TUI calls this from a worker thread, so a leaked connection would be one per failed
-run rather than one per process. `_run()` (`:1712`) then:
+run rather than one per process. `_run()` (`:1987`) is the pipeline in order, one call per stage:
 
-1. **Schema first** — `db.ensure_schema()` (`:1713`), so the writer never meets a table it does not
+1. **Schema first** — `db.ensure_schema()` (`:1989`), so the writer never meets a table it does not
    know.
-2. **`--full`** — snapshot, then `db.reset()` (`:1714-1720`); a snapshot of an empty database is
-   skipped on purpose.
-3. **Inventory** — `scan_inventory()` (`:1722`) records what is installed *right now*:
+2. **`--full`** — `_reset_if_full` (`:1737`): snapshot, then `db.reset()`; a snapshot of an empty
+   database is skipped on purpose.
+3. **Inventory** — `scan_inventory()` (`:1992`) records what is installed *right now*:
    `collect_inventory` (`:552`) reads the disk, `replace_inventory` (`:659`) swaps the snapshot in
    one transaction, so a failed scan leaves the previous one intact.
-4. **Discovery** — `projects/**/*.jsonl` for transcripts, plus `traces/*/trace_*.jsonl` and
-   `traces/*/trace_*.json` (`:1726-1733`).
-5. **Stale-offset pre-pass** (`:1746-1775`) — if *any* file's stored offset is stale (shrunk,
-   rewritten, no longer on a line boundary), the whole database is rebuilt: snapshot first, carry
-   the sessions no surviving file can rebuild (`:1841`), re-read every file from zero. This is the
-   only destructive step a plain `cbut sync` can take. The predicate is `_needs_reset` (`:1637`),
-   which leans on `_starts_on_line_boundary` (`:1622`).
-6. **Main loop** (`:1777`) — per file: read the new bytes, index them, write
-   `sync_state(file_path, size, mtime, offset)` (`:1822`) and commit. `size` is the file's real
+4. **Discovery** — `_source_files` (`:1749`): `projects/**/*.jsonl` for transcripts, plus
+   `traces/*/trace_*.jsonl` and `traces/*/trace_*.json`.
+5. **Stale-offset pre-pass** — `_clear_stale_files` (`:1762`): if *any* file's stored offset is
+   stale (shrunk, rewritten, no longer on a line boundary), the whole database is rebuilt: snapshot
+   first, carry the sessions no surviving file can rebuild (`:1885`), re-read every file from zero.
+   This is the only destructive step a plain `cbut sync` can take. The predicate is `_needs_reset`
+   (`:1662`), which leans on `_starts_on_line_boundary` (`:1647`).
+6. **Main loop** — `_index_files` (`:1806`): per file, read the new bytes, index them, write
+   `sync_state(file_path, size, mtime, offset)` (`:1857`) and commit. `size` is the file's real
    size, not the offset, because that is what the next run compares to notice a rewrite.
-7. **Whole-trace files** (`:1834`) — re-read entirely every run, keyed by `spanId`, so the re-read
-   is idempotent and needs no `sync_state` row.
-8. **Backfill** — `backfill_plugin_usage` (`:1869`) attributes skill/agent/command rows to a
+7. **Whole-trace files** — `_index_final_traces` (`:1866`): re-read entirely every run, keyed by
+   `spanId`, so the re-read is idempotent and needs no `sync_state` row.
+8. **Backfill** — `backfill_plugin_usage` (`:2007`) attributes skill/agent/command rows to a
    plugin once the inventory can name one; it runs after the reads because the ownership tables are
    built from the inventory.
-9. **Report** — the dict at `:1870` is what `cbut sync` prints, what the TUI's status line reads,
-   and what `cbut health` elaborates. An unrecognised record type is counted and printed loudly
-   (`:1908`) because a silent format change is the one failure every panel shares.
+9. **Report** — `_collect_stats` (`:1925`) builds the dict that `cbut sync` prints, the TUI's
+   status line reads and `cbut health` elaborates; `_report` (`:1963`) prints it. An
+   unrecognised record type is counted and printed loudly (`:1972`) because a silent format change
+   is the one failure every panel shares.
 
 ### One file
 
@@ -65,18 +66,22 @@ isolation.
 
 ### One record
 
-`_handle_record` (`:1243`) is a dispatch on `rec["type"]`, and every branch either writes or
+`_handle_record` (`:1408`) is a dispatch on `rec["type"]`, and every branch either writes or
 explicitly claims the record:
 
-| `type` | Effect | Line |
+| `type` | Effect | Branch |
 |---|---|---|
-| `function_call` | `tool_calls`, plus `skill_usage` / `agent_usage` / `mcp_usage` by classification | `:1252` |
-| `function_call_result` | status + duration onto the four call tables; a refused call is withdrawn | `:1299` |
-| `session-meta`, `ai-title` | claimed, nothing stored (the title is prose) | `:1330` |
-| `turn-metrics` | `sessions.tokens` / `duration_ms` — the context metric, never model tokens | `:1340` |
-| `message` | the session's model, and slash-command names from the text blocks | `:1375` |
-| `model-usage` | claimed; `_record_model_response` already stored the same numbers | `:1388` |
-| anything else | `unparsed` count, keyed `type:<name>` | `:1395` |
+| `function_call` | `tool_calls`, plus `skill_usage` / `agent_usage` / `mcp_usage` by classification | `:1423` |
+| `function_call_result` | status + duration onto the four call tables; a refused call is withdrawn | `:1425` |
+| `turn-metrics` | `sessions.tokens` / `duration_ms` — the context metric, never model tokens | `:1427` |
+| `message` | the session's model, and slash-command names from the text blocks | `:1429` |
+| `session-meta`, `ai-title`, `model-usage` | claimed, nothing stored: the title is prose, and the usage echo repeats what `_record_model_response` wrote | `:1432` |
+| anything else | `unparsed` count, keyed `type:<name>` | `:1441` |
+
+Each branch is one call into the handler that holds the SQL — `_record_function_call` (`:1243`),
+`_record_function_result` (`:1293`), `_record_turn_metrics` (`:1326`), `_record_message`
+(`:1366`) — and `_touch_session` (`:1382`) stamps the session's start/end after whichever branch
+ran.
 
 `_record_model_response` (`:1099`) runs before the dispatch, because a model response can arrive on
 a record type that also carries other payload. It is the only writer of `model_responses`, and it
@@ -178,7 +183,7 @@ The Tokens tab, window `7d`, the row for one model:
 
 A disagreement between two screens is therefore usually a different window (step 1) or a different
 expression (step 3). The one case that is neither: the context-token total comes from
-`turn-metrics` (`cbut-sync.py:1340`), not from a model response, and summing it with these is wrong by design.
+`turn-metrics` (`cbut-sync.py:1427`), not from a model response, and summing it with these is wrong by design.
 
 ## When a number looks wrong
 
@@ -188,5 +193,5 @@ expression (step 3). The one case that is neither: the context-token total comes
 | Rows exist but a count is `0` | the window (`_bounds_for`) before the query |
 | Two screens disagree | API total vs Usage Total (`cbut_db.py:1606`) — they are different measurements |
 | A model has two rows | `(model, provider)` keying (`cbut_db.py:1477`); one model served by two routes is two rows |
-| Totals doubled after a rebuild | `carried` sessions (`cbut-sync.py:1841`) — the path that must not re-add them |
+| Totals doubled after a rebuild | `carried` sessions (`cbut-sync.py:1885`) — the path that must not re-add them |
 | Numbers stop moving | the sync worker only runs on launch and on `r` (`cbut-tui.py:2792`) |

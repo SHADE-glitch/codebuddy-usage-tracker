@@ -1240,8 +1240,179 @@ def _record_commands(conn, content, sid, project, ts,
                 )
 
 
+def _record_function_call(conn, rec, sid, project, ts, skill_owner,
+                          unparsed=None) -> None:
+    """One tool call: its row, plus the skill/agent/mcp row it belongs to."""
+    name = rec.get("name") or ""
+    args = _args_dict(rec.get("arguments"))
+    provider = rec.get("providerData") or {}
+    model = provider.get("model")
+    call_id = rec.get("callId") or rec.get("id")
+    if not valid_tool_name(name):
+        if unparsed is not None:
+            _bump(unparsed, INVALID_TOOL_NAME)
+        return
+    category, pair = _classify(name, args)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO tool_calls"
+        "(call_id, session_id, project, tool_name, category, ts, status, model)"
+        " VALUES(?,?,?,?,?,?,NULL,?)",
+        (call_id, sid, project, name, category, ts, model),
+    )
+    if category == "skill":
+        skill = args.get("skill") or args.get("command") or "?"
+        conn.execute(
+            "INSERT OR IGNORE INTO skill_usage"
+            "(call_id, skill, has_args, plugin, session_id, project, ts)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (call_id, skill, 1 if args.get("args") else 0,
+             skill_owner.get(skill), sid, project, ts),
+        )
+    elif category == "agent":
+        atype = (args.get("subagent_type") or args.get("agent_type")
+                 or DEFAULT_AGENT_TYPE)
+        # `description` is prose the model wrote for itself, so it is not
+        # stored — schema v5 dropped the column that used to hold it. Only
+        # the agent *type* is metadata.
+        conn.execute(
+            "INSERT OR IGNORE INTO agent_usage"
+            "(call_id, agent_type, kind, source, session_id, project, ts)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (call_id, atype, BUILTIN_AGENTS.get(atype, "active"),
+             "tool", sid, project, ts),
+        )
+    elif category == "mcp" and pair:
+        conn.execute(
+            "INSERT OR IGNORE INTO mcp_usage"
+            "(call_id, server, tool, session_id, project, ts) VALUES(?,?,?,?,?,?)",
+            (call_id, pair[0], pair[1], sid, project, ts),
+        )
+
+
+def _record_function_result(conn, rec, unparsed=None) -> None:
+    """The verdict for a call: its status, its duration, or a withdrawal."""
+    call_id = rec.get("callId") or rec.get("id")
+    if _withdraw_refused_call(conn, rec):
+        # The row was written when the call record arrived; the verdict only
+        # exists now. Deleting it is safe in both directions: the index is
+        # derived from the transcripts, and a re-read of this file re-runs
+        # the same withdrawal on a row that is already gone.
+        conn.execute("DELETE FROM tool_calls WHERE call_id=?", (call_id,))
+        if unparsed is not None:
+            _bump(unparsed, INVALID_TOOL_NAME)
+        return
+    status = rec.get("status")
+    rts = rec.get("timestamp")
+    # A duration is a *difference*, so the two timestamps have to agree about
+    # their order first. They do not always: CodeBuddy writes the result
+    # record before the call record for some calls (measured 2026-10-21:
+    # 2,540 of 45,262 rows, worst -5,070 ms), and subtracting them produced a
+    # negative duration that every AVG then averaged in. A negative one is not
+    # a short call, it is the two records disagreeing, so it is stored as NULL
+    # and the averages skip it.
+    for table in ("tool_calls", "skill_usage", "agent_usage", "mcp_usage"):
+        conn.execute(
+            f"UPDATE {table} SET status=?,"
+            " duration_ms = CASE"
+            "   WHEN ts IS NULL OR ? IS NULL THEN duration_ms"
+            "   WHEN ? >= ts THEN ? - ts"
+            "   ELSE NULL END"
+            " WHERE call_id=?",
+            (status, rts, rts, rts, call_id),
+        )
+
+
+def _record_turn_metrics(conn, rec, sid, project, ts) -> None:
+    """The session's context-token metric and the time its turns took.
+
+    NOTE: tokenDelta is a *context* metric for the whole turn, not the model's
+    prompt/completion tokens. It is kept in sessions.tokens and is never mixed
+    into model_responses (which reads rawUsage only).
+    """
+    if not sid:
+        return
+    conn.execute(
+        "INSERT INTO sessions"
+        "(session_id, project, started_at, ended_at, tokens, duration_ms)"
+        " VALUES(?,?,?,?,?,?)"
+        " ON CONFLICT(session_id) DO UPDATE SET"
+        # MIN/MAX ignore NULLs only as *aggregates*: the two-argument
+        # scalar form returns NULL if either side is, so a session row
+        # created without a date would never take one. Both sides are
+        # coalesced so the first stamp that arrives wins and a missing
+        # one never erases a stored date.
+        "   started_at = MIN(COALESCE(started_at, excluded.started_at),"
+        "                   COALESCE(excluded.started_at, started_at)),"
+        "   ended_at   = MAX(COALESCE(ended_at, excluded.ended_at),"
+        "                   COALESCE(excluded.ended_at, ended_at)),"
+        # Absent stays absent: a turn that reports no delta must not
+        # turn the session's unknown total into 0, and a reported 0 must
+        # stay 0. Only when neither side has a number does the sum stay
+        # NULL.
+        "   tokens     = CASE WHEN tokens IS NULL"
+        "                     AND excluded.tokens IS NULL THEN NULL"
+        "                     ELSE COALESCE(tokens, 0)"
+        "                        + COALESCE(excluded.tokens, 0) END,"
+        "   duration_ms= CASE WHEN duration_ms IS NULL"
+        "                       AND excluded.duration_ms IS NULL THEN NULL"
+        "                     ELSE COALESCE(duration_ms, 0)"
+        "                        + COALESCE(excluded.duration_ms, 0) END",
+        (sid, project, ts, ts, rec.get("tokenDelta"),
+         rec.get("durationMs")),
+    )
+
+
+def _record_message(conn, rec, sid, project, ts,
+                    command_owner, skill_owner, agent_owner) -> None:
+    """A message: its model (the only field stored) and its commands."""
+    provider = rec.get("providerData") or {}
+    model = provider.get("model")
+    if sid and model:
+        conn.execute(
+            "INSERT INTO sessions(session_id, project, model)"
+            " VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET"
+            "   model = COALESCE(excluded.model, model)",
+            (sid, project, model),
+        )
+    _record_commands(conn, rec.get("content"), sid, project, ts,
+                     command_owner, skill_owner, agent_owner)
+
+
+def _touch_session(conn, sid, project, ts) -> None:
+    """Track a session's start and end from any record carrying them.
+
+    Only for a record that says *where* it ran. Metadata-only records (a
+    session-meta, a summary) carry a sessionId and a timestamp and no cwd, and
+    creating a row for each produced 308 sessions with a NULL project and no
+    tool calls and no model responses: invisible in every panel, but counted as
+    sessions. A real session always has at least one cwd-bearing record.
+    """
+    if not (sid and ts and project):
+        return
+    conn.execute(
+        "INSERT INTO sessions(session_id, project, started_at, ended_at)"
+        " VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET"
+        # COALESCE on both sides, for the reason spelled out in
+        # _record_turn_metrics: a row created without a date (a message that
+        # named a model) would otherwise never take one.
+        "   started_at = MIN(COALESCE(started_at, excluded.started_at),"
+        "                   COALESCE(excluded.started_at, started_at)),"
+        "   ended_at   = MAX(COALESCE(ended_at, excluded.ended_at),"
+        "                   COALESCE(excluded.ended_at, ended_at)),"
+        "   project    = COALESCE(project, excluded.project)",
+        (sid, project, ts, ts),
+    )
+
+
 def _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
                    unparsed=None, model_hosts=None) -> None:
+    """Route one record to its type's handler, then stamp its session.
+
+    The chain below is the list of types this module claims. Anything not named
+    here falls to the final branch and is counted as unparsed — the only signal
+    a CodeBuddy format change gives, since the run prints "done" either way.
+    """
     rtype = rec.get("type")
     sid = _session_id(rec)
     project = rec.get("cwd")
@@ -1250,177 +1421,31 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
     _record_model_response(conn, rec, sid, project, ts, model_hosts)
 
     if rtype == "function_call":
-        name = rec.get("name") or ""
-        args = _args_dict(rec.get("arguments"))
-        provider = rec.get("providerData") or {}
-        model = provider.get("model")
-        call_id = rec.get("callId") or rec.get("id")
-        if not valid_tool_name(name):
-            if unparsed is not None:
-                _bump(unparsed, INVALID_TOOL_NAME)
-            return
-        category, pair = _classify(name, args)
-
-        conn.execute(
-            "INSERT OR IGNORE INTO tool_calls"
-            "(call_id, session_id, project, tool_name, category, ts, status, model)"
-            " VALUES(?,?,?,?,?,?,NULL,?)",
-            (call_id, sid, project, name, category, ts, model),
-        )
-        if category == "skill":
-            skill = args.get("skill") or args.get("command") or "?"
-            conn.execute(
-                "INSERT OR IGNORE INTO skill_usage"
-                "(call_id, skill, has_args, plugin, session_id, project, ts)"
-                " VALUES(?,?,?,?,?,?,?)",
-                (call_id, skill, 1 if args.get("args") else 0,
-                 skill_owner.get(skill), sid, project, ts),
-            )
-        elif category == "agent":
-            atype = (args.get("subagent_type") or args.get("agent_type")
-                     or DEFAULT_AGENT_TYPE)
-            # ``description`` is prose the model wrote for itself, so it is not
-            # stored — schema v5 dropped the column that used to hold it. Only
-            # the agent *type* is metadata.
-            conn.execute(
-                "INSERT OR IGNORE INTO agent_usage"
-                "(call_id, agent_type, kind, source, session_id, project, ts)"
-                " VALUES(?,?,?,?,?,?,?)",
-                (call_id, atype, BUILTIN_AGENTS.get(atype, "active"),
-                 "tool", sid, project, ts),
-            )
-        elif category == "mcp" and pair:
-            conn.execute(
-                "INSERT OR IGNORE INTO mcp_usage"
-                "(call_id, server, tool, session_id, project, ts) VALUES(?,?,?,?,?,?)",
-                (call_id, pair[0], pair[1], sid, project, ts),
-            )
-
+        _record_function_call(conn, rec, sid, project, ts, skill_owner, unparsed)
     elif rtype == "function_call_result":
-        call_id = rec.get("callId") or rec.get("id")
-        if _withdraw_refused_call(conn, rec):
-            # The row was written when the call record arrived; the verdict only
-            # exists now. Deleting it is safe in both directions: the index is
-            # derived from the transcripts, and a re-read of this file re-runs
-            # the same withdrawal on a row that is already gone.
-            conn.execute("DELETE FROM tool_calls WHERE call_id=?", (call_id,))
-            if unparsed is not None:
-                _bump(unparsed, INVALID_TOOL_NAME)
-            return
-        status = rec.get("status")
-        rts = rec.get("timestamp")
-        # A duration is a *difference*, so the two timestamps have to agree about
-        # their order first. They do not always: CodeBuddy writes the result
-        # record before the call record for some calls (measured 2026-10-21:
-        # 2,540 of 45,262 rows, worst -5,070 ms), and subtracting them produced a
-        # negative duration that every AVG then averaged in. A negative one is not
-        # a short call, it is the two records disagreeing, so it is stored as NULL
-        # and the averages skip it.
-        for table in ("tool_calls", "skill_usage", "agent_usage", "mcp_usage"):
-            conn.execute(
-                f"UPDATE {table} SET status=?,"
-                " duration_ms = CASE"
-                "   WHEN ts IS NULL OR ? IS NULL THEN duration_ms"
-                "   WHEN ? >= ts THEN ? - ts"
-                "   ELSE NULL END"
-                " WHERE call_id=?",
-                (status, rts, rts, rts, call_id),
-            )
-
-    elif rtype in ("session-meta", "ai-title"):
-        # Known records whose payload is an AI-generated session title — prose
-        # derived from the conversation, so it is deliberately not stored
-        # (schema v5 dropped the column that held it). The session row these
-        # used to create is made by the shared start/end block below. Claimed
-        # here on purpose: dropping them into the `else` would pad the unparsed
-        # count with a type we understand perfectly well, and the number would
-        # stop meaning "the format changed".
-        pass
-
+        _record_function_result(conn, rec, unparsed)
     elif rtype == "turn-metrics":
-        # NOTE: tokenDelta is a *context* metric for the whole turn, not the
-        # model's prompt/completion tokens. It is kept in sessions.tokens and is
-        # never mixed into model_responses (which reads rawUsage only).
-        if sid:
-            conn.execute(
-                "INSERT INTO sessions"
-                "(session_id, project, started_at, ended_at, tokens, duration_ms)"
-                " VALUES(?,?,?,?,?,?)"
-                " ON CONFLICT(session_id) DO UPDATE SET"
-                # MIN/MAX ignore NULLs only as *aggregates*: the two-argument
-                # scalar form returns NULL if either side is, so a session row
-                # created without a date would never take one. Both sides are
-                # coalesced so the first stamp that arrives wins and a missing
-                # one never erases a stored date.
-                "   started_at = MIN(COALESCE(started_at, excluded.started_at),"
-                "                   COALESCE(excluded.started_at, started_at)),"
-                "   ended_at   = MAX(COALESCE(ended_at, excluded.ended_at),"
-                "                   COALESCE(excluded.ended_at, ended_at)),"
-                # Absent stays absent: a turn that reports no delta must not
-                # turn the session's unknown total into 0, and a reported 0 must
-                # stay 0. Only when neither side has a number does the sum stay
-                # NULL.
-                "   tokens     = CASE WHEN tokens IS NULL"
-                "                     AND excluded.tokens IS NULL THEN NULL"
-                "                     ELSE COALESCE(tokens, 0)"
-                "                        + COALESCE(excluded.tokens, 0) END,"
-                "   duration_ms= CASE WHEN duration_ms IS NULL"
-                "                       AND excluded.duration_ms IS NULL THEN NULL"
-                "                     ELSE COALESCE(duration_ms, 0)"
-                "                        + COALESCE(excluded.duration_ms, 0) END",
-                (sid, project, ts, ts, rec.get("tokenDelta"),
-                 rec.get("durationMs")),
-            )
-
+        _record_turn_metrics(conn, rec, sid, project, ts)
     elif rtype == "message":
-        provider = rec.get("providerData") or {}
-        model = provider.get("model")
-        if sid and model:
-            conn.execute(
-                "INSERT INTO sessions(session_id, project, model)"
-                " VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET"
-                "   model = COALESCE(excluded.model, model)",
-                (sid, project, model),
-            )
-        _record_commands(conn, rec.get("content"), sid, project, ts,
-                         command_owner, skill_owner, agent_owner)
-
-    elif rtype == "model-usage":
-        # A usage-only echo of a model response. Its tokens are already stored by
-        # _record_model_response above, so there is nothing left to do here — but
-        # the type must be *claimed*, or the unparsed count reports known rows as
-        # if the format had changed. A number that cries wolf is not a signal.
+        _record_message(conn, rec, sid, project, ts,
+                        command_owner, skill_owner, agent_owner)
+    elif rtype in ("session-meta", "ai-title", "model-usage"):
+        # Claimed on purpose, and nothing is stored: the first two carry an
+        # AI-generated session title — prose derived from the conversation, so it
+        # is not stored (schema v5 dropped the column that held it) — and
+        # model-usage is a usage-only echo whose tokens _record_model_response
+        # already wrote. Dropping them into the count below would pad it with
+        # types this module understands perfectly well, and the number would stop
+        # meaning "the format changed".
         pass
-
     else:
-        # No handler claimed this record. Counting it is the only defence against
-        # a CodeBuddy format change silently zeroing every panel: the run still
-        # prints "done" either way, so an unrecognised ``type`` has to become a
-        # number someone can see (``cbut health``, the sync summary).
+        # No handler claimed this record. Counting it is the only defence
+        # against a CodeBuddy format change silently zeroing every panel.
         if unparsed is not None:
             key = f"type:{rtype}" if rtype else "type:<missing>"
             _bump(unparsed, key)
 
-    # Track session start/end times from any record carrying them — but only for
-    # a record that says *where* it ran. Metadata-only records (a session-meta, a
-    # summary) carry a sessionId and a timestamp and no cwd, and creating a row
-    # for each produced 308 sessions with a NULL project and no tool calls and no
-    # model responses: invisible in every panel, but counted as sessions. A real
-    # session always has at least one cwd-bearing record.
-    if sid and ts and project:
-        conn.execute(
-            "INSERT INTO sessions(session_id, project, started_at, ended_at)"
-            " VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET"
-            # COALESCE on both sides, for the reason spelled out in the
-            # turn-metrics branch above: a row created without a date (a message
-            # that named a model) would otherwise never take one.
-            "   started_at = MIN(COALESCE(started_at, excluded.started_at),"
-            "                   COALESCE(excluded.started_at, started_at)),"
-            "   ended_at   = MAX(COALESCE(ended_at, excluded.ended_at),"
-            "                   COALESCE(excluded.ended_at, ended_at)),"
-            "   project    = COALESCE(project, excluded.project)",
-            (sid, project, ts, ts),
-        )
+    _touch_session(conn, sid, project, ts)
 
 
 # --- plugin usage backfill -------------------------------------------------
@@ -1709,20 +1734,20 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH) -> dict:
         _release_sync_lock(lock_fd)
 
 
-def _run(conn, full: bool = False, quiet: bool = False) -> dict:
-    db.ensure_schema(conn)
-    if full:
-        # A snapshot of an empty database is clutter, and every test builds one;
-        # only state that exists is worth a way back.
-        if (conn.execute("SELECT COUNT(*) FROM tool_calls").fetchone()[0]
-                or conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]):
-            db.snapshot(conn, reason="pre-full-rebuild")
-        db.reset(conn)
+def _reset_if_full(conn, full: bool) -> None:
+    """``--full``: snapshot what exists, then empty the derived tables."""
+    if not full:
+        return
+    # A snapshot of an empty database is clutter, and every test builds one;
+    # only state that exists is worth a way back.
+    if (conn.execute("SELECT COUNT(*) FROM tool_calls").fetchone()[0]
+            or conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]):
+        db.snapshot(conn, reason="pre-full-rebuild")
+    db.reset(conn)
 
-    skill_owner, agent_owner, command_owner = scan_inventory(conn)
-    # Resolved once per run: model id -> url host, for the route-origin column.
-    model_hosts = load_model_hosts(db.CODEBUDDY_DIR)
 
+def _source_files():
+    """Every transcript and live trace stream to read, as ``(path, kind)``."""
     projects = db.CODEBUDDY_DIR / DIR_PROJECTS
     files = ([(p, "transcript") for p in sorted(projects.glob(TRANSCRIPT_GLOB))]
              if projects.is_dir() else [])
@@ -1731,20 +1756,24 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
         # The live span streams go through the same sync_state machinery as
         # the transcripts: append-only, offset-resumable, rewrite-detectable.
         files += [(p, "trace") for p in sorted(traces.glob(TRACE_STREAM_GLOB))]
+    return files, traces
 
-    # Pre-pass: if ANY file's stored offset is stale (shrunk, rewritten, or no
-    # longer on a line boundary), rebuild the whole DB. One session spans its
-    # main transcript *and* every subagent transcript, so a single file's
-    # contribution cannot be subtracted in isolation; clearing sync_state +
-    # sessions makes the main loop re-read every file from zero exactly once, so
-    # the accumulated turn-metrics totals are rebuilt (never lost or doubled).
-    #
-    # This is the only destructive step a plain ``cbut sync`` can take, so it
-    # snapshots first, and it carries across the sessions it cannot rebuild: a
-    # session whose every transcript CodeBuddy has pruned has no source left, and
-    # re-reading the survivors must not be read as "that session never existed".
-    carried: list = []
-    rebuilt = False
+
+def _clear_stale_files(conn, files):
+    """Rebuild from zero if any stored offset is stale; return what to carry.
+
+    Pre-pass: if ANY file's stored offset is stale (shrunk, rewritten, or no
+    longer on a line boundary), rebuild the whole DB. One session spans its
+    main transcript *and* every subagent transcript, so a single file's
+    contribution cannot be subtracted in isolation; clearing sync_state +
+    sessions makes the main loop re-read every file from zero exactly once, so
+    the accumulated turn-metrics totals are rebuilt (never lost or doubled).
+
+    This is the only destructive step a plain ``CBUT sync`` can take, so it
+    snapshots first, and it carries across the sessions it cannot rebuild: a
+    session whose every transcript CodeBuddy has pruned has no source left, and
+    re-reading the survivors must not be read as "that session never existed".
+    """
     for path, _kind in files:
         try:
             st = path.stat()
@@ -1754,25 +1783,30 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
             "SELECT size, mtime, offset FROM sync_state WHERE file_path=?",
             (str(path),),
         ).fetchone()
-        if row is not None and _needs_reset(path, st, row):
-            # SQLite's backup API cannot read a connection holding uncommitted
-            # writes, and the inventory scan above wrote some.
-            conn.commit()
-            db.snapshot(conn, reason="pre-rebuild")
-            carried = [tuple(r) for r in conn.execute(
-                "SELECT session_id, project, started_at, ended_at, model,"
-                " tokens, duration_ms FROM sessions")]
-            conn.execute("DELETE FROM sync_state")
-            conn.execute("DELETE FROM sessions")
-            # Every file is re-read from zero below, so the unparsed counts would
-            # otherwise accumulate a second copy of itself — the same inflation
-            # that ``sessions`` had to be cleared for.
-            conn.execute("DELETE FROM unparsed")
-            conn.commit()
-            rebuilt = True
-            break
+        if row is None or not _needs_reset(path, st, row):
+            continue
+        # SQLite's backup API cannot read a connection holding uncommitted
+        # writes, and the inventory scan above wrote some.
+        conn.commit()
+        db.snapshot(conn, reason="pre-rebuild")
+        carried = [tuple(r) for r in conn.execute(
+            "SELECT session_id, project, started_at, ended_at, model,"
+            " tokens, duration_ms FROM sessions")]
+        conn.execute("DELETE FROM sync_state")
+        conn.execute("DELETE FROM sessions")
+        # Every file is re-read from zero below, so the unparsed counts would
+        # otherwise accumulate a second copy of itself — the same inflation
+        # that ``sessions`` had to be cleared for.
+        conn.execute("DELETE FROM unparsed")
+        conn.commit()
+        return carried, True
+    return [], False
 
-    n_files = n_records = n_unparsed = n_finals = 0
+
+def _index_files(conn, files, skill_owner, agent_owner, command_owner,
+                 model_hosts):
+    """Read every new byte of every file; return (files indexed, unparsed)."""
+    n_files = n_unparsed = 0
     unparsed = {}
     for path, kind in files:
         try:
@@ -1811,13 +1845,14 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
         for reason, n in unparsed.items():
             db.note_unparsed(conn, reason, n)
             n_unparsed += n
-        # `offset` is what was consumed, so a deferred tail is retried. `size` is
-        # the file's real size — the value _needs_reset compares against to notice
-        # a transcript rewritten or truncated in place. Storing the offset here
-        # understated it, so a rewrite that still left the file larger than the
-        # offset was never detected. Rows written by older builds hold the offset;
-        # for a fully-consumed untouched file the two are equal, so those rows are
-        # already right, and each is corrected the next time its file is read.
+        # ``offset`` is what was consumed, so a deferred tail is retried. ``size``
+        # is the file's real size — the value _needs_reset compares against to
+        # notice a transcript rewritten or truncated in place. Storing the offset
+        # here understated it, so a rewrite that still left the file larger than
+        # the offset was never detected. Rows written by older builds hold the
+        # offset; for a fully-consumed untouched file the two are equal, so those
+        # rows are already right, and each is corrected the next time its file is
+        # read.
         conn.execute(
             "INSERT OR REPLACE INTO sync_state(file_path, size, mtime, offset)"
             " VALUES(?,?,?,?)",
@@ -1825,55 +1860,78 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
         )
         n_files += 1
         conn.commit()
+    return n_files, n_unparsed
 
-    # The whole-trace files: re-read whole on every run (idempotent on
-    # spanId). They are written once at trace end, not appended to, so they
-    # never enter sync_state and never trip the rewrite reset.
+
+def _index_final_traces(conn, traces):
+    """Re-read the whole-trace files; return (finals seen, unparsed added).
+
+    They are written once at trace end, not appended to, so they never enter
+    sync_state and never trip the rewrite reset. Idempotent on spanId.
+    """
+    if not traces.is_dir():
+        return 0, 0
+    n_finals = n_unparsed = 0
     final_unparsed = {}
-    if traces.is_dir():
-        for path in sorted(traces.glob(TRACE_FINAL_GLOB)):
-            n_finals += index_final_trace(conn, path, final_unparsed)
-        conn.commit()
+    for path in sorted(traces.glob(TRACE_FINAL_GLOB)):
+        n_finals += index_final_trace(conn, path, final_unparsed)
+    conn.commit()
     for reason, n in final_unparsed.items():
         db.note_unparsed(conn, reason, n)
         n_unparsed += n
+    return n_finals, n_unparsed
 
-    if carried:
-        # Put back the sessions no surviving file rebuilt. Their totals were
-        # accumulated while their transcripts existed and nothing re-adds them,
-        # so they are still the best record of those sessions — and keeping the
-        # row is what keeps their calls attributable. A session that a surviving
-        # file did rebuild already has its row, and is left exactly as rebuilt.
-        conn.executemany(
-            "INSERT OR IGNORE INTO sessions(session_id, project, started_at,"
-            " ended_at, model, tokens, duration_ms) VALUES(?,?,?,?,?,?,?)",
-            carried)
-        conn.commit()
 
-    if rebuilt:
-        # A call whose session is not in ``sessions`` is invisible to every
-        # screen that lists calls by session, yet it still counts in the tool and
-        # model totals — which is how a rebuild left the Dashboard and the status
-        # bar disagreeing. The row is pruned rather than kept, and the snapshot
-        # above is the way back. Only a row that carried a project is eligible: a
-        # row without one was never eligible for a session row in the first place,
-        # so its missing session is not a loss.
-        for table in ("tool_calls", "model_responses", "skill_usage",
-                      "agent_usage", "mcp_usage"):
-            conn.execute(
-                f"DELETE FROM {table} WHERE project IS NOT NULL"
-                " AND session_id IS NOT NULL AND session_id NOT IN"
-                " (SELECT session_id FROM sessions)")
-        conn.commit()
+def _restore_carried_sessions(conn, carried) -> None:
+    """Put back the sessions no surviving file rebuilt.
 
-    n_records = backfill_plugin_usage(conn)
-    stats = {
-        "files_indexed": n_files,
-        "files_total": len(files),
-        "plugin_rows": n_records,
+    Their totals were accumulated while their transcripts existed and nothing
+    re-adds them, so they are still the best record of those sessions — and
+    keeping the row is what keeps their calls attributable. A session that a
+    surviving file did rebuild already has its row, and is left exactly as
+    rebuilt.
+    """
+    if not carried:
+        return
+    conn.executemany(
+        "INSERT OR IGNORE INTO sessions(session_id, project, started_at,"
+        " ended_at, model, tokens, duration_ms) VALUES(?,?,?,?,?,?,?)",
+        carried)
+    conn.commit()
+
+
+def _prune_orphans(conn, rebuilt: bool) -> None:
+    """After a rebuild, drop the rows whose session did not come back.
+
+    A call whose session is not in ``sessions`` is invisible to every screen that
+    lists calls by session, yet it still counts in the tool and model totals —
+    which is how a rebuild left the Dashboard and the status bar disagreeing.
+    The row is pruned rather than kept, and the snapshot above is the way back.
+    Only a row that carried a project is eligible: a row without one was never
+    eligible for a session row in the first place, so its missing session is not
+    a loss.
+    """
+    if not rebuilt:
+        return
+    for table in ("tool_calls", "model_responses", "skill_usage",
+                  "agent_usage", "mcp_usage"):
+        conn.execute(
+            f"DELETE FROM {table} WHERE project IS NOT NULL"
+            " AND session_id IS NOT NULL AND session_id NOT IN"
+            " (SELECT session_id FROM sessions)")
+    conn.commit()
+
+
+def _collect_stats(conn, *, files_total, files_indexed, unparsed_this_run,
+                   trace_finals, plugin_rows) -> dict:
+    """The run's counters: what the CLI prints and what run() returns."""
+    return {
+        "files_indexed": files_indexed,
+        "files_total": files_total,
+        "plugin_rows": plugin_rows,
         # Per-run and cumulative: a format change moves both, while an old
         # unaddressed count only shows in the total.
-        "unparsed_this_run": n_unparsed,
+        "unparsed_this_run": unparsed_this_run,
         "unparsed": conn.execute(
             "SELECT COALESCE(SUM(count),0) FROM unparsed").fetchone()[0],
         "unparsed_kinds": conn.execute(
@@ -1884,7 +1942,7 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
         "agent_spans": conn.execute(
             "SELECT COUNT(*) FROM agent_usage WHERE source='span'"
         ).fetchone()[0],
-        "trace_finals": n_finals,
+        "trace_finals": trace_finals,
         "mcp": conn.execute("SELECT COUNT(*) FROM mcp_usage").fetchone()[0],
         "sessions": conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0],
         "commands": conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0],
@@ -1900,8 +1958,14 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
             "SELECT COALESCE(SUM(completion_tokens),0) FROM model_responses"
         ).fetchone()[0],
     }
-    # Loud on purpose: an unclaimed record is the only signal that CodeBuddy's
-    # format moved, and a run that prints only "done" hides it.
+
+
+def _report(stats, conn, quiet: bool) -> None:
+    """Print the run's counts; loud when a record went unclaimed.
+
+    Loud on purpose: an unclaimed record is the only signal that CodeBuddy's
+    format moved, and a run that prints only "done" hides it.
+    """
     if not quiet and stats["unparsed_this_run"]:
         reasons = ", ".join(
             f"{r['reason']} x{r['count']}" for r in db.q_unparsed(conn)[:3])
@@ -1918,6 +1982,33 @@ def _run(conn, full: bool = False, quiet: bool = False) -> dict:
               f"(with usage {stats['model_responses_with_usage']})  "
               f"prompt_tokens={stats['model_prompt_tokens']:,}  "
               f"completion_tokens={stats['model_completion_tokens']:,}")
+
+
+def _run(conn, full: bool = False, quiet: bool = False) -> dict:
+    """The whole index in pipeline order: reset, read, rebuild, count."""
+    db.ensure_schema(conn)
+    _reset_if_full(conn, full)
+
+    skill_owner, agent_owner, command_owner = scan_inventory(conn)
+    # Resolved once per run: model id -> url host, for the route-origin column.
+    model_hosts = load_model_hosts(db.CODEBUDDY_DIR)
+
+    files, traces = _source_files()
+    carried, rebuilt = _clear_stale_files(conn, files)
+
+    n_files, n_unparsed = _index_files(conn, files, skill_owner, agent_owner,
+                                       command_owner, model_hosts)
+    n_finals, final_unparsed = _index_final_traces(conn, traces)
+    n_unparsed += final_unparsed
+
+    _restore_carried_sessions(conn, carried)
+    _prune_orphans(conn, rebuilt)
+
+    plugin_rows = backfill_plugin_usage(conn)
+    stats = _collect_stats(conn, files_total=len(files), files_indexed=n_files,
+                           unparsed_this_run=n_unparsed, trace_finals=n_finals,
+                           plugin_rows=plugin_rows)
+    _report(stats, conn, quiet)
     return stats
 
 
