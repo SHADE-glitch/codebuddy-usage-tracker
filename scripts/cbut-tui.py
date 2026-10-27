@@ -1475,7 +1475,712 @@ if HAVE_TEXTUAL:
                 app.call_after_refresh(fit)
 
 
-    class TrackerApp(WideTableMixin, App):
+    class FilterSortMixin:
+
+        @staticmethod
+        def _matches(cells, query: str) -> bool:
+            if not query:
+                return True
+            for cell in cells:
+                plain = cell.plain if hasattr(cell, "plain") else cell
+                if query in str(plain).lower():
+                    return True
+            return False
+
+        def _sorted_indices(self, rows, tab: EntityTab, mode: int) -> list:
+            """Indices of ``rows`` in the selected order; None-valued last.
+
+            Returns indices rather than rows so the caller can slice the key
+            rows with the same positions.
+            """
+            order = list(range(len(rows)))
+            fields = tab.sort_fields
+            if not mode or not fields:
+                return order
+            _label, key, descending = fields[(mode - 1) % len(fields)]
+            key = key or tab.name_key
+            if not key:
+                return order
+            present = [i for i in order if rows[i][key] is not None]
+            missing = [i for i in order if rows[i][key] is None]
+            present.sort(
+                key=lambda i: (str(rows[i][key]).lower()
+                               if isinstance(rows[i][key], str) else rows[i][key]),
+                reverse=descending)
+            return present + missing
+
+        def _sort_fields_for(self, pane):
+            if pane == "tab-usage":
+                return _USAGE_SORT_FIELDS
+            tab = self._entity_tab(pane)
+            return tab.sort_fields if tab else ()
+
+        def _sort_label(self, pane) -> str:
+            if pane == "tab-usage":
+                mode = self._sort_mode.get(pane, 0)
+                return _USAGE_SORT_FIELDS[mode % len(_USAGE_SORT_FIELDS)][0]
+            tab = self._entity_tab(pane)
+            if tab is None:
+                return ""
+            mode = self._sort_mode.get(pane, 0)
+            fields = tab.sort_fields
+            if not mode or not fields:
+                return "tab order"
+            return fields[(mode - 1) % len(fields)][0]
+
+        def _render_filter_note(self, tab: EntityTab, shown: int,
+                                total: int) -> None:
+            """The one-line summary above the table: rows, filter and sort.
+
+            Always visible because the active sort is state the page must name;
+            a silent reorder is indistinguishable from data that changed. When
+            the used-only default hid every row, the note is also how the
+            `a` toggle is discovered.
+            """
+            note = self.query_one(f"#note-{tab.pane}", Static)
+            parts = []
+            needle = self._name_filter.get(tab.pane, "").strip()
+            if needle:
+                parts.append(f'filter "{needle}" · {shown:,} of {total:,}')
+            elif self._show_unused.get(tab.pane):
+                parts.append(f"{shown:,} of {count_n(total, 'row')}")
+            else:
+                parts.append(count_n(shown, "row"))
+            if self._show_unused.get(tab.pane):
+                parts.append("incl. installed-unused")
+            elif shown == 0 and total:
+                parts.append("installed but unused in this window — press a")
+            parts.append(f"sort: {self._sort_label(tab.pane)}")
+            note.update(" · ".join(parts))
+            note.display = True
+
+        def _sync_filter_bar(self) -> None:
+            """Show the active tab's filter, or hide the row when it has none."""
+            pane = self._active_pane()
+            inp = self.query_one("#filter-input", Input)
+            value = self._name_filter.get(pane, "")
+            inp.value = value
+            inp.display = bool(value.strip())
+
+        def _clear_filter(self) -> None:
+            pane = self._active_pane()
+            inp = self.query_one("#filter-input", Input)
+            inp.value = ""
+            self._name_filter[pane] = ""
+            inp.display = False
+            if pane == "tab-usage":
+                self._refresh_usage()
+            else:
+                tab = self._entity_tab(pane)
+                if tab is not None:
+                    self._render_entity_rows(tab)
+            self._focus_active_table()
+            self.call_after_refresh(self._anchor_active_table_top)
+
+        def action_cycle_sort(self) -> None:
+            pane = self._active_pane()
+            fields = self._sort_fields_for(pane)
+            if not fields:
+                return
+            if pane == "tab-usage":
+                self._sort_mode[pane] = ((self._sort_mode.get(pane, 0) + 1)
+                                         % len(fields))
+                self._refresh_usage()
+            else:
+                tab = self._entity_tab(pane)
+                if tab is None:
+                    return
+                self._sort_mode[pane] = ((self._sort_mode.get(pane, 0) + 1)
+                                         % (len(fields) + 1))
+                self._render_entity_rows(tab)
+
+        def action_toggle_unused(self) -> None:
+            # a = include the installed-but-unused half of the union, per tab.
+            # Rows re-render from the cache; no query runs.
+            pane = self._active_pane()
+            tab = self._entity_tab(pane)
+            if tab is None:
+                return
+            self._show_unused[pane] = not self._show_unused[pane]
+            self._render_entity_rows(tab)
+
+        def action_open_filter(self) -> None:
+            pane = self._active_pane()
+            if pane != "tab-usage" and self._entity_tab(pane) is None:
+                return
+            inp = self.query_one("#filter-input", Input)
+            inp.display = True
+            inp.value = self._name_filter.get(pane, "")
+            inp.focus()
+            inp.cursor_position = len(inp.value)
+            self.call_after_refresh(self._anchor_active_table_top)
+
+        def action_close_filter(self) -> None:
+            # Esc = cancel: the needle goes away with the bar.
+            self._clear_filter()
+
+        def on_input_changed(self, event: Input.Changed) -> None:
+            # The modal's own inputs are handled on DateRangeModal; anything
+            # that bubbles here with another id is not the filter bar.
+            if event.input.id != "filter-input":
+                return
+            pane = self._active_pane()
+            if pane != "tab-usage" and self._entity_tab(pane) is None:
+                return
+            self._name_filter[pane] = event.value.strip()
+            if pane == "tab-usage":
+                self._refresh_usage()
+            else:
+                self._render_entity_rows(self._entity_tab(pane))
+            self.call_after_refresh(self._anchor_active_table_top)
+
+        def on_input_submitted(self, event: Input.Submitted) -> None:
+            if event.input.id == "filter-input":
+                # Enter hands the keys back to the table but keeps the bar
+                # visible: an applied filter is state the page must show.
+                pane = self._active_pane()
+                event.input.display = bool(
+                    self._name_filter.get(pane, "").strip())
+                self._focus_active_table()
+
+        def _focus_active_table(self) -> None:
+            pane = self._active_pane()
+            table_id = "t-usage" if pane == "tab-usage" else None
+            if table_id is None:
+                tab = self._entity_tab(pane)
+                table_id = tab.table_id if tab else None
+            if table_id is None:
+                return
+            try:
+                self.query_one(f"#{table_id}", DataTable).focus()
+            except Exception:
+                pass
+
+        def _anchor_active_table_top(self) -> None:
+            """Filter edits show the first match instead of pinning a deep row.
+
+            `_fill` restores the cursor by row key on refreshes and sorts. Under
+            a live filter that would keep a deep selection and make the list
+            look as if it scrolls by itself, hiding the first matches.
+            """
+            pane = self._active_pane()
+            table_id = "t-usage" if pane == "tab-usage" else None
+            if table_id is None:
+                tab = self._entity_tab(pane)
+                table_id = tab.table_id if tab else None
+            if table_id is None:
+                return
+            try:
+                table = self.query_one(f"#{table_id}", DataTable)
+            except Exception:
+                return
+            if table.row_count:
+                table.move_cursor(row=0)
+                table.scroll_home(animate=False)
+
+
+    class DashboardMixin:
+
+        # --- Dashboard page ------------------------------------------------
+
+        def _fill_dashboard(self, conn, start=None, end=None) -> None:
+            """Render every Dashboard panel for this tab's own window.
+
+            All panels reflect the Dashboard's window only — the other tabs are
+            untouched. Every query takes the same ``(start, end)`` so the tab
+            always agrees with itself.
+            """
+            try:
+                kpi = db.q_usage_kpi(conn, start, end)
+                s = db.q_usage_summary(conn, start, end)
+                models = db.q_usage_model_stats(conn, start, end)
+                tools = db.q_tools(conn, limit=self.DASH_TOP,
+                                   start_ts=start, end_ts=end)
+                projects = db.q_project_board(conn, start, end)
+            except sqlite3.Error as e:
+                # e.g. an un-migrated DB where the newer columns are missing.
+                self.query_one("#dash-note", Static).update(
+                    f"dashboard query failed ({e}); run: cbut sync")
+                self._report_query_error(e)
+                return
+            self._render_dashboard_usage(kpi, s)
+            self._render_dashboard_tokens(s)
+            self._render_dashboard_cache(s)
+            self._render_dashboard_models(models)
+            self._render_dashboard_tools(tools)
+            self._render_dashboard_projects(projects)
+            if not any(kpi.values()) and not (s["requests"] or 0):
+                self.query_one("#dash-note", Static).update(
+                    "No data in this window — widen the range above.")
+            else:
+                self.query_one("#dash-note", Static).update(
+                    "Range: the top bar · this tab keeps its own window")
+            self._apply_responsive_layout()
+            self.call_after_refresh(self._fit_dashboard)
+
+        def _fit_dashboard(self, settle: bool = True) -> None:
+            """Let the project ledger take the height the rows above it leave.
+
+            Every row is content-sized, so on a tall terminal the box ended a
+            dozen rows above the status line. The ledger is the only panel that
+            can *use* extra rows — it shows one per project — so it grows into
+            them, and only into them: when the rows above already fill the box
+            the spare is zero and the ledger keeps its natural height, which is
+            what keeps a long list scrolling instead of clipped.
+
+            The spare is measured from the rows above and the table's own row
+            count, never from the table's current height, so calling this twice
+            gives the same answer.
+            """
+            try:
+                box = self.query_one("#dash-box")
+                note = self.query_one("#dash-note", Static)
+                rows = [self.query_one(f"#dash-row-{i}") for i in (1, 2, 3)]
+                table = self.query_one("#dash-projects", DataTable)
+            except Exception:  # the Dashboard is not mounted yet
+                return
+            natural = 1 + table.row_count          # the header, then one row each
+            above = (note.size.height + rows[0].size.height + rows[1].size.height
+                     + 3 * self.DASH_MARGIN)
+            spare = box.size.height - above - (natural + 3)  # + title + border
+            table.styles.min_height = natural + max(0, spare)
+            # One correction pass: the sizes above are the ones the *previous*
+            # layout left, so a window switch can make the first answer too
+            # generous. Re-running after this refresh lands on the settled ones.
+            if settle:
+                self.call_after_refresh(lambda: self._fit_dashboard(False))
+
+        def _render_summary_panels(self, s: dict, kpi: dict) -> None:
+            def put(wid: str, label: str, val: str) -> None:
+                self.query_one(wid, Static).update(self._panel_line(label, val))
+
+            req = s["requests"] or 0
+            put("#sum-requests", "Requests", f"{req:,}")
+            put("#sum-sessions", "Sessions", f"{kpi['model_sessions'] or 0:,}")
+            put("#sum-projects", "Projects", f"{kpi['model_projects'] or 0:,}")
+            # Usage Total = Input + Output + cache hit.
+            put("#sum-usage-total", "Usage Total",
+                fmt_n(s["usage_total_tokens"]))
+            put("#sum-credits", "Credits",
+                fmt_credit_total(s["credits"], s["credit_rows"]))
+            put("#sum-input", "Input", fmt_n(s["prompt_tokens"]))
+            put("#sum-output", "Output", fmt_n(s["completion_tokens"]))
+            put("#sum-cache-hit", "Cache hit", fmt_n(s["cache_hit"]))
+            put("#sum-cache-miss", "Cache miss", fmt_n(s["cache_miss"]))
+            put("#sum-cache-write", "Cache write", fmt_n(s["cache_write"]))
+            # hit / (hit + miss + write) — the cacheable input.
+            frac = db.cache_hit_rate(s["cache_hit"], s["cache_miss"],
+                                     s["cache_write"])
+            put("#sum-hit-rate", "Cache hit rate",
+                "-" if frac is None else f"{frac * 100:.1f}%")
+            missing = []
+            if s["missing_prompt"]:
+                missing.append(f"{s['missing_prompt']:,} missing input")
+            if s["missing_completion"]:
+                missing.append(f"{s['missing_completion']:,} missing output")
+            if req == 0:
+                note = "no data in window"
+            elif missing:
+                note = ", ".join(missing)
+            else:
+                note = "complete"
+            # The panel reports completeness either way; naming it "Incomplete"
+            # made the good case read "Incomplete: complete".
+            put("#sum-missing", "Completeness", note)
+
+        def _render_dashboard_models(self, rows) -> None:
+            top = rows[: self.DASH_TOP]
+            if not top:
+                self.query_one("#dash-models", Static).update("nothing in this window")
+                return
+            labels = model_leader_labels(top)
+            # The panel's own width is the budget, and every field is sized from
+            # the data: an exact 13-character count in a 12-cell field made this
+            # line 56 cells in a 53-cell panel at 120 columns, which wrapped the
+            # request count onto a row of its own and read as a broken ranking.
+            panel = self.query_one("#dash-models", Static)
+            # One column is held back: the panel is measured before the pane's
+            # scrollbar takes its column, and a line that fits the measurement
+            # does not fit the render.
+            budget = (panel.size.width or 54) - 1
+            toks = [fmt_compact_n(r["usage_total_tokens"]) for r in top]
+            creds = [fmt_credit_total(r["credits"], r["credit_rows"]) for r in top]
+            reqs = [f"{r['requests']:,}" for r in top]
+            tok_w = max(len(t) for t in toks)
+            cred_w = max(len(c) for c in creds)
+            req_w = max(len(q) for q in reqs)
+            # "1. " + label + tokens + credits + " cr " + requests + " req"
+            label_w = max(8, budget - (tok_w + cred_w + req_w + 13))
+            lines = [f"{i}. {clip(label, label_w):<{label_w}} {t:>{tok_w}}"
+                     f" {c:>{cred_w}} cr {q:>{req_w}} req"
+                     for i, (label, t, c, q) in
+                     enumerate(zip(labels, toks, creds, reqs), 1)]
+            self.query_one("#dash-models", Static).update("\n".join(lines))
+
+        def _render_dashboard_tools(self, rows) -> None:
+            # The name-keyed list keeps 0-call tools under a window; drop them.
+            top = [r for r in rows if r["calls"]][: self.DASH_TOP]
+            if not top:
+                self.query_one("#dash-tools", Static).update("nothing in this window")
+                return
+            # Sized like the model list: the panel is the budget, and the call
+            # count grows with use ("100,000 calls" is 13 cells, not 12).
+            panel = self.query_one("#dash-tools", Static)
+            budget = (panel.size.width or 56) - 1
+            calls = [count_n(r["calls"], "call") for r in top]
+            spans = [ms(r["avg_ms"]) for r in top]
+            call_w = max(len(c) for c in calls)
+            span_w = max(len(s) for s in spans)
+            name_w = max(8, budget - (call_w + span_w + 6))
+            lines = [f"{i}. {clip(r['tool_name'], name_w):<{name_w}}"
+                     f"{c:>{call_w}} · {s:>{span_w}}"
+                     for i, (r, c, s) in enumerate(zip(top, calls, spans), 1)]
+            self.query_one("#dash-tools", Static).update("\n".join(lines))
+
+        def _render_dashboard_projects(self, rows) -> None:
+            """The project ledger: requests, usage, credits, reach and freshness.
+
+            The project column is the decoded cwd; it is capped like every other
+            dashboard name, and the full path stays on the Usage page's rows.
+            """
+            out = [[
+                clip(r["project"] or "(no project)", 26),
+                f"{r['requests']:,}",
+                fmt_n(r["usage_total_tokens"]),
+                fmt_credit_total(r["credits"], r["credit_rows"]),
+                f"{r['sessions']:,}",
+                ts(r["last_used"]),
+            ] for r in rows]
+            self._fill_wide("dash-projects", out,
+                            "No projects in this window")
+
+        def _render_dashboard_usage(self, k: dict, s: dict) -> None:
+            # COUNT(*) is authoritative -> a real 0, never a dash.
+            self._put_panel("#dash-sum-requests", "Requests",
+                            f"{s['requests'] or 0:,}")
+            self._put_panel("#dash-sum-credits", "Credits",
+                            fmt_credit_total(s["credits"], s["credit_rows"]))
+            self._put_panel("#dash-sum-sessions", "Sessions",
+                            f"{k['model_sessions'] or 0:,}")
+            self._put_panel("#dash-sum-projects", "Projects",
+                            f"{k['model_projects'] or 0:,}")
+            self._put_panel("#dash-kpi-tools", "Tool calls", f"{k['tool_calls']:,}")
+            self._put_panel("#dash-kpi-skills", "Skills", f"{k['skills']:,}")
+            self._put_panel("#dash-kpi-agents", "Agents", f"{k['agents']:,}")
+            self._put_panel("#dash-kpi-mcp", "MCP", f"{k['mcp']:,}")
+            self._put_panel("#dash-kpi-plugins", "Plugins", f"{k['plugins']:,}")
+
+        def _render_dashboard_tokens(self, s: dict) -> None:
+            self._put_panel("#dash-tok-usage", "Usage Total",
+                            fmt_n(s["usage_total_tokens"]))
+            self._put_panel("#dash-tok-input", "Input", fmt_n(s["prompt_tokens"]))
+            self._put_panel("#dash-tok-output", "Output", fmt_n(s["completion_tokens"]))
+            self._put_panel("#dash-tok-credits", "Credits",
+                            fmt_credit_total(s["credits"], s["credit_rows"]))
+            self._put_panel("#dash-tok-hit-rate", "Cache hit rate",
+                            self._hit_rate(s["cache_hit"], s["cache_miss"],
+                                           s["cache_write"]))
+
+        def _render_dashboard_cache(self, s: dict) -> None:
+            self._put_panel("#dash-cache-hit", "Cache hit", fmt_n(s["cache_hit"]))
+            self._put_panel("#dash-cache-miss", "Cache miss", fmt_n(s["cache_miss"]))
+            self._put_panel("#dash-cache-write", "Cache write", fmt_n(s["cache_write"]))
+
+        @staticmethod
+        def _panel_line(label: str, value: str) -> str:
+            # Fixed-width label + right-aligned value keeps the panels aligned
+            # without relying on text-align. 12 + 12 = 24 columns, so the line
+            # does not wrap inside a quarter-width panel at 120+ columns.
+            return f"[dim]{label:<12}[/dim]{value:>12}"
+
+        def _put_panel(self, wid: str, label: str, val: str) -> None:
+            self.query_one(wid, Static).update(self._panel_line(label, val))
+
+
+    class UsagePageMixin:
+
+        def _refresh_usage(self, conn=None) -> None:
+            # Recompute the window from the CURRENT time on every refresh — never
+            # a cached/opening-time range.
+            if not self._usage_ready:
+                return
+            now_ms = self._now_ms()
+            start, end = self._bounds_for("tab-usage")
+            self._last_refresh = now_ms
+            self._render_usage_window()
+            self._render_usage_status()
+            own = conn is None
+            if own:
+                try:
+                    conn = db.open_db(self.db_path, readonly=True)
+                except sqlite3.Error as e:
+                    self.query_one("#usage-status", Static).update(
+                        f"usage unavailable: {e}")
+                    self._report_query_error(e)
+                    return
+            try:
+                s = db.q_usage_summary(conn, start, end)
+                kpi = db.q_usage_kpi(conn, start, end)
+                self._render_summary_panels(s, kpi)
+                self._fill_usage_logs(conn, start, end, s["requests"])
+            except sqlite3.Error as e:
+                # e.g. an un-migrated DB where the newer columns are missing.
+                self.query_one("#usage-status", Static).update(
+                    f"usage query failed ({e}); run: cbut sync")
+                # The page note is local; the bar is what a user reads from
+                # another tab, so the failure has to reach both.
+                self._report_query_error(e)
+            finally:
+                if own:
+                    conn.close()
+            self._apply_responsive_layout()
+
+        def _render_usage_window(self) -> None:
+            value = self.tab_range["tab-usage"]
+            start, end = self._bounds_for("tab-usage")
+            end_dt = datetime.fromtimestamp(end / 1000)
+            if isinstance(value, db.CustomWindow):
+                # A custom window can carry minute precision, so the panel shows
+                # the full span with times.
+                start_s = ("all" if start is None else datetime.fromtimestamp(
+                    start / 1000).strftime("%Y-%m-%d %H:%M"))
+                span = f"{start_s} → {end_dt:%Y-%m-%d %H:%M}"
+                label = "Custom range"
+            else:
+                # Presets are whole local calendar days: a clock time would be
+                # noise. "Today" is one day, so printing the same date twice read
+                # like a bug — every 1d window hit it.
+                label = db.USAGE_RANGE_LABELS[value]
+                end_date = end_dt.strftime("%Y-%m-%d")
+                if start is None:
+                    span = end_date
+                else:
+                    start_date = datetime.fromtimestamp(
+                        start / 1000).strftime("%Y-%m-%d")
+                    span = (start_date if start_date == end_date
+                            else f"{start_date} — {end_date}")
+            self.query_one("#usage-window", Static).update(f"{label}\n{span}")
+
+        # --- Usage Statistics page -----------------------------------------
+
+        def _render_usage_status(self) -> None:
+            self.query_one("#usage-status", Static).update(
+                f"Last sync: {local_time(self._last_sync)}\n"
+                f"Last refresh: {local_time(self._last_refresh)}"
+            )
+
+        def _fill_usage_logs(self, conn, start, end, total) -> None:
+            """Fill the request log, and say so when the list is cut short.
+
+            ``total`` is the window's request count (``q_usage_summary`` already
+            counted it). The table holds ``USAGE_LOG_LIMIT`` rows, and a silently
+            shortened list is the row-level version of the half column the wide
+            plan refuses to render: the note names the cut instead of leaving a
+            reader to assume they are seeing everything. The filter runs in SQL
+            over the whole window, not over the visible page.
+            """
+            query = self._name_filter.get("tab-usage", "").strip()
+            mode = self._sort_mode.get("tab-usage", 0)
+            label = _USAGE_SORT_FIELDS[mode % len(_USAGE_SORT_FIELDS)][0]
+            rows = db.q_usage_request_logs(
+                conn, start, end, limit=self.USAGE_LOG_LIMIT,
+                text=query or None, order_by=label)
+            parts = []
+            if rows:
+                parts.append("cache hit=read, write=create · no cost/duration/status")
+                parts.append(f"sort: {label}")
+                if query:
+                    # Counted over the whole window, never the loaded page: the
+                    # list is capped, and the length of a capped list answers a
+                    # different question from "how many match".
+                    matched = db.q_usage_request_log_count(
+                        conn, start, end, text=query)
+                    parts.append(f'filter "{query}" · {matched:,} of {total:,}')
+                elif total > len(rows):
+                    parts.append(f"showing {len(rows):,} of {total:,}")
+            note = " · ".join(parts)
+            self.query_one("#usage-note", Static).update(note)
+            out = [[
+                local_time(r["ts"]), r["model"] or "-",
+                db.provider_label(r["provider"]),
+                fmt_n(r["usage_total_tokens"]),
+                fmt_credit(r["credit"]),
+                fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
+                fmt_n(r["prompt_cache_hit_tokens"]),
+                fmt_n(r["prompt_cache_miss_tokens"]),
+                fmt_n(r["prompt_cache_write_tokens"]),
+                self._hit_rate(r["prompt_cache_hit_tokens"],
+                               r["prompt_cache_miss_tokens"],
+                               r["prompt_cache_write_tokens"]),
+            ] for r in rows]
+            # The shared empty state, like the other seven tables: a note above an
+            # untouched table reads as a page that failed to load.
+            empty = (f'No requests match "{query}" in this window' if query
+                     else "No requests in this window — widen the range above.")
+            self._fill_wide("t-usage", out, empty)
+
+        @staticmethod
+        def _hit_rate(hit, miss, write) -> str:
+            frac = db.cache_hit_rate(hit, miss, write)
+            return "-" if frac is None else f"{frac * 100:.1f}%"
+
+
+    class SyncMixin:
+
+        def _request_sync(self) -> None:
+            # Guard against concurrent syncs: if one is running, mark a pending
+            # request and return; the running worker will retry on completion.
+            if self._sync_running:
+                self._sync_pending = True
+                return
+            self._sync_running = True
+            self.run_worker(self._do_sync, thread=True, group="sync")
+
+        def _do_sync(self) -> None:
+            # Runs in a worker thread. cbut-sync.run() opens its own RW
+            # connection and uses the incremental sync_state table, so no
+            # connection is shared across threads.
+            try:
+                if self.sync_mod is None:
+                    self.sync_mod = db.load_sync()
+                stats = self.sync_mod.run(quiet=True, db_path=self.db_path)
+                self.call_from_thread(self._on_sync_done, True, stats, None)
+            except Exception as e:  # report, never swallow
+                self.call_from_thread(self._on_sync_done, False, None, str(e))
+
+        def _on_sync_done(self, ok: bool, stats, err) -> None:
+            self._sync_running = False
+            if ok:
+                self._last_sync = self._now_ms()
+                if (stats or {}).get("files_indexed", 0) > 0:
+                    self.refresh_data()          # new rows can touch any tab
+                else:
+                    self._refresh_active_tab()   # nothing changed -> light refresh
+                    # A light refresh does not rewrite the bar, so without this
+                    # the transient "Syncing…" from `r` survives the sync that
+                    # already finished.
+                    self._set_status(self._status_line())
+                self.notify(f"Synced {count_n(stats.get('files_indexed', 0), 'file')}")
+            else:
+                # The same composer as the data line: a failed sync is a fact
+                # *about* the numbers, not a replacement for them.
+                self._status_note = "Sync failed: " + (err or "unknown error")[:200]
+                self._set_status(self._status_line())
+                self.notify("Sync failed — keeping current data", severity="error")
+            if self._sync_pending:
+                self._sync_pending = False
+                self._request_sync()
+
+
+    class RangeMixin:
+
+        def _sync_range_widget(self) -> None:
+            """Point the shared range Select at the active tab's own window.
+
+            Every tab keeps its own range (``self.tab_range``), so switching tabs
+            shows that tab's range, not the one you last picked elsewhere. Setting
+            ``Select.value`` posts a ``Changed`` message, which
+            ``on_select_changed`` ignores when it already matches the active
+            tab's range (so this never re-triggers a refresh loop).
+            """
+            try:
+                sel = self.query_one("#range", Select)
+            except Exception:
+                return
+            pane = self.query_one(TabbedContent).active
+            sel.display = True
+            value = self._range_of(pane)
+            # A custom window is shown as "Custom…" in the Select, with the span
+            # itself on the 📅 control next to it.
+            target = CUSTOM_RANGE if isinstance(value, db.CustomWindow) else value
+            if target is not None and sel.value != target:
+                sel.value = target
+            self._set_date_label(db.window_label(value),
+                                 isinstance(value, db.CustomWindow))
+
+        def _set_date_label(self, text: str, custom: bool = False) -> None:
+            try:
+                self.query_one("#topbar", TopBar).set_range_label(
+                    text, custom=custom)
+            except Exception:
+                pass
+
+        def on_select_changed(self, event: Select.Changed) -> None:
+            if event.select.id != "range":
+                return
+            pane = self.query_one(TabbedContent).active
+            if event.value == CUSTOM_RANGE:
+                # "Custom…" opens the picker — unless this is the programmatic
+                # sync that points the Select at an already-custom window.
+                if not isinstance(self._range_of(pane), db.CustomWindow):
+                    self._open_date_range(pane)
+                return
+            if event.value == self._range_of(pane):
+                return                    # programmatic sync, not a user change
+            self.tab_range[pane] = event.value
+            self._sync_range_widget()     # refresh the 📅 label
+            if pane == "tab-usage":
+                self._render_usage_window()   # keep the Usage Window panel live
+            self._refresh_active_tab()    # re-query only the visible tab
+
+        def _open_date_range(self, pane) -> None:
+            """Open the date picker for a pane and apply the picked window to it."""
+            modal = DateRangeModal(self._range_of(pane), self._now_ms())
+
+            def done(result) -> None:
+                if result is None:
+                    self._sync_range_widget()   # cancel: revert the Select
+                    return
+                self.tab_range[pane] = result
+                self._sync_range_widget()
+                if pane == "tab-usage":
+                    self._render_usage_window()
+                self._refresh_active_tab()
+
+            self.push_screen(modal, done)
+
+        def action_date_range(self) -> None:
+            pane = self._active_pane()
+            if self._range_of(pane) is None:
+                return
+            self._open_date_range(pane)
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            # Only the top bar's 📅 control reaches the app; the modal handles its
+            # own buttons (it is the active screen).
+            if event.button.id == "date-range":
+                pane = self.query_one(TabbedContent).active
+                self._open_date_range(pane)
+
+        def _bounds_for(self, pane):
+            """``(start_ms, end_ms)`` for a pane's **own** window, from now.
+
+            Never cached: every refresh derives the window from the current
+            time, so a long-running app does not drift. ``None`` as the start
+            means all-time.
+            """
+            rng = self._range_of(pane)
+            now = self._now_ms()
+            if rng is None:
+                return None, now
+            if isinstance(rng, db.CustomWindow):
+                return rng.start_ms, (now if rng.follow_now else rng.end_ms)
+            return db.window_bounds(rng, now)
+            # The ledger is re-fitted by DashBox.on_resize: this box is not laid
+            # out at its new height yet, so a fit measured here would use the
+            # old one.
+
+        def _range_of(self, pane):
+            """The window key for a pane (``None`` only if a pane has no range)."""
+            return self.tab_range.get(pane)
+
+        def _now_ms(self) -> int:
+            """The current time in epoch milliseconds, via the injectable clock."""
+            return int(self._clock() * 1000)
+
+
+    class TrackerApp(WideTableMixin, FilterSortMixin, DashboardMixin,
+                     UsagePageMixin, SyncMixin, RangeMixin, App):
         CSS = """
         #hist-title, #resp-title, #call-title { padding: 1 2; }
         TabbedContent { height: 1fr; }
@@ -1649,71 +2354,7 @@ if HAVE_TEXTUAL:
                 id="filter-input")
             with TabbedContent(initial=self.INITIAL_TAB):
                 with TabPane("Dashboard", id="tab-dashboard"):
-                    yield DashBox(
-                        # Row 1: headline counts, tokens, cache totals.
-                        Horizontal(
-                            Vertical(
-                                Static("Usage", classes="panel-title"),
-                                Static(id="dash-sum-requests"),
-                                Static(id="dash-sum-credits"),
-                                Static(id="dash-sum-sessions"),
-                                Static(id="dash-sum-projects"),
-                                Static(id="dash-kpi-tools"),
-                                Static(id="dash-kpi-skills"),
-                                Static(id="dash-kpi-agents"),
-                                Static(id="dash-kpi-mcp"),
-                                Static(id="dash-kpi-plugins"),
-                                classes="usage-panel", id="panel-dash-kpi",
-                            ),
-                            Vertical(
-                                Static("Tokens", classes="panel-title"),
-                                Static(id="dash-tok-usage"),
-                                Static(id="dash-tok-input"),
-                                Static(id="dash-tok-output"),
-                                Static(id="dash-tok-credits"),
-                                Static(id="dash-tok-hit-rate"),
-                                classes="usage-panel", id="panel-dash-tokens",
-                            ),
-                            Vertical(
-                                Static("Cache", classes="panel-title"),
-                                Static(id="dash-cache-hit"),
-                                Static(id="dash-cache-miss"),
-                                Static(id="dash-cache-write"),
-                                classes="usage-panel", id="panel-dash-cache",
-                            ),
-                            classes="dash-row", id="dash-row-1",
-                        ),
-                        # Row 2: the leaderboards.
-                        Horizontal(
-                            Vertical(
-                                Static("Top models", classes="panel-title"),
-                                Static(id="dash-models"),
-                                classes="usage-panel", id="panel-dash-models",
-                            ),
-                            Vertical(
-                                Static("Top tools", classes="panel-title"),
-                                Static(id="dash-tools"),
-                                classes="usage-panel", id="panel-dash-tools",
-                            ),
-                            classes="dash-row", id="dash-row-2",
-                        ),
-                        # Row 3: the project ledger, and the only panel that grows
-                        # past its own content: it takes whatever height is left.
-                        Horizontal(
-                            Vertical(
-                                Static("Projects", classes="panel-title"),
-                                Static("", id="colnote-projects",
-                                       classes="colnote"),
-                                DataTable(id="dash-projects",
-                                          zebra_stripes=True),
-                                classes="usage-panel",
-                                id="panel-dash-projects",
-                            ),
-                            classes="dash-row", id="dash-row-3",
-                        ),
-                        Static(id="dash-note"),
-                        id="dash-box",
-                    )
+                    yield from self._compose_dashboard()
                 for tab in ENTITY_TABS:
                     with TabPane(tab.title, id=tab.pane):
                         # The page's own summary line, directly above its table as
@@ -1722,47 +2363,119 @@ if HAVE_TEXTUAL:
                         yield Static(id=tab.note_id, classes="col-note")
                         yield Table(id=tab.table_id, zebra_stripes=True)
                 with TabPane("Usage", id="tab-usage"):
-                    yield Vertical(
-                        Horizontal(
-                            Vertical(
-                                Static("Window / Requests", classes="panel-title"),
-                                Static(id="usage-window"),
-                                Static(id="sum-requests"),
-                                Static(id="sum-sessions"),
-                                Static(id="sum-projects"),
-                                Static(id="sum-missing"),
-                                classes="usage-panel", id="panel-window",
-                            ),
-                            Vertical(
-                                Static("Model tokens", classes="panel-title"),
-                                Static(id="sum-usage-total"),
-                                Static(id="sum-credits"),
-                                Static(id="sum-input"),
-                                Static(id="sum-output"),
-                                classes="usage-panel", id="panel-tokens",
-                            ),
-                            Vertical(
-                                Static("Cache breakdown", classes="panel-title"),
-                                Static(id="sum-cache-hit"),
-                                Static(id="sum-cache-miss"),
-                                Static(id="sum-cache-write"),
-                                Static(id="sum-hit-rate"),
-                                classes="usage-panel", id="panel-cache",
-                            ),
-                            Vertical(
-                                Static("Runtime", classes="panel-title"),
-                                Static(id="usage-status"),
-                                classes="usage-panel", id="panel-runtime",
-                            ),
-                            id="usage-panels", classes="summary-panels",
-                        ),
-                        Static(id="usage-note"),
-                        Static(id="colnote-usage", classes="col-note"),
-                        DataTable(id="t-usage", zebra_stripes=True),
-                        id="usage-box",
-                    )
+                    yield from self._compose_usage()
             yield Static("", id="status")
             yield Footer()
+
+        def _compose_dashboard(self):
+            """Row 1 counts, row 2 the leaderboards, row 3 the ledger."""
+            yield DashBox(
+                # Row 1: headline counts, tokens, cache totals.
+                Horizontal(
+                    Vertical(
+                        Static("Usage", classes="panel-title"),
+                        Static(id="dash-sum-requests"),
+                        Static(id="dash-sum-credits"),
+                        Static(id="dash-sum-sessions"),
+                        Static(id="dash-sum-projects"),
+                        Static(id="dash-kpi-tools"),
+                        Static(id="dash-kpi-skills"),
+                        Static(id="dash-kpi-agents"),
+                        Static(id="dash-kpi-mcp"),
+                        Static(id="dash-kpi-plugins"),
+                        classes="usage-panel", id="panel-dash-kpi",
+                    ),
+                    Vertical(
+                        Static("Tokens", classes="panel-title"),
+                        Static(id="dash-tok-usage"),
+                        Static(id="dash-tok-input"),
+                        Static(id="dash-tok-output"),
+                        Static(id="dash-tok-credits"),
+                        Static(id="dash-tok-hit-rate"),
+                        classes="usage-panel", id="panel-dash-tokens",
+                    ),
+                    Vertical(
+                        Static("Cache", classes="panel-title"),
+                        Static(id="dash-cache-hit"),
+                        Static(id="dash-cache-miss"),
+                        Static(id="dash-cache-write"),
+                        classes="usage-panel", id="panel-dash-cache",
+                    ),
+                    classes="dash-row", id="dash-row-1",
+                ),
+                # Row 2: the leaderboards.
+                Horizontal(
+                    Vertical(
+                        Static("Top models", classes="panel-title"),
+                        Static(id="dash-models"),
+                        classes="usage-panel", id="panel-dash-models",
+                    ),
+                    Vertical(
+                        Static("Top tools", classes="panel-title"),
+                        Static(id="dash-tools"),
+                        classes="usage-panel", id="panel-dash-tools",
+                    ),
+                    classes="dash-row", id="dash-row-2",
+                ),
+                # Row 3: the project ledger, and the only panel that grows
+                # past its own content: it takes whatever height is left.
+                Horizontal(
+                    Vertical(
+                        Static("Projects", classes="panel-title"),
+                        Static("", id="colnote-projects",
+                               classes="colnote"),
+                        DataTable(id="dash-projects",
+                                  zebra_stripes=True),
+                        classes="usage-panel",
+                        id="panel-dash-projects",
+                    ),
+                    classes="dash-row", id="dash-row-3",
+                ),
+                Static(id="dash-note"),
+                id="dash-box",
+            )
+
+        def _compose_usage(self):
+            """The Usage page: three summary panels over the call log."""
+            yield Vertical(
+                Horizontal(
+                    Vertical(
+                        Static("Window / Requests", classes="panel-title"),
+                        Static(id="usage-window"),
+                        Static(id="sum-requests"),
+                        Static(id="sum-sessions"),
+                        Static(id="sum-projects"),
+                        Static(id="sum-missing"),
+                        classes="usage-panel", id="panel-window",
+                    ),
+                    Vertical(
+                        Static("Model tokens", classes="panel-title"),
+                        Static(id="sum-usage-total"),
+                        Static(id="sum-credits"),
+                        Static(id="sum-input"),
+                        Static(id="sum-output"),
+                        classes="usage-panel", id="panel-tokens",
+                    ),
+                    Vertical(
+                        Static("Cache breakdown", classes="panel-title"),
+                        Static(id="sum-cache-hit"),
+                        Static(id="sum-cache-miss"),
+                        Static(id="sum-cache-write"),
+                        Static(id="sum-hit-rate"),
+                        classes="usage-panel", id="panel-cache",
+                    ),
+                    Vertical(
+                        Static("Runtime", classes="panel-title"),
+                        Static(id="usage-status"),
+                        classes="usage-panel", id="panel-runtime",
+                    ),
+                    id="usage-panels", classes="summary-panels",
+                ),
+                Static(id="usage-note"),
+                Static(id="colnote-usage", classes="col-note"),
+                DataTable(id="t-usage", zebra_stripes=True),
+                id="usage-box",
+            )
 
         def on_mount(self) -> None:
             # One source of column truth: the registry the plan reads is the registry
@@ -1864,83 +2577,6 @@ if HAVE_TEXTUAL:
                 key_index=tab.key_index, key_kind=tab.key_kind,
                 key_rows=shown_keys)
             self._render_filter_note(tab, len(cells), len(rows))
-
-        def _sort_fields_for(self, pane):
-            if pane == "tab-usage":
-                return _USAGE_SORT_FIELDS
-            tab = self._entity_tab(pane)
-            return tab.sort_fields if tab else ()
-
-        def _sorted_indices(self, rows, tab: EntityTab, mode: int) -> list:
-            """Indices of ``rows`` in the selected order; None-valued last.
-
-            Returns indices rather than rows so the caller can slice the key
-            rows with the same positions.
-            """
-            order = list(range(len(rows)))
-            fields = tab.sort_fields
-            if not mode or not fields:
-                return order
-            _label, key, descending = fields[(mode - 1) % len(fields)]
-            key = key or tab.name_key
-            if not key:
-                return order
-            present = [i for i in order if rows[i][key] is not None]
-            missing = [i for i in order if rows[i][key] is None]
-            present.sort(
-                key=lambda i: (str(rows[i][key]).lower()
-                               if isinstance(rows[i][key], str) else rows[i][key]),
-                reverse=descending)
-            return present + missing
-
-        @staticmethod
-        def _matches(cells, query: str) -> bool:
-            if not query:
-                return True
-            for cell in cells:
-                plain = cell.plain if hasattr(cell, "plain") else cell
-                if query in str(plain).lower():
-                    return True
-            return False
-
-        def _sort_label(self, pane) -> str:
-            if pane == "tab-usage":
-                mode = self._sort_mode.get(pane, 0)
-                return _USAGE_SORT_FIELDS[mode % len(_USAGE_SORT_FIELDS)][0]
-            tab = self._entity_tab(pane)
-            if tab is None:
-                return ""
-            mode = self._sort_mode.get(pane, 0)
-            fields = tab.sort_fields
-            if not mode or not fields:
-                return "tab order"
-            return fields[(mode - 1) % len(fields)][0]
-
-        def _render_filter_note(self, tab: EntityTab, shown: int,
-                                total: int) -> None:
-            """The one-line summary above the table: rows, filter and sort.
-
-            Always visible because the active sort is state the page must name;
-            a silent reorder is indistinguishable from data that changed. When
-            the used-only default hid every row, the note is also how the
-            `a` toggle is discovered.
-            """
-            note = self.query_one(f"#note-{tab.pane}", Static)
-            parts = []
-            needle = self._name_filter.get(tab.pane, "").strip()
-            if needle:
-                parts.append(f'filter "{needle}" · {shown:,} of {total:,}')
-            elif self._show_unused.get(tab.pane):
-                parts.append(f"{shown:,} of {count_n(total, 'row')}")
-            else:
-                parts.append(count_n(shown, "row"))
-            if self._show_unused.get(tab.pane):
-                parts.append("incl. installed-unused")
-            elif shown == 0 and total:
-                parts.append("installed but unused in this window — press a")
-            parts.append(f"sort: {self._sort_label(tab.pane)}")
-            note.update(" · ".join(parts))
-            note.display = True
 
         @staticmethod
         def _entity_tab(pane: str):
@@ -2096,21 +2732,6 @@ if HAVE_TEXTUAL:
                 if self._name_filter.get(self._active_pane(), "").strip():
                     self.call_after_refresh(self._anchor_active_table_top)
 
-        # --- Usage Statistics page -----------------------------------------
-
-        def _render_usage_status(self) -> None:
-            self.query_one("#usage-status", Static).update(
-                f"Last sync: {local_time(self._last_sync)}\n"
-                f"Last refresh: {local_time(self._last_refresh)}"
-            )
-
-        @staticmethod
-        def _panel_line(label: str, value: str) -> str:
-            # Fixed-width label + right-aligned value keeps the panels aligned
-            # without relying on text-align. 12 + 12 = 24 columns, so the line
-            # does not wrap inside a quarter-width panel at 120+ columns.
-            return f"[dim]{label:<12}[/dim]{value:>12}"
-
         # Below this width the panels stack instead of sitting side by side:
         # each column needs ~28 cells for a 24-char panel line plus
         # border/padding, so 4 x 28 = 112.
@@ -2153,432 +2774,9 @@ if HAVE_TEXTUAL:
             # event.size carries the NEW size (self.size still lags here).
             self._apply_responsive_layout(event.size.width)
             self._plan_wide_tables(event.size.width)
-            # The ledger is re-fitted by DashBox.on_resize: this box is not laid
-            # out at its new height yet, so a fit measured here would use the
-            # old one.
-
-        def _range_of(self, pane):
-            """The window key for a pane (``None`` only if a pane has no range)."""
-            return self.tab_range.get(pane)
-
-        def _now_ms(self) -> int:
-            """The current time in epoch milliseconds, via the injectable clock."""
-            return int(self._clock() * 1000)
-
-        def _bounds_for(self, pane):
-            """``(start_ms, end_ms)`` for a pane's **own** window, from now.
-
-            Never cached: every refresh derives the window from the current
-            time, so a long-running app does not drift. ``None`` as the start
-            means all-time.
-            """
-            rng = self._range_of(pane)
-            now = self._now_ms()
-            if rng is None:
-                return None, now
-            if isinstance(rng, db.CustomWindow):
-                return rng.start_ms, (now if rng.follow_now else rng.end_ms)
-            return db.window_bounds(rng, now)
-
-        def _sync_range_widget(self) -> None:
-            """Point the shared range Select at the active tab's own window.
-
-            Every tab keeps its own range (``self.tab_range``), so switching tabs
-            shows that tab's range, not the one you last picked elsewhere. Setting
-            ``Select.value`` posts a ``Changed`` message, which
-            ``on_select_changed`` ignores when it already matches the active
-            tab's range (so this never re-triggers a refresh loop).
-            """
-            try:
-                sel = self.query_one("#range", Select)
-            except Exception:
-                return
-            pane = self.query_one(TabbedContent).active
-            sel.display = True
-            value = self._range_of(pane)
-            # A custom window is shown as "Custom…" in the Select, with the span
-            # itself on the 📅 control next to it.
-            target = CUSTOM_RANGE if isinstance(value, db.CustomWindow) else value
-            if target is not None and sel.value != target:
-                sel.value = target
-            self._set_date_label(db.window_label(value),
-                                 isinstance(value, db.CustomWindow))
-
-        def _set_date_label(self, text: str, custom: bool = False) -> None:
-            try:
-                self.query_one("#topbar", TopBar).set_range_label(
-                    text, custom=custom)
-            except Exception:
-                pass
-
-        def _render_usage_window(self) -> None:
-            value = self.tab_range["tab-usage"]
-            start, end = self._bounds_for("tab-usage")
-            end_dt = datetime.fromtimestamp(end / 1000)
-            if isinstance(value, db.CustomWindow):
-                # A custom window can carry minute precision, so the panel shows
-                # the full span with times.
-                start_s = ("all" if start is None else datetime.fromtimestamp(
-                    start / 1000).strftime("%Y-%m-%d %H:%M"))
-                span = f"{start_s} → {end_dt:%Y-%m-%d %H:%M}"
-                label = "Custom range"
-            else:
-                # Presets are whole local calendar days: a clock time would be
-                # noise. "Today" is one day, so printing the same date twice read
-                # like a bug — every 1d window hit it.
-                label = db.USAGE_RANGE_LABELS[value]
-                end_date = end_dt.strftime("%Y-%m-%d")
-                if start is None:
-                    span = end_date
-                else:
-                    start_date = datetime.fromtimestamp(
-                        start / 1000).strftime("%Y-%m-%d")
-                    span = (start_date if start_date == end_date
-                            else f"{start_date} — {end_date}")
-            self.query_one("#usage-window", Static).update(f"{label}\n{span}")
-
-        def _refresh_usage(self, conn=None) -> None:
-            # Recompute the window from the CURRENT time on every refresh — never
-            # a cached/opening-time range.
-            if not self._usage_ready:
-                return
-            now_ms = self._now_ms()
-            start, end = self._bounds_for("tab-usage")
-            self._last_refresh = now_ms
-            self._render_usage_window()
-            self._render_usage_status()
-            own = conn is None
-            if own:
-                try:
-                    conn = db.open_db(self.db_path, readonly=True)
-                except sqlite3.Error as e:
-                    self.query_one("#usage-status", Static).update(
-                        f"usage unavailable: {e}")
-                    self._report_query_error(e)
-                    return
-            try:
-                s = db.q_usage_summary(conn, start, end)
-                kpi = db.q_usage_kpi(conn, start, end)
-                self._render_summary_panels(s, kpi)
-                self._fill_usage_logs(conn, start, end, s["requests"])
-            except sqlite3.Error as e:
-                # e.g. an un-migrated DB where the newer columns are missing.
-                self.query_one("#usage-status", Static).update(
-                    f"usage query failed ({e}); run: cbut sync")
-                # The page note is local; the bar is what a user reads from
-                # another tab, so the failure has to reach both.
-                self._report_query_error(e)
-            finally:
-                if own:
-                    conn.close()
-            self._apply_responsive_layout()
-
-        def _render_summary_panels(self, s: dict, kpi: dict) -> None:
-            def put(wid: str, label: str, val: str) -> None:
-                self.query_one(wid, Static).update(self._panel_line(label, val))
-
-            req = s["requests"] or 0
-            put("#sum-requests", "Requests", f"{req:,}")
-            put("#sum-sessions", "Sessions", f"{kpi['model_sessions'] or 0:,}")
-            put("#sum-projects", "Projects", f"{kpi['model_projects'] or 0:,}")
-            # Usage Total = Input + Output + cache hit.
-            put("#sum-usage-total", "Usage Total",
-                fmt_n(s["usage_total_tokens"]))
-            put("#sum-credits", "Credits",
-                fmt_credit_total(s["credits"], s["credit_rows"]))
-            put("#sum-input", "Input", fmt_n(s["prompt_tokens"]))
-            put("#sum-output", "Output", fmt_n(s["completion_tokens"]))
-            put("#sum-cache-hit", "Cache hit", fmt_n(s["cache_hit"]))
-            put("#sum-cache-miss", "Cache miss", fmt_n(s["cache_miss"]))
-            put("#sum-cache-write", "Cache write", fmt_n(s["cache_write"]))
-            # hit / (hit + miss + write) — the cacheable input.
-            frac = db.cache_hit_rate(s["cache_hit"], s["cache_miss"],
-                                     s["cache_write"])
-            put("#sum-hit-rate", "Cache hit rate",
-                "-" if frac is None else f"{frac * 100:.1f}%")
-            missing = []
-            if s["missing_prompt"]:
-                missing.append(f"{s['missing_prompt']:,} missing input")
-            if s["missing_completion"]:
-                missing.append(f"{s['missing_completion']:,} missing output")
-            if req == 0:
-                note = "no data in window"
-            elif missing:
-                note = ", ".join(missing)
-            else:
-                note = "complete"
-            # The panel reports completeness either way; naming it "Incomplete"
-            # made the good case read "Incomplete: complete".
-            put("#sum-missing", "Completeness", note)
-
-        # --- Dashboard page ------------------------------------------------
-
-        def _fill_dashboard(self, conn, start=None, end=None) -> None:
-            """Render every Dashboard panel for this tab's own window.
-
-            All panels reflect the Dashboard's window only — the other tabs are
-            untouched. Every query takes the same ``(start, end)`` so the tab
-            always agrees with itself.
-            """
-            try:
-                kpi = db.q_usage_kpi(conn, start, end)
-                s = db.q_usage_summary(conn, start, end)
-                models = db.q_usage_model_stats(conn, start, end)
-                tools = db.q_tools(conn, limit=self.DASH_TOP,
-                                   start_ts=start, end_ts=end)
-                projects = db.q_project_board(conn, start, end)
-            except sqlite3.Error as e:
-                # e.g. an un-migrated DB where the newer columns are missing.
-                self.query_one("#dash-note", Static).update(
-                    f"dashboard query failed ({e}); run: cbut sync")
-                self._report_query_error(e)
-                return
-            self._render_dashboard_usage(kpi, s)
-            self._render_dashboard_tokens(s)
-            self._render_dashboard_cache(s)
-            self._render_dashboard_models(models)
-            self._render_dashboard_tools(tools)
-            self._render_dashboard_projects(projects)
-            if not any(kpi.values()) and not (s["requests"] or 0):
-                self.query_one("#dash-note", Static).update(
-                    "No data in this window — widen the range above.")
-            else:
-                self.query_one("#dash-note", Static).update(
-                    "Range: the top bar · this tab keeps its own window")
-            self._apply_responsive_layout()
-            self.call_after_refresh(self._fit_dashboard)
 
         #: Each .dash-row carries one row of bottom margin.
         DASH_MARGIN = 1
-
-        def _fit_dashboard(self, settle: bool = True) -> None:
-            """Let the project ledger take the height the rows above it leave.
-
-            Every row is content-sized, so on a tall terminal the box ended a
-            dozen rows above the status line. The ledger is the only panel that
-            can *use* extra rows — it shows one per project — so it grows into
-            them, and only into them: when the rows above already fill the box
-            the spare is zero and the ledger keeps its natural height, which is
-            what keeps a long list scrolling instead of clipped.
-
-            The spare is measured from the rows above and the table's own row
-            count, never from the table's current height, so calling this twice
-            gives the same answer.
-            """
-            try:
-                box = self.query_one("#dash-box")
-                note = self.query_one("#dash-note", Static)
-                rows = [self.query_one(f"#dash-row-{i}") for i in (1, 2, 3)]
-                table = self.query_one("#dash-projects", DataTable)
-            except Exception:  # the Dashboard is not mounted yet
-                return
-            natural = 1 + table.row_count          # the header, then one row each
-            above = (note.size.height + rows[0].size.height + rows[1].size.height
-                     + 3 * self.DASH_MARGIN)
-            spare = box.size.height - above - (natural + 3)  # + title + border
-            table.styles.min_height = natural + max(0, spare)
-            # One correction pass: the sizes above are the ones the *previous*
-            # layout left, so a window switch can make the first answer too
-            # generous. Re-running after this refresh lands on the settled ones.
-            if settle:
-                self.call_after_refresh(lambda: self._fit_dashboard(False))
-
-        def _put_panel(self, wid: str, label: str, val: str) -> None:
-            self.query_one(wid, Static).update(self._panel_line(label, val))
-
-        def _render_dashboard_usage(self, k: dict, s: dict) -> None:
-            # COUNT(*) is authoritative -> a real 0, never a dash.
-            self._put_panel("#dash-sum-requests", "Requests",
-                            f"{s['requests'] or 0:,}")
-            self._put_panel("#dash-sum-credits", "Credits",
-                            fmt_credit_total(s["credits"], s["credit_rows"]))
-            self._put_panel("#dash-sum-sessions", "Sessions",
-                            f"{k['model_sessions'] or 0:,}")
-            self._put_panel("#dash-sum-projects", "Projects",
-                            f"{k['model_projects'] or 0:,}")
-            self._put_panel("#dash-kpi-tools", "Tool calls", f"{k['tool_calls']:,}")
-            self._put_panel("#dash-kpi-skills", "Skills", f"{k['skills']:,}")
-            self._put_panel("#dash-kpi-agents", "Agents", f"{k['agents']:,}")
-            self._put_panel("#dash-kpi-mcp", "MCP", f"{k['mcp']:,}")
-            self._put_panel("#dash-kpi-plugins", "Plugins", f"{k['plugins']:,}")
-
-        def _render_dashboard_tokens(self, s: dict) -> None:
-            self._put_panel("#dash-tok-usage", "Usage Total",
-                            fmt_n(s["usage_total_tokens"]))
-            self._put_panel("#dash-tok-input", "Input", fmt_n(s["prompt_tokens"]))
-            self._put_panel("#dash-tok-output", "Output", fmt_n(s["completion_tokens"]))
-            self._put_panel("#dash-tok-credits", "Credits",
-                            fmt_credit_total(s["credits"], s["credit_rows"]))
-            self._put_panel("#dash-tok-hit-rate", "Cache hit rate",
-                            self._hit_rate(s["cache_hit"], s["cache_miss"],
-                                           s["cache_write"]))
-
-        def _render_dashboard_cache(self, s: dict) -> None:
-            self._put_panel("#dash-cache-hit", "Cache hit", fmt_n(s["cache_hit"]))
-            self._put_panel("#dash-cache-miss", "Cache miss", fmt_n(s["cache_miss"]))
-            self._put_panel("#dash-cache-write", "Cache write", fmt_n(s["cache_write"]))
-
-        def _render_dashboard_models(self, rows) -> None:
-            top = rows[: self.DASH_TOP]
-            if not top:
-                self.query_one("#dash-models", Static).update("nothing in this window")
-                return
-            labels = model_leader_labels(top)
-            # The panel's own width is the budget, and every field is sized from
-            # the data: an exact 13-character count in a 12-cell field made this
-            # line 56 cells in a 53-cell panel at 120 columns, which wrapped the
-            # request count onto a row of its own and read as a broken ranking.
-            panel = self.query_one("#dash-models", Static)
-            # One column is held back: the panel is measured before the pane's
-            # scrollbar takes its column, and a line that fits the measurement
-            # does not fit the render.
-            budget = (panel.size.width or 54) - 1
-            toks = [fmt_compact_n(r["usage_total_tokens"]) for r in top]
-            creds = [fmt_credit_total(r["credits"], r["credit_rows"]) for r in top]
-            reqs = [f"{r['requests']:,}" for r in top]
-            tok_w = max(len(t) for t in toks)
-            cred_w = max(len(c) for c in creds)
-            req_w = max(len(q) for q in reqs)
-            # "1. " + label + tokens + credits + " cr " + requests + " req"
-            label_w = max(8, budget - (tok_w + cred_w + req_w + 13))
-            lines = [f"{i}. {clip(label, label_w):<{label_w}} {t:>{tok_w}}"
-                     f" {c:>{cred_w}} cr {q:>{req_w}} req"
-                     for i, (label, t, c, q) in
-                     enumerate(zip(labels, toks, creds, reqs), 1)]
-            self.query_one("#dash-models", Static).update("\n".join(lines))
-
-        def _render_dashboard_tools(self, rows) -> None:
-            # The name-keyed list keeps 0-call tools under a window; drop them.
-            top = [r for r in rows if r["calls"]][: self.DASH_TOP]
-            if not top:
-                self.query_one("#dash-tools", Static).update("nothing in this window")
-                return
-            # Sized like the model list: the panel is the budget, and the call
-            # count grows with use ("100,000 calls" is 13 cells, not 12).
-            panel = self.query_one("#dash-tools", Static)
-            budget = (panel.size.width or 56) - 1
-            calls = [count_n(r["calls"], "call") for r in top]
-            spans = [ms(r["avg_ms"]) for r in top]
-            call_w = max(len(c) for c in calls)
-            span_w = max(len(s) for s in spans)
-            name_w = max(8, budget - (call_w + span_w + 6))
-            lines = [f"{i}. {clip(r['tool_name'], name_w):<{name_w}}"
-                     f"{c:>{call_w}} · {s:>{span_w}}"
-                     for i, (r, c, s) in enumerate(zip(top, calls, spans), 1)]
-            self.query_one("#dash-tools", Static).update("\n".join(lines))
-
-        def _render_dashboard_projects(self, rows) -> None:
-            """The project ledger: requests, usage, credits, reach and freshness.
-
-            The project column is the decoded cwd; it is capped like every other
-            dashboard name, and the full path stays on the Usage page's rows.
-            """
-            out = [[
-                clip(r["project"] or "(no project)", 26),
-                f"{r['requests']:,}",
-                fmt_n(r["usage_total_tokens"]),
-                fmt_credit_total(r["credits"], r["credit_rows"]),
-                f"{r['sessions']:,}",
-                ts(r["last_used"]),
-            ] for r in rows]
-            self._fill_wide("dash-projects", out,
-                            "No projects in this window")
-
-        @staticmethod
-        def _hit_rate(hit, miss, write) -> str:
-            frac = db.cache_hit_rate(hit, miss, write)
-            return "-" if frac is None else f"{frac * 100:.1f}%"
-
-        def _fill_usage_logs(self, conn, start, end, total) -> None:
-            """Fill the request log, and say so when the list is cut short.
-
-            ``total`` is the window's request count (``q_usage_summary`` already
-            counted it). The table holds ``USAGE_LOG_LIMIT`` rows, and a silently
-            shortened list is the row-level version of the half column the wide
-            plan refuses to render: the note names the cut instead of leaving a
-            reader to assume they are seeing everything. The filter runs in SQL
-            over the whole window, not over the visible page.
-            """
-            query = self._name_filter.get("tab-usage", "").strip()
-            mode = self._sort_mode.get("tab-usage", 0)
-            label = _USAGE_SORT_FIELDS[mode % len(_USAGE_SORT_FIELDS)][0]
-            rows = db.q_usage_request_logs(
-                conn, start, end, limit=self.USAGE_LOG_LIMIT,
-                text=query or None, order_by=label)
-            parts = []
-            if rows:
-                parts.append("cache hit=read, write=create · no cost/duration/status")
-                parts.append(f"sort: {label}")
-                if query:
-                    # Counted over the whole window, never the loaded page: the
-                    # list is capped, and the length of a capped list answers a
-                    # different question from "how many match".
-                    matched = db.q_usage_request_log_count(
-                        conn, start, end, text=query)
-                    parts.append(f'filter "{query}" · {matched:,} of {total:,}')
-                elif total > len(rows):
-                    parts.append(f"showing {len(rows):,} of {total:,}")
-            note = " · ".join(parts)
-            self.query_one("#usage-note", Static).update(note)
-            out = [[
-                local_time(r["ts"]), r["model"] or "-",
-                db.provider_label(r["provider"]),
-                fmt_n(r["usage_total_tokens"]),
-                fmt_credit(r["credit"]),
-                fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
-                fmt_n(r["prompt_cache_hit_tokens"]),
-                fmt_n(r["prompt_cache_miss_tokens"]),
-                fmt_n(r["prompt_cache_write_tokens"]),
-                self._hit_rate(r["prompt_cache_hit_tokens"],
-                               r["prompt_cache_miss_tokens"],
-                               r["prompt_cache_write_tokens"]),
-            ] for r in rows]
-            # The shared empty state, like the other seven tables: a note above an
-            # untouched table reads as a page that failed to load.
-            empty = (f'No requests match "{query}" in this window' if query
-                     else "No requests in this window — widen the range above.")
-            self._fill_wide("t-usage", out, empty)
-
-        def on_select_changed(self, event: Select.Changed) -> None:
-            if event.select.id != "range":
-                return
-            pane = self.query_one(TabbedContent).active
-            if event.value == CUSTOM_RANGE:
-                # "Custom…" opens the picker — unless this is the programmatic
-                # sync that points the Select at an already-custom window.
-                if not isinstance(self._range_of(pane), db.CustomWindow):
-                    self._open_date_range(pane)
-                return
-            if event.value == self._range_of(pane):
-                return                    # programmatic sync, not a user change
-            self.tab_range[pane] = event.value
-            self._sync_range_widget()     # refresh the 📅 label
-            if pane == "tab-usage":
-                self._render_usage_window()   # keep the Usage Window panel live
-            self._refresh_active_tab()    # re-query only the visible tab
-
-        def _open_date_range(self, pane) -> None:
-            """Open the date picker for a pane and apply the picked window to it."""
-            modal = DateRangeModal(self._range_of(pane), self._now_ms())
-
-            def done(result) -> None:
-                if result is None:
-                    self._sync_range_widget()   # cancel: revert the Select
-                    return
-                self.tab_range[pane] = result
-                self._sync_range_widget()
-                if pane == "tab-usage":
-                    self._render_usage_window()
-                self._refresh_active_tab()
-
-            self.push_screen(modal, done)
-
-        def on_button_pressed(self, event: Button.Pressed) -> None:
-            # Only the top bar's 📅 control reaches the app; the modal handles its
-            # own buttons (it is the active screen).
-            if event.button.id == "date-range":
-                pane = self.query_one(TabbedContent).active
-                self._open_date_range(pane)
 
         # --- row select: route to detail screens ---------------------------
 
@@ -2658,180 +2856,6 @@ if HAVE_TEXTUAL:
             # re-render of already-loaded data).
             self._set_status("Syncing…")
             self._request_sync()
-
-        def action_toggle_unused(self) -> None:
-            # a = include the installed-but-unused half of the union, per tab.
-            # Rows re-render from the cache; no query runs.
-            pane = self._active_pane()
-            tab = self._entity_tab(pane)
-            if tab is None:
-                return
-            self._show_unused[pane] = not self._show_unused[pane]
-            self._render_entity_rows(tab)
-
-        def action_cycle_sort(self) -> None:
-            pane = self._active_pane()
-            fields = self._sort_fields_for(pane)
-            if not fields:
-                return
-            if pane == "tab-usage":
-                self._sort_mode[pane] = ((self._sort_mode.get(pane, 0) + 1)
-                                         % len(fields))
-                self._refresh_usage()
-            else:
-                tab = self._entity_tab(pane)
-                if tab is None:
-                    return
-                self._sort_mode[pane] = ((self._sort_mode.get(pane, 0) + 1)
-                                         % (len(fields) + 1))
-                self._render_entity_rows(tab)
-
-        def action_date_range(self) -> None:
-            pane = self._active_pane()
-            if self._range_of(pane) is None:
-                return
-            self._open_date_range(pane)
-
-        def action_open_filter(self) -> None:
-            pane = self._active_pane()
-            if pane != "tab-usage" and self._entity_tab(pane) is None:
-                return
-            inp = self.query_one("#filter-input", Input)
-            inp.display = True
-            inp.value = self._name_filter.get(pane, "")
-            inp.focus()
-            inp.cursor_position = len(inp.value)
-            self.call_after_refresh(self._anchor_active_table_top)
-
-        def action_close_filter(self) -> None:
-            # Esc = cancel: the needle goes away with the bar.
-            self._clear_filter()
-
-        def _clear_filter(self) -> None:
-            pane = self._active_pane()
-            inp = self.query_one("#filter-input", Input)
-            inp.value = ""
-            self._name_filter[pane] = ""
-            inp.display = False
-            if pane == "tab-usage":
-                self._refresh_usage()
-            else:
-                tab = self._entity_tab(pane)
-                if tab is not None:
-                    self._render_entity_rows(tab)
-            self._focus_active_table()
-            self.call_after_refresh(self._anchor_active_table_top)
-
-        def _sync_filter_bar(self) -> None:
-            """Show the active tab's filter, or hide the row when it has none."""
-            pane = self._active_pane()
-            inp = self.query_one("#filter-input", Input)
-            value = self._name_filter.get(pane, "")
-            inp.value = value
-            inp.display = bool(value.strip())
-
-        def _focus_active_table(self) -> None:
-            pane = self._active_pane()
-            table_id = "t-usage" if pane == "tab-usage" else None
-            if table_id is None:
-                tab = self._entity_tab(pane)
-                table_id = tab.table_id if tab else None
-            if table_id is None:
-                return
-            try:
-                self.query_one(f"#{table_id}", DataTable).focus()
-            except Exception:
-                pass
-
-        def _anchor_active_table_top(self) -> None:
-            """Filter edits show the first match instead of pinning a deep row.
-
-            `_fill` restores the cursor by row key on refreshes and sorts. Under
-            a live filter that would keep a deep selection and make the list
-            look as if it scrolls by itself, hiding the first matches.
-            """
-            pane = self._active_pane()
-            table_id = "t-usage" if pane == "tab-usage" else None
-            if table_id is None:
-                tab = self._entity_tab(pane)
-                table_id = tab.table_id if tab else None
-            if table_id is None:
-                return
-            try:
-                table = self.query_one(f"#{table_id}", DataTable)
-            except Exception:
-                return
-            if table.row_count:
-                table.move_cursor(row=0)
-                table.scroll_home(animate=False)
-
-        def on_input_changed(self, event: Input.Changed) -> None:
-            # The modal's own inputs are handled on DateRangeModal; anything
-            # that bubbles here with another id is not the filter bar.
-            if event.input.id != "filter-input":
-                return
-            pane = self._active_pane()
-            if pane != "tab-usage" and self._entity_tab(pane) is None:
-                return
-            self._name_filter[pane] = event.value.strip()
-            if pane == "tab-usage":
-                self._refresh_usage()
-            else:
-                self._render_entity_rows(self._entity_tab(pane))
-            self.call_after_refresh(self._anchor_active_table_top)
-
-        def on_input_submitted(self, event: Input.Submitted) -> None:
-            if event.input.id == "filter-input":
-                # Enter hands the keys back to the table but keeps the bar
-                # visible: an applied filter is state the page must show.
-                pane = self._active_pane()
-                event.input.display = bool(
-                    self._name_filter.get(pane, "").strip())
-                self._focus_active_table()
-
-        def _request_sync(self) -> None:
-            # Guard against concurrent syncs: if one is running, mark a pending
-            # request and return; the running worker will retry on completion.
-            if self._sync_running:
-                self._sync_pending = True
-                return
-            self._sync_running = True
-            self.run_worker(self._do_sync, thread=True, group="sync")
-
-        def _do_sync(self) -> None:
-            # Runs in a worker thread. cbut-sync.run() opens its own RW
-            # connection and uses the incremental sync_state table, so no
-            # connection is shared across threads.
-            try:
-                if self.sync_mod is None:
-                    self.sync_mod = db.load_sync()
-                stats = self.sync_mod.run(quiet=True, db_path=self.db_path)
-                self.call_from_thread(self._on_sync_done, True, stats, None)
-            except Exception as e:  # report, never swallow
-                self.call_from_thread(self._on_sync_done, False, None, str(e))
-
-        def _on_sync_done(self, ok: bool, stats, err) -> None:
-            self._sync_running = False
-            if ok:
-                self._last_sync = self._now_ms()
-                if (stats or {}).get("files_indexed", 0) > 0:
-                    self.refresh_data()          # new rows can touch any tab
-                else:
-                    self._refresh_active_tab()   # nothing changed -> light refresh
-                    # A light refresh does not rewrite the bar, so without this
-                    # the transient "Syncing…" from `r` survives the sync that
-                    # already finished.
-                    self._set_status(self._status_line())
-                self.notify(f"Synced {count_n(stats.get('files_indexed', 0), 'file')}")
-            else:
-                # The same composer as the data line: a failed sync is a fact
-                # *about* the numbers, not a replacement for them.
-                self._status_note = "Sync failed: " + (err or "unknown error")[:200]
-                self._set_status(self._status_line())
-                self.notify("Sync failed — keeping current data", severity="error")
-            if self._sync_pending:
-                self._sync_pending = False
-                self._request_sync()
 
 
 def main(argv=None) -> int:
