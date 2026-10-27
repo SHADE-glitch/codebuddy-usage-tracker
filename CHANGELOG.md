@@ -1662,3 +1662,28 @@ Evidence L0 2026-10-26: a response with `provider='builtin'` reads "Built-in" on
          and one with a vendor label reads the label.
 Cost     None.
 Commit   59bc96c
+
+### D-073 · 2026-10-27 · guard
+Symptom  How a log record becomes a number on screen was described in four places — AGENTS.md, the
+         maintenance index, the sync driver's comments and the TUI's — and none of them was
+         checked. Two had already drifted: both said the TUI runs a sync every 30 seconds, while
+         `on_mount` runs one and then stays still ("new rows arrive only through `r`"), and
+         AGENTS.md called `~/.codebuddy/traces/` "not ingested" in one paragraph and "indexes the
+         logs (transcripts and OTel traces)" in the next.
+Change   Add `docs/maintenance/pipeline.md`: the four stages with a `file:line` for every claim, the
+         record-dispatch table, the tab table, and an index of where to look when a number looks
+         wrong. Pin it — `test_maintenance_docs.py` fails when a citation no longer lands on the
+         symbol its sentence names (a short `:123` resolves against the file named in its `## `
+         heading), and `test_tui.py` fails when the tab table and `TAB_IDS`/`ENTITY_TABS`
+         disagree. The tab list is now asserted by name; the old test only counted eight of them.
+         Correct the three stale claims above, and both READMEs' test counts, in the same change.
+Evidence L0 2026-10-27: `python3 -m unittest discover -s scripts/tests` — 597 tests, OK, with both
+         READMEs' counts checked against the loader. Broken on purpose twice: renaming
+         `tab-tools` failed both tab tests; moving one citation five lines failed with
+         "cbut-tui.py:1825 should carry '_fill_entity'".
+Cost     The citation check understands only the forms the page uses. A sentence that names a symbol
+         with prose in between makes no claim it can test, and a section that cites two files must
+         name the second one explicitly. It verifies pointers, not prose: a page that points at the
+         right lines and describes them wrongly still passes.
+Commit   2e421e9
+
