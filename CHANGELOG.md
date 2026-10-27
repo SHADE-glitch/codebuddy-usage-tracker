@@ -1687,3 +1687,27 @@ Cost     The citation check understands only the forms the page uses. A sentence
          right lines and describes them wrongly still passes.
 Commit   2e421e9
 
+
+### D-074 · 2026-10-27 · fix
+Symptom  `cbut stats` capped only its Top tools section, at a hardcoded 10; Skills, Agents,
+         Plugins and MCP printed every row they had (42 rows on a 42-row database). The same five
+         tables were also written out twice — overview and per-kind — and had drifted: the
+         overview's MCP table had no `ok` column, its tool table no `pend`, its plugin table no
+         `last used`. Nothing compared the two lists, so each omission was invisible.
+Change   One spec (`ENTITY_COLUMNS`) renders both paths; a column the summary leaves out has to
+         be named in `OVERVIEW_OMITS`, and all five sections share `OVERVIEW_LIMIT = 10`. The
+         printed header lines of `cbut stats` and `cbut tools|skills|agents|plugins|mcp` are
+         pinned in `test_stats.py`, with a further check that every declared key is returned by
+         its query. The TUI keeps its own row builders: 45 assertions there index cells by
+         position, so it is neither changed nor covered here.
+Evidence L0 2026-10-27: `python3 -m unittest discover -s scripts/tests` — 601 tests, OK.
+         Byte-for-byte against the previous build on a seeded database: all six commands
+         identical, and the per-kind ones identical again on a 42-row database; the overview's
+         four unbounded sections now stop at 10. Four deliberate breaks, each caught by the test
+         aimed at it: undeclaring `pend`, dropping `proj` from the tool spec, a spec key the
+         query does not return, and raising the cap to 50.
+Cost     The overview's column set is still the status quo, now declared instead of implied —
+         `pend` and MCP's `ok` are still missing from it, and restoring either is one line.
+         `q_plugins` takes no LIMIT, so that kind's cap is applied after the query.
+Commit   45b3968
+
