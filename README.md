@@ -354,7 +354,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 601 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 602 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -372,7 +372,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
   running placeholder upgraded and never downgraded on replay, the final file's
   `trace.sessionId` linking what the stream could not, re-reads
   idempotent, the full `_run` integration |
-| `test_tui.py` | 139 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness, the used-only default with the per-tab `a` toggle, the `/` name filter (Enter applies, Esc cancels),
+| `test_tui.py` | 140 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness, the used-only default with the per-tab `a` toggle, the `/` name filter (Enter applies, Esc cancels),
   the Usage log's newest-100 cap with no page key, provider suffixes on shared model names,
   the Dashboard's Projects board and the credit cells that read `-` when a route reported none |
 | `test_cross_repo_golden.py` | 17 | the cross-repo golden fixture: one fixed input set (NULL / partial / cache-missing token rows, model spellings, local-midnight and cross-hour boundaries, both 2026 US DST days) run through this repo's own Usage Total expression, window aggregates, model rollup, typed date entry and calendar-day windows, pinned to the canonical file shared with ocut and qcut |

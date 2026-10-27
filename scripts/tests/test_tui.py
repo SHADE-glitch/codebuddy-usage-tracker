@@ -3668,5 +3668,89 @@ class ModelLeaderLabelsTest(unittest.TestCase):
         self.assertEqual(tui.model_leader_labels(rows), ["solo"])
 
 
+class EntityRowColumnsTest(unittest.TestCase):
+    """Every cell the TUI renders for an entity row comes from a declared column.
+
+    The TUI builds its five entity rows itself (``_tool_row`` … ``_mcp_row``), which
+    made it a third copy of the same table — the one the headless report cannot
+    see. These rows are a subsequence of ``cbut-stats.ENTITY_COLUMNS``, in the same
+    order: a column the spec does not declare cannot reach the screen, and a
+    reordering fails here instead of in a screenshot.
+
+    The Tokens tab is not covered: it is a different table (one row per model and
+    provider, not per entity) and ``cbut models`` prints a different shape again.
+    """
+
+    # The columns each row builder fills, in order. Pinned rather than derived —
+    # changing one is an edit here, which is what a pin is for.
+    SHOWS = {
+        "tool": ["tool", "calls", "ok", "fail", "pend", "avg", "last used",
+                 "state"],
+        "skill": ["skill", "calls", "ok", "last used", "state"],
+        "agent": ["agent", "calls", "last used", "state"],
+        "plugin": ["plugin", "uses", "skills", "agents", "cmds", "state"],
+        "mcp": ["server", "tool", "calls", "ok", "last used", "state"],
+    }
+    BUILDERS = {"tool": "_tool_row", "skill": "_skill_row",
+                "agent": "_agent_row", "plugin": "_plugin_row",
+                "mcp": "_mcp_row"}
+
+    def row_for(self, columns):
+        """A row where every column holds a value no other column could produce.
+
+        Distinct numbers are what make the mapping checkable: if two cells swap
+        places the values swap with them, so the test fails on content rather
+        than on a count that would still be right.
+        """
+        row = {"installed": 1, "ever_used": 1}
+        for i, (_header, key, fmt) in enumerate(columns):
+            if key is None:
+                continue
+            if fmt == stats.TEXT:
+                row[key] = f"cell-{key}"
+            elif fmt == stats.NUM:
+                row[key] = 1000 + i
+            elif fmt == stats.MS:
+                row[key] = 250 + i        # under a second: rendered as "<n>ms"
+            elif fmt == stats.TS:
+                row[key] = 1_790_000_000_000 + i * 60_000
+        return row
+
+    def expected(self, kind, fmt, key, row):
+        if fmt == stats.STATE:
+            # installed, ever-used and called: the label is pinned rather than
+            # computed, so a builder that passed the wrong count reads "installed".
+            return "in use"
+        if fmt == stats.MS:
+            return tui.ms(row[key])
+        if fmt == stats.TS:
+            return tui.ts(row[key])
+        if fmt == stats.NUM:
+            return f"{row[key]:,}"
+        return row[key]
+
+    def test_each_builder_fills_the_declared_columns_in_order(self):
+        for kind, columns in stats.ENTITY_COLUMNS.items():
+            shown = self.SHOWS[kind]
+            headers = [header for header, _key, _fmt in columns]
+            remaining = iter(headers)
+            self.assertTrue(
+                all(header in remaining for header in shown),
+                f"{kind}: the TUI shows {shown}, which is not a subsequence of "
+                f"the declared columns {headers}")
+            row = self.row_for(columns)
+            cells = getattr(tui, self.BUILDERS[kind])(row)
+            self.assertEqual(
+                len(cells), len(shown),
+                f"{kind}: the row builder filled {len(cells)} cells, but "
+                f"{len(shown)} columns are pinned")
+            by_header = {header: (key, fmt) for header, key, fmt in columns}
+            for cell, header in zip(cells, shown):
+                key, fmt = by_header[header]
+                self.assertEqual(
+                    cell, self.expected(kind, fmt, key, row),
+                    f"{kind}: the cell pinned as {header!r} does not carry {key!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
