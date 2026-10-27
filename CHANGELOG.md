@@ -1711,3 +1711,23 @@ Cost     The overview's column set is still the status quo, now declared instead
          `q_plugins` takes no LIMIT, so that kind's cap is applied after the query.
 Commit   45b3968
 
+
+### D-075 · 2026-10-27 · guard
+Symptom  D-074 unified the two headless tables but left the TUI's five row builders as a third,
+         unguarded copy of the same columns — the copy the spec cannot see. A builder could
+         gain, drop or reorder a column and nothing failed.
+Change   `test_tui.py` pins the columns each builder fills and checks them against
+         `cbut-stats.ENTITY_COLUMNS`: the pinned list must be a subsequence of the spec, so a
+         column the spec does not declare cannot reach the screen, and every cell must carry the
+         value its column names. Each column gets a distinct sentinel, so a swap fails on
+         content rather than on a count that would still be right. The Tokens tab is out of
+         scope: it is a different table, keyed by (model, provider).
+Evidence L0 2026-10-27: `python3 -m unittest discover -s scripts/tests` — 602 tests, OK. Three
+         deliberate breaks, each caught with the message it should produce: swapping ok/fail in
+         `_tool_row` ("1,003" != "1,002"), an extra cell in `_mcp_row` (7 != 6), and moving
+         `state` before `last used` in `_skill_row` ("in use" != "09-21 22:16").
+Cost     The pin is a literal list per kind, so adding a column to the TUI is now two edits (the
+         builder and the pin) — deliberate, since the previous state was one edit and no signal.
+         The check reads values, not rendering: a change to how a cell is formatted still passes.
+Commit   8785cb0
+
