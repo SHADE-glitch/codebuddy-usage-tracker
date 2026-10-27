@@ -1748,3 +1748,33 @@ Cost     The table in the page is a second copy of the list by design: a reader 
          now means editing the registry, the page and this assertion together.
 Commit   2e421e9
 
+
+### D-077 · 2026-10-27 · chore
+Symptom  The five `v_*` views and the five `q_*` functions each spelled out the same aggregate —
+         same columns, same CASE expressions, same JOIN — as two copies. They agreed because
+         nobody had edited one side, and the suite compared only `(installed, ever_used)` on
+         `v_tools`: changing `completed`, `avg_ms` or `projects` in one copy left the other
+         answering the old question and nothing failed. `cbut export` reads the views and every
+         tab reads the `q_*` functions, so the two surfaces could disagree about the same
+         database.
+Change   One text per kind: `_AGGREGATES` holds (CTE, SELECT … JOIN …, GROUP BY, ORDER BY) and
+         `_entity_aggregate(kind, on_time, order)` splices the window into the JOIN's ON clause.
+         The views are generated from it (`_VIEWS`), the five `q_*` functions are one-liners
+         over it, and only the two differences that must exist are left: a view cannot be
+         parameterized, and a query orders its rows for a screen. `test_usage.py` replaces the
+         two-flag comparison with one that runs all five views and all five queries over a
+         fixture where every column has a value of its own, and compares column order and rows.
+Evidence L0 2026-10-27: the five views' `sqlite_master` SQL, their rows and their column lists
+         were captured from HEAD and compared after the change on a seeded database — identical
+         (whitespace-normalised for the SQL text). 602 tests, OK. Three breaks, each caught: a
+         query-only `ever_used` change failed with "v_tools and q_tool disagree on rows"; a view
+         built from the wrong kind failed with "v_skills and q_skill disagree on columns"; and a
+         `completed`-only drift, under which the old two-flag assertion still passed while the
+         new test failed.
+Cost     The SQL no longer reads as five formatted blocks: to see what a view does you read
+         `_AGGREGATES` and add the window back in your head. The test proves the view and the
+         query agree, not that either is right — what each column means is pinned by the table
+         spec in `cbut-stats.py` (D-074) and by the TUI row test (D-075). The insertion moved
+         every citation below it in `cbut_db.py`: `docs/maintenance/pipeline.md` was re-pointed
+         (+119 above the views, −11 below the queries), and its citation guard is what checks it.
+Commit   b14b38a
