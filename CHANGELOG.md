@@ -1879,3 +1879,25 @@ Cost     The check is presence, not meaning: a citation passes when the line hol
          no symbol are checked for "not blank" only — that is where the three wrong ones were, and
          reading found them, not the suite.
 Commit   fbb8d95
+
+### D-082 · 2026-10-28 · guard
+Symptom  `measurements.md` explained two readings with a cadence that no longer exists: "the TUI's
+         30-second worker" and "the 5-second timer". `on_mount` syncs once and then stays still,
+         `r` is the only thing that syncs again, and no `set_interval` call is left in the TUI at
+         all. D-073 corrected this same sentence in AGENTS.md and the maintenance index and left
+         these two behind — a dated reading wrapped in a stale mechanism reads as a fact about the
+         program, and nothing checked it.
+Change   Both sentences now say what the TUI does (one sync at launch, `r` on demand, re-query on
+         tab/window/sort/filter change), and `TimersAreDocumentedAsTheyRun` scans every live
+         document for "<n>-second timer|worker|auto-sync" and fails unless the TUI really sets that
+         interval. `CHANGELOG.md` is excluded on purpose: D-003 added a guard to a timer that did
+         exist, and an entry records its own day.
+Evidence L0 2026-10-28: on the pre-fix text the scan names exactly the two lines (`:85`
+         "30-second worker", `:298` "5-second timer"); after the edit it is empty and
+         `test_maintenance_docs.py` runs 22 tests OK. A synthetic document holding a "5-second
+         timer" next to a "30-second timeout" reports only the first, so a timeout is not swept in.
+Cost     The scan knows one phrasing. A cadence written as "every 30 s" or "twice a minute" is
+         invisible to it, and a `set_interval` that passes an expression rather than a literal
+         fails `setUp` instead of being read — deliberately, so the guard cannot report "no timer"
+         from a call it could not parse.
+Commit   766ee95
