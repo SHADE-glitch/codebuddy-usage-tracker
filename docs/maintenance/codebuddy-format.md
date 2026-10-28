@@ -65,10 +65,13 @@ cbut format --write      # refresh the block in this file after changing the reg
   gone as of schema v5 — they are prose derived from the conversation. See `AGENTS.md`
   ("Metadata only, never content") and `test_privacy.py`, which scans every text column of every
   table for sentinel values.
-- **`~/.codebuddy/traces`** (OTel spans). Not ingested: that is where internal agents
-  (`autoModeClassifier`, `summaryGenerator`, …) live, and their counts stay at zero until trace
-  ingestion is designed rather than bolted on. This is a decision, not an oversight — the
-  alternative is guessing an entity's usage from a format we do not parse.
+- **Trace bodies.** `~/.codebuddy/traces` is read, but only the span envelope: an agent span's
+  name, status, duration and `spanId`, plus the `sessionId` only the whole-trace file carries.
+  Generation and tool spans are declined, and the runtime roots `cli` / `ptc` are never stored,
+  so internal agents (`autoModeClassifier`, `summaryGenerator`, …) appear as rows of their own
+  rather than being folded into the tool's work. No span content, message or argument value is
+  kept — the same rule as the transcripts above. A span carries no token count, which is why an
+  agent row's token columns stay 0 by construction rather than by omission.
 
 ## Known record types with no handler
 
@@ -82,7 +85,8 @@ quieting them would also hide the day one of them starts carrying something we i
 
 1. `cbut health` — if `unparsed` gained a reason, upstream renamed a record type or a field. The
    reason strings are `type:<name>` (a record no branch claimed), `unparseable_line` (a complete
-   line that is not JSON), `unreadable_file:<OSError>`.
+   line that is not JSON), `unreadable_file:<OSError>`, and `unusable_record` (a line that is
+   JSON but not a record the readers can use — see the generated block above).
 2. If `unparsed` did **not** move but a panel did, the change is inside a record we already claim:
    a renamed *field* reads as `NULL`, not as an error. Compare the generated block above against a
    real transcript line (`~/.codebuddy/projects/**/*.jsonl`, read-only — this tool never writes

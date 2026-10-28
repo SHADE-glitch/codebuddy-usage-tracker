@@ -331,6 +331,118 @@ class TimersAreDocumentedAsTheyRun(unittest.TestCase):
         self.assertEqual([hit[1] for hit in self.offending(fake)], ["5-second timer"])
 
 
+class SchemaVersionIsDocumentedAsItRuns(unittest.TestCase):
+    """Four pages state the schema version this build writes, and one had stopped.
+
+    `compatibility.md` said `schema_version` was **6** — thirteen versions after that
+    stopped being true — while `pipeline.md` and both READMEs said 13, because each of
+    them is written by hand and only the code moves. This is the failure `schema_version`
+    itself was introduced to end (a number written, plausible, and read by nothing), one
+    level up: the number is now read by the code and the documents copy it.
+
+    Each page states it its own way, so each gets its own pattern rather than one pattern
+    loose enough to match all four. A page that stops stating it at all fails the coverage
+    control, because a scan over nothing is how a guard passes forever.
+    """
+
+    CLAIMS = {
+        "docs/maintenance/pipeline.md": re.compile(r"SCHEMA_VERSION = (\d+)"),
+        "docs/maintenance/compatibility.md":
+            re.compile(r"schema_version[^\n]*currently \*\*(\d+)\*\*"),
+        "README.md": re.compile(r"schema v(\d+)"),
+        "README.zh-CN.md": re.compile(r"schema v(\d+)"),
+    }
+
+    def claims(self, text, pattern):
+        return [(number, int(value))
+                for number, line in enumerate(text.splitlines(), 1)
+                for value in pattern.findall(line)]
+
+    def test_every_stated_version_is_the_one_the_code_writes(self):
+        wrong = {}
+        for name, pattern in self.CLAIMS.items():
+            found = self.claims((REPO / name).read_text(encoding="utf-8"), pattern)
+            stale = [hit for hit in found if hit[1] != db.SCHEMA_VERSION]
+            if stale:
+                wrong[name] = stale
+        self.assertEqual(
+            wrong, {},
+            f"the code writes schema {db.SCHEMA_VERSION}, but these lines say otherwise: "
+            f"{wrong}")
+
+    def test_every_page_still_states_a_version(self):
+        """Positive control: a pattern that stopped matching would pass silently, and so
+        would a page that dropped the sentence instead of correcting the number."""
+        for name, pattern in self.CLAIMS.items():
+            found = self.claims((REPO / name).read_text(encoding="utf-8"), pattern)
+            self.assertGreaterEqual(len(found), 1,
+                                    f"{name} no longer states a schema version where "
+                                    "this check can see it, so it is unguarded")
+
+    def test_a_version_behind_the_code_is_detected(self):
+        """The failure mode, reproduced on a synthetic page."""
+        pattern = self.CLAIMS["docs/maintenance/compatibility.md"]
+        fake = ("The schema version lives in `meta` as `schema_version` (currently **6** — "
+                "v5 removed two prose columns).\n"
+                "v6 dropped two indexes that no query used.\n")
+        self.assertEqual([hit[1] for hit in self.claims(fake, pattern)], [6])
+        self.assertNotEqual(6, db.SCHEMA_VERSION, "the synthetic value caught up with the code")
+
+
+class TracesAreDocumentedAsRead(unittest.TestCase):
+    """No page may call the trace tree unread while the registry reads it.
+
+    D-073 fixed this sentence in AGENTS.md ("not ingested" in one paragraph, "indexes
+    the logs (transcripts and OTel traces)" in the next) and left the same sentence in
+    two maintenance pages: `codebuddy-format.md`'s "Deliberately not read" section and
+    `compatibility.md`'s log-volume row, both contradicted by the generated block above
+    them. A page that describes a coupling the code no longer has is the exact failure
+    the generated block exists to prevent — it just does not cover prose.
+
+    The rule is narrow on purpose: a line that names the trace directory may not deny
+    reading it. "The internal agents' *token* counts are 0 by construction" is true and
+    passes; "not ingested" is the claim this repository has now made twice by mistake.
+    """
+
+    DOCS = ("AGENTS.md", "README.md", "README.zh-CN.md",
+            "docs/maintenance/codebuddy-format.md",
+            "docs/maintenance/compatibility.md",
+            "docs/maintenance/pipeline.md")
+    NAMES_TRACES = re.compile(r"~/.codebuddy/traces|\btraces/|\btrace_\*")
+    DENIES = re.compile(r"\bnot\b[^\w]{0,4}\b(?:ingested|read)\b|\bnever\b[^\w]{0,4}"
+                        r"\b(?:ingested|read)\b", re.I)
+
+    def offending(self, text):
+        return [(number, line.strip()[:80])
+                for number, line in enumerate(text.splitlines(), 1)
+                if self.NAMES_TRACES.search(line) and self.DENIES.search(line)]
+
+    def test_no_page_denies_reading_the_trace_tree(self):
+        wrong = {}
+        for name in self.DOCS:
+            found = self.offending((REPO / name).read_text(encoding="utf-8"))
+            if found:
+                wrong[name] = found
+        self.assertEqual(wrong, {},
+                         f"the sync indexes ~/.codebuddy/traces, but these lines deny it: "
+                         f"{wrong}")
+
+    def test_the_pages_do_name_the_trace_tree(self):
+        """Positive control: the scan must be able to see the directory it is about."""
+        seen = [name for name in self.DOCS
+                if self.NAMES_TRACES.search((REPO / name).read_text(encoding="utf-8"))]
+        self.assertGreaterEqual(len(seen), 2,
+                                f"only {seen} name the trace directory; the check is "
+                                "looking at pages that never mention it")
+
+    def test_a_denial_next_to_the_trace_tree_is_detected(self):
+        fake = ("- **`~/.codebuddy/traces`** (OTel spans). Not ingested: that is where\n"
+                "  internal agents live.\n"
+                "| `traces/` is **not** ingested |\n"
+                "- Traces are read for agent spans only.\n")
+        self.assertEqual([hit[0] for hit in self.offending(fake)], [1, 3])
+
+
 PIPELINE = REPO / "docs" / "maintenance" / "pipeline.md"
 
 # A citation is a backticked ``:123`` (the file comes from the enclosing section's

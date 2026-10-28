@@ -103,8 +103,9 @@ The two local interpreters **link different SQLite builds**, so "the SQLite here
 
 No separate `sqlite3` binary is required or assumed; the library comes from whichever build Python's
 `sqlite3` module links against. The journal is WAL and `PRAGMA user_version` is unused: the schema
-version lives in the `meta` table as `schema_version` (currently **6** — v5 removed two prose columns,
-v6 dropped two indexes that no query used) and `ensure_schema()` refuses
+version lives in the `meta` table as `schema_version` (currently **13** — v5 removed two prose columns,
+v6 dropped two indexes that no query used, and the versions since are recorded one per change in
+`CHANGELOG.md`) and `ensure_schema()` refuses
 to open a newer database with older code rather than silently no-op'ing the `CREATE TABLE IF NOT
 EXISTS` set.
 
@@ -125,7 +126,7 @@ python3 -c "import sqlite3; print(sqlite3.sqlite_version)"   # needs >= 3.35
 | Record shapes, field names and on-disk layout | **verified against the logs on this machine** — see [`codebuddy-format.md`](codebuddy-format.md); `test_format_registry.py` holds the code and that list together |
 | `dpkg` reports `codebuddy-cn 4.12.0` | the **IDE** package, not the CLI whose logs are read. Do not cite it as the log format's version |
 | A CodeBuddy **version number** (e.g. "2.161.4") | **not machine-confirmable here, so not claimed.** The CLI is launched through a shell alias, no transcript line carries a `version`/`clientVersion`/`appVersion` field (measured: 0 hits), and `dpkg` only proves the IDE package. The READMEs used to print "schema verified against 2.161.4"; that claim was removed because nothing here can re-derive it — the verified statement is "the schema matches the logs on this machine". If the owner supplies the source, put the number back with its provenance attached |
-| Log volume actually parsed | ≈ 500 `projects/**/*.jsonl` transcripts. `traces/` (≈ 1.4k `.jsonl` + ≈ 0.7k `.json`) is **not** ingested. Exact counts are personal usage data — see [`measurements.md`](measurements.md) for the rounding rule and the commands that reprint them |
+| Log volume actually parsed | ≈ 500 `projects/**/*.jsonl` transcripts, plus `traces/` (≈ 1.4k `.jsonl` span streams + ≈ 0.7k `.json` completed traces), read for **agent spans only** — a trace never supplies a model response or a token count. Exact counts are personal usage data — see [`measurements.md`](measurements.md) for the rounding rule and the commands that reprint them |
 
 If CodeBuddy's log layout changes, the symptom is a panel going empty while `cbut sync` reports
 success — follow the checklist in [`codebuddy-format.md`](codebuddy-format.md#when-a-panel-goes-empty).
