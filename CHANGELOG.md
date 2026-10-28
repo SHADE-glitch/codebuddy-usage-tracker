@@ -1919,3 +1919,28 @@ Cost     The pattern knows two phrasings. A total written as "six hundred tests"
          stated in a table cell rather than a sentence, is still unchecked — the per-suite rows
          have their own pattern and are covered.
 Commit   fd0115a
+
+### D-084 · 2026-10-28 · guard
+Symptom  Two live pages described a program the code had left behind. `compatibility.md` said
+         `schema_version` was **6** — thirteen versions after that stopped being true — while
+         `pipeline.md` and both READMEs said 13; and it called `traces/` "**not** ingested" while
+         the sync indexes span streams. `codebuddy-format.md` carried the same denial in its
+         "Deliberately not read" section, directly under a generated block listing
+         `traces/*/trace_*.jsonl` as read. D-073 had already fixed this sentence in AGENTS.md and
+         left both copies behind.
+Change   The version is 13 in `compatibility.md`; the log-volume row says traces are read for agent
+         spans only and never supply a token count; the "Deliberately not read" bullet became what
+         is actually skipped (span bodies, generation/tool spans, the `cli`/`ptc` roots). Two
+         guards: `SchemaVersionIsDocumentedAsItRuns` reads each page's own phrasing and compares
+         it with `db.SCHEMA_VERSION`; `TracesAreDocumentedAsRead` fails a line that names the
+         trace directory and denies reading it. The reason-string list in the same section also
+         gained `unusable_record`, which D-080 added to the code.
+Evidence L0 2026-10-28: against the pre-fix pages the two checks name exactly `:106` (schema 6) and
+         the trace bullet — nothing else in six documents — and after the edit
+         `test_maintenance_docs.py` runs 28 tests OK, the suite 625. A synthetic page holding a
+         "currently **6**" and two trace denials is caught at the lines that make the claim.
+Cost     Both checks are phrase-level. A version stated as "the thirteenth schema" or a denial
+         written as "we ignore `~/.codebuddy/traces`" is invisible to them, and the trace check
+         only sees lines that name the directory — a denial in a paragraph about "OTel spans" is
+         not caught.
+Commit   7b1d1d9
