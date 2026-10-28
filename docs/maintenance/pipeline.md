@@ -23,50 +23,50 @@ that reads `tab.query` only agree because both resolve the function at call time
 
 ### One run
 
-`run()` (`:1808`) takes an exclusive lock (`:1770`), opens one read-write connection and closes it in
+`run()` (`:1807`) takes an exclusive lock (`:1770`), opens one read-write connection and closes it in
 `finally`; the TUI calls this from a worker thread, so a leaked connection would be one per failed
-run rather than one per process. `_run()` (`:2073`) is the pipeline in order, one call per stage:
+run rather than one per process. `_run()` (`:2072`) is the pipeline in order, one call per stage:
 
-1. **Schema first** — `db.ensure_schema()` (`:2075`), so the writer never meets a table it does not
+1. **Schema first** — `db.ensure_schema()` (`:2074`), so the writer never meets a table it does not
    know.
-2. **`--full`** — `_reset_if_full` (`:1823`): snapshot, then `db.reset()`; a snapshot of an empty
+2. **`--full`** — `_reset_if_full` (`:1822`): snapshot, then `db.reset()`; a snapshot of an empty
    database is skipped on purpose.
-3. **Inventory** — `scan_inventory()` (`:748`) records what is installed *right now*:
-   `collect_inventory` (`:621`) reads the disk, `replace_inventory` (`:728`) swaps the snapshot in
+3. **Inventory** — `scan_inventory()` (`:747`) records what is installed *right now*:
+   `collect_inventory` (`:620`) reads the disk, `replace_inventory` (`:727`) swaps the snapshot in
    one transaction, so a failed scan leaves the previous one intact.
-4. **Discovery** — `_source_files` (`:1835`): `projects/**/*.jsonl` for transcripts, plus
+4. **Discovery** — `_source_files` (`:1834`): `projects/**/*.jsonl` for transcripts, plus
    `traces/*/trace_*.jsonl` and `traces/*/trace_*.json`.
-5. **Stale-offset pre-pass** — `_clear_stale_files` (`:1848`): if *any* file's stored offset is
+5. **Stale-offset pre-pass** — `_clear_stale_files` (`:1847`): if *any* file's stored offset is
    stale (shrunk, rewritten, no longer on a line boundary), the whole database is rebuilt: snapshot
    first, carry the sessions no surviving file can rebuild (`:1966`), re-read every file from zero.
    This is the only destructive step a plain `cbut sync` can take. The predicate is `_needs_reset`
-   (`:1743`), which leans on `_starts_on_line_boundary` (`:1733`).
-6. **Main loop** — `_index_files` (`:1892`): per file, read the new bytes, index them, write
-   `sync_state(file_path, size, mtime, offset)` (`:1943`) and commit. `size` is the file's real
+   (`:1743`), which leans on `_starts_on_line_boundary` (`:1732`).
+6. **Main loop** — `_index_files` (`:1891`): per file, read the new bytes, index them, write
+   `sync_state(file_path, size, mtime, offset)` (`:1942`) and commit. `size` is the file's real
    size, not the offset, because that is what the next run compares to notice a rewrite.
-7. **Whole-trace files** — `_index_final_traces` (`:1952`): re-read entirely every run, keyed by
+7. **Whole-trace files** — `_index_final_traces` (`:1951`): re-read entirely every run, keyed by
    `spanId`, so the re-read is idempotent and needs no `sync_state` row.
-8. **Backfill** — `backfill_plugin_usage` (`:1562`) attributes skill/agent/command rows to a
+8. **Backfill** — `backfill_plugin_usage` (`:1561`) attributes skill/agent/command rows to a
    plugin once the inventory can name one; it runs after the reads because the ownership tables are
    built from the inventory.
-9. **Report** — `_collect_stats` (`:2011`) builds the dict that `cbut sync` prints, the TUI's
-   status line reads and `cbut health` elaborates; `_report` (`:2049`) prints it. An
+9. **Report** — `_collect_stats` (`:2010`) builds the dict that `cbut sync` prints, the TUI's
+   status line reads and `cbut health` elaborates; `_report` (`:2048`) prints it. An
    unrecognised record type is counted and printed loudly (`:2053`) because a silent format change
    is the one failure every panel shares.
 
 ### One file
 
-`_read_incremental` (`:879`) is the only reader of the newline-framed tail, shared by transcripts
+`_read_incremental` (`:878`) is the only reader of the newline-framed tail, shared by transcripts
 and trace streams so the two cannot disagree about where an offset may resume. It consumes only
 complete lines; a half-written final line is retried next run unless it already parses as complete
-JSON. `index_file` (`:928`) then hands each record to `_handle_record` and returns the new offset.
+JSON. `index_file` (`:927`) then hands each record to `_handle_record` and returns the new offset.
 It never touches `sessions` — one session spans its main transcript *and* every subagent
 transcript, so a single file's contribution to the accumulated totals cannot be subtracted in
 isolation.
 
 ### One record
 
-`_handle_record` (`:1485`) is a dispatch on `rec["type"]`, and every branch either writes or
+`_handle_record` (`:1484`) is a dispatch on `rec["type"]`, and every branch either writes or
 explicitly claims the record:
 
 | `type` | Effect | Branch |
@@ -78,9 +78,9 @@ explicitly claims the record:
 | `session-meta`, `ai-title`, `model-usage` | claimed, nothing stored: the title is prose, and the usage echo repeats what `_record_model_response` wrote | `:1513` |
 | anything else | `unparsed` count, keyed `type:<name>` | `:1522` |
 
-Each branch is one call into the handler that holds the SQL — `_record_function_call` (`:1320`),
-`_record_function_result` (`:1370`), `_record_turn_metrics` (`:1403`), `_record_message`
-(`:1443`) — and `_touch_session` (`:1459`) stamps the session's start/end after whichever branch
+Each branch is one call into the handler that holds the SQL — `_record_function_call` (`:1319`),
+`_record_function_result` (`:1369`), `_record_turn_metrics` (`:1402`), `_record_message`
+(`:1443`) — and `_touch_session` (`:1458`) stamps the session's start/end after whichever branch
 ran.
 
 A record reaches the dispatch only if every field it binds has a shape the binder can take
@@ -92,19 +92,19 @@ container used as a dict key — and ended the run, so a single unreadable recor
 project's index. The check reads the field mirrors above rather than a second copy of them, so a
 field added to the registry is shape-checked without another edit.
 
-`_record_model_response` (`:1176`) runs before the dispatch, because a model response can arrive on
+`_record_model_response` (`:1175`) runs before the dispatch, because a model response can arrive on
 a record type that also carries other payload. It is the only writer of `model_responses`, and it
 reads `providerData.rawUsage` only: no credit arithmetic, no estimate, no `tokenDelta`.
 
-Classification (`_classify`, `:820`) decides which of the four call tables a `function_call` lands
+Classification (`_classify`, `:819`) decides which of the four call tables a `function_call` lands
 in; a tool name that no table can render is rejected as `invalid_tool_name` rather than stored.
 
 ### What is not read
 
 - `~/.codebuddy/**` is never written — the index is a separate SQLite file.
 - Prompt and response text, and tool argument *values*, are never stored; the one exception is the
-  `<command-name>` marker (`_record_commands`, `:1288`).
-- Traces are read for **agent spans only** (`index_trace_stream` `:1002`, `index_final_trace`
+  `<command-name>` marker (`_record_commands`, `:1287`).
+- Traces are read for **agent spans only** (`index_trace_stream` `:1001`, `index_final_trace`
   `:1029`). A trace never supplies a model response or a token count, which is why the internal
   agents that appear only there read `0` by construction.
 

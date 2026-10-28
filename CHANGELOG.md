@@ -1830,3 +1830,31 @@ Cost     The split marks intent; it does not enforce it. `self.` is still one na
          is still 68 lines: it is state initialisation with its reasons, and cutting it would move
          the comments away from the fields they explain.
 Commit   1c23751
+
+### D-080 · 2026-10-28 · fix
+Symptom  ``cbut sync`` died on a single transcript line. A line that parses as JSON but is not an
+         object (``null``, ``[]``, ``"text"``, ``42``), or a record holding a list or object where a
+         scalar belongs, raised out of the indexer and ended the run — so one unreadable
+         record cost every project's index, and the reason never reached ``cbut health``. Three
+         exception types: ``AttributeError`` at the dispatch (``rec.get`` on a non-object),
+         ``sqlite3.ProgrammingError`` at the bind (``cwd``, ``timestamp``, ``status``,
+         ``tokenDelta``, ``providerData.model``), and ``TypeError`` for a container used as a
+         dict key (``span.status``). ``_meta.baggage`` as a number failed the W3C regex the same
+         way.
+Change   ``_usable_record`` gates all three readers — ``_handle_record``,
+         ``index_trace_stream``, ``index_final_trace`` — and a record that fails it is counted as
+         ``unusable_record`` and skipped. The field lists are the mirrors that already exist
+         (``RECORD_FIELDS``, ``TRACE_SPAN_FIELDS``, ``PROVIDER_FIELDS``, ``RAW_USAGE_FIELDS``), not copies,
+         so a field added to the registry is shape-checked without a second edit. Rejecting
+         rather than coercing to NULL is the call the tool-name rule already makes: a row with
+         a NULL project would claim the field was never reported.
+Evidence L0 2026-10-28: ``test_hostile_inputs.py`` generates the cases from six real record shapes —
+         every field replaced by each of ten bad values, deleted, or the record replaced
+         whole, plus one level inside each structure it holds. 502 cases: 76 ended the run
+         before the gate and none do after; the honest shapes still index a row. 389 fast
+         tests unchanged by the gate.
+Cost     A rejected record loses the fields that were fine, so a partial record contributes
+         nothing. The gate checks shapes, not types: a string where an integer belongs still
+         reaches the bind (SQLite accepts it), so ``timestamp: "abc"`` lands as text and
+         poisons arithmetic rather than being counted.
+Commit   1ae9521
