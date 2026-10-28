@@ -360,7 +360,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 625 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 627 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -393,7 +393,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `test_privacy.py` | 11 | import allowlist **plus the calls that bypass it** (`__import__`/`eval`/`import_module`), no free-text value in any column, CodeBuddy's own files untouched |
 | `test_hermetic.py` | 13 | a runtime tripwire: the suite never opens the real `usage.db` (no in-process `sqlite3.connect`, no child that would resolve it without `CBUT_DB` or `--db`), and never reads the real host footprint (`~/.codebuddy` — no `open`, directory walk or child without `CBUT_CODEBUDDY_DIR`) |
 | `test_snapshots.py` | 9 | automatic snapshots before destructive steps, listing, restore, pruning |
-| `test_maintenance_docs.py` | 28 | the generated format doc cannot drift from the code, no document may state a CI version the workflow does not run, a timer the TUI never sets, a schema version the code does not write or a trace tree it does not read, and every `file:line` citation in `pipeline.md` still lands on the symbol it names |
+| `test_maintenance_docs.py` | 30 | the generated format doc cannot drift from the code, no document may state a CI version the workflow does not run, a timer the TUI never sets, a schema version or table/view count the code does not build, or a trace tree it does not read, every `cbut health` reason is named on the page that lists them, and every `file:line` citation in `pipeline.md` still lands on the symbol it names |
 | `test_readme_counts.py` | 7 | the suite table above is the suite table the runner would print, every total repeated in prose is the same number, and both pages document every setting the loader knows |
 | `test_record_coverage.py` | 6 | every covered commit is recorded in `CHANGELOG.md` |
 | `test_readme_bilingual.py` | 5 | the two READMEs stay one document in two languages, and every table-of-contents link has a heading to land on |
@@ -412,7 +412,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `vacuum` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 625 tests above |
+| `scripts/tests/` | the 627 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, the size & performance baseline with the commands that produced it, and the `file:line` map from a log record to the number on screen |
 | `systemd/` | optional 15-minute sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

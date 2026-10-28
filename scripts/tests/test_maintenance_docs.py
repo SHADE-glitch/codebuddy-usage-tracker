@@ -18,6 +18,7 @@ import importlib.util
 import io
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -387,6 +388,68 @@ class SchemaVersionIsDocumentedAsItRuns(unittest.TestCase):
                 "v6 dropped two indexes that no query used.\n")
         self.assertEqual([hit[1] for hit in self.claims(fake, pattern)], [6])
         self.assertNotEqual(6, db.SCHEMA_VERSION, "the synthetic value caught up with the code")
+
+
+class SchemaShapeIsDocumentedAsItRuns(unittest.TestCase):
+    """`pipeline.md` states the store's shape as a pair of numbers beside the constants
+    that build it: "12 tables and 5 views". The version in the same sentence is checked;
+    the counts were not, and they move the moment a migration adds a table — which is
+    exactly the change that would also move the version, so the two are worth checking
+    together rather than trusting the reader to notice one of them.
+
+    The counts are read from a built schema, not from the source: a `CREATE TABLE` inside
+    a string is a table only if `executescript` accepts it.
+    """
+
+    DOC = REPO / "docs" / "maintenance" / "pipeline.md"
+    CLAIM = re.compile(r"(\d+) tables and (\d+) views")
+
+    def test_the_stated_shape_is_the_shape_the_code_builds(self):
+        conn = sqlite3.connect(":memory:")
+        try:
+            db.ensure_schema(conn)
+            tables = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%'").fetchone()[0]
+            views = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='view'").fetchone()[0]
+        finally:
+            conn.close()
+        found = self.CLAIM.findall(self.DOC.read_text(encoding="utf-8"))
+        self.assertTrue(found, "pipeline.md no longer states the store's shape, so this "
+                               "check covers nothing")
+        for claimed in found:
+            self.assertEqual((int(claimed[0]), int(claimed[1])), (tables, views),
+                             f"pipeline.md says {claimed[0]} tables and {claimed[1]} views, "
+                             f"the schema builds {tables} and {views}")
+
+
+class UnparsedReasonsAreDocumented(unittest.TestCase):
+    """Every reason `cbut health` can print is named on the page a reader opens when a
+    number is wrong.
+
+    D-080 added `unusable_record` to the reason strings and to the generated block, and
+    the hand-written list two sections below — the one the "When a panel goes empty"
+    checklist points at — still ended at `unreadable_file`. The constants live in the sync
+    module, so the page is checked against them rather than against someone's memory of
+    what was added last.
+    """
+
+    DOC = REPO / "docs" / "maintenance" / "codebuddy-format.md"
+    CONSTANTS = ("UNPARSEABLE_LINE", "INVALID_TOOL_NAME", "UNUSABLE_RECORD")
+    # Not constants: one carries an OS error, the other a record type.
+    PREFIXES = ("unreadable_file:", "type:")
+
+    def test_every_reason_the_sync_can_print_is_named(self):
+        sync = db.load_sync()
+        text = self.DOC.read_text(encoding="utf-8")
+        missing = [f"`{getattr(sync, name)}`" for name in self.CONSTANTS
+                   if f"`{getattr(sync, name)}`" not in text]
+        missing += [f"`{prefix}" for prefix in self.PREFIXES
+                    if f"`{prefix}" not in text]
+        self.assertEqual(missing, [],
+                         f"{self.DOC.name} never names these reasons, so a reader "
+                         f"following it cannot identify them: {missing}")
 
 
 class TracesAreDocumentedAsRead(unittest.TestCase):
