@@ -12,6 +12,12 @@ tracked `.md`, resolved the way GitHub resolves it — the file has to exist, an
 `#fragment` has to land on a heading. External links are out of scope: checking them
 needs the network, and a suite that needs the network is only checked on one machine.
 
+Resolution is not the whole promise, though. A table of contents that *drops* a line
+leaves its section unreachable while every remaining link still lands, and the pair
+check compares the two READMEs against each other, so dropping the same line from both
+passes it. The TOC is the map of its own document, so it is checked against the section
+list it claims to describe: every `##` but itself, in document order.
+
 Two traps are pinned by the control case below, because neither is visible in a diff:
 
 * GitHub keeps the variation selector and zero-width joiner inside an anchor, so
@@ -44,6 +50,8 @@ REPO = next(p for p in Path(__file__).resolve().parents if (p / ".git").exists()
 FENCE = re.compile(r"^(?:```|~~~).*?^(?:```|~~~)", re.M | re.S)
 HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$", re.M)
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+H2 = re.compile(r"^## (.+)$", re.M)
+TOC_ITEM = re.compile(r"^\s*-\s*\[[^\]]*\]\(#([^)]+)\)", re.M)
 EXTERNAL = ("http://", "https://", "mailto:", "ftp://")
 
 # GitHub's anchor: lowercase, drop everything that is not a letter, digit, space or
@@ -65,6 +73,32 @@ def anchors_of(text):
         seen[base] = count + 1
         anchors.add(base if count == 0 else "%s-%d" % (base, count))
     return anchors
+
+
+def sections(text):
+    """`[(anchor, body)]` for every `##` heading, in document order."""
+    body = FENCE.sub("", text)
+    found = list(H2.finditer(body))
+    out = []
+    for index, match in enumerate(found):
+        stop = found[index + 1].start() if index + 1 < len(found) else len(body)
+        out.append((anchor_of(match.group(1)), body[match.end():stop]))
+    return out
+
+
+def toc_drift(text):
+    """(anchors a table of contents should list, anchors it lists) — None if no TOC.
+
+    The TOC is found mechanically, as the one `##` section whose body carries the list
+    items, so nothing here depends on the words "Table of Contents" or "目录".
+    """
+    secs = sections(text)
+    counts = [len(TOC_ITEM.findall(body)) for _anchor, body in secs]
+    if not any(counts):
+        return None
+    index = counts.index(max(counts))
+    listed = TOC_ITEM.findall(secs[index][1])
+    return [anchor for i, (anchor, _body) in enumerate(secs) if i != index], listed
 
 
 def documents():
@@ -138,6 +172,45 @@ class DocAnchorsTest(unittest.TestCase):
             [], problems,
             "a document points at something that is not there:\n  "
             + "\n  ".join(problems))
+
+    def test_every_table_of_contents_lists_every_section(self):
+        """A TOC is the map of its own document, so the map has to be complete.
+
+        Resolution cannot see a *dropped* line — the remaining links all still land —
+        and the pair check compares the two READMEs against each other, so deleting the
+        same line from both passes it. Order counts too: a TOC that lists the right
+        sections in the wrong order sends a reader to the wrong place on the page.
+        """
+        checked = 0
+        for path in documents():
+            drift = toc_drift(path.read_text(encoding="utf-8"))
+            if drift is None:
+                continue
+            checked += 1
+            expected, listed = drift
+            self.assertEqual(
+                listed, expected,
+                "%s: its table of contents is not its section list — missing %s, "
+                "not a section %s"
+                % (path.relative_to(REPO),
+                   [a for a in expected if a not in listed] or "none",
+                   [a for a in listed if a not in expected] or "none"))
+        self.assertGreaterEqual(checked, 2,
+                                "no table of contents was found anywhere in the corpus")
+
+    def test_the_toc_checker_can_report_drift(self):
+        """Control: a complete map, a dropped line, and an invented line."""
+        def drift(entries, headings):
+            body = "## 📖 Contents\n\n" + "".join("- [x](#%s)\n" % e for e in entries)
+            return toc_drift(body + "\n" + "".join("## %s\n\n" % h for h in headings))
+
+        self.assertEqual(drift(["-a", "-b"], ["✨ A", "🤔 B"]),
+                         (["-a", "-b"], ["-a", "-b"]))
+        self.assertEqual(drift(["-a"], ["✨ A", "🤔 B"]),
+                         (["-a", "-b"], ["-a"]), "a dropped line is drift")
+        self.assertEqual(drift(["-a", "-b", "-zz"], ["✨ A", "🤔 B"]),
+                         (["-a", "-b"], ["-a", "-b", "-zz"]),
+                         "a line pointing at no section is drift too")
 
     def test_the_checker_can_report_every_kind_of_break(self):
         """An instrument that cannot report a known break is not guarding anything."""

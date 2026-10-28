@@ -364,7 +364,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 648 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 650 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -401,7 +401,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `test_readme_counts.py` | 7 | the suite table above is the suite table the runner would print, every total repeated in prose is the same number, and both pages document every setting the loader knows |
 | `test_record_coverage.py` | 6 | every covered commit is recorded in `CHANGELOG.md` |
 | `test_readme_bilingual.py` | 4 | the two READMEs stay one document in two languages: the same sections, the same status codes, the same language switcher |
-| `test_doc_anchors.py` | 4 | every relative link in every tracked document points at a file that is there, and every `#fragment` lands on a heading — in-page and across files, the way GitHub resolves them |
+| `test_doc_anchors.py` | 6 | every relative link in every tracked document points at a file that is there, every `#fragment` lands on a heading — in-page and across files, the way GitHub resolves them — and every table of contents lists every section it maps |
 | `test_conventions.py` | 9 | the dimension-A root layer is present at the root, AGENTS.md names its dimension in one line instead of quoting the standard's body, and no runtime state the ignore list covers is tracked |
 
 `test_readme_counts.py` is what keeps this table honest: a suite added without a row, or a row left
@@ -417,7 +417,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `vacuum` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 648 tests above |
+| `scripts/tests/` | the 650 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, the size & performance baseline with the commands that produced it, and the `file:line` map from a log record to the number on screen |
 | `systemd/` | optional 15-minute sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
