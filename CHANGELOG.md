@@ -1858,3 +1858,24 @@ Cost     A rejected record loses the fields that were fine, so a partial record 
          reaches the bind (SQLite accepts it), so ``timestamp: "abc"`` lands as text and
          poisons arithmetic rather than being counted.
 Commit   1ae9521
+
+### D-081 · 2026-10-28 · guard
+Symptom  ``pipeline.md``'s file-prefixed citations were never checked: ``CITATION_RE`` required a
+         double colon (``file.py::123``), and the page writes ``file.py:123``. About twenty
+         citations were invisible to the guard, and four had drifted onto lines that hold
+         something else — a docstring, an ``except OSError:``, a ``q_model_responses`` call, the
+         ``_needs_reset`` body — with the suite green throughout.
+Change   The regex accepts one colon or two. The four drifted citations are re-pointed, and so are
+         six the check still cannot see: the migration range ended at 1018 instead of 991,
+         ``cmd_stats`` and the read-only connection were numbered from before ``cmd_format`` existed,
+         and the report step credited ``_collect_stats`` with feeding the TUI, which reads
+         ``db.overview()``. One sentence was false: ``reset`` does clear ``inventory``, so
+         "without touching ``inventory`` or ``meta``" described a function that does not exist.
+Evidence L0 2026-10-28: ``test_maintenance_docs.py``, 19 tests. With the wider regex and before
+         the fixes it named four citations landing on lines that do not hold their symbol;
+         reading the 23 citations that make no symbol claim found three more.
+Cost     The check is presence, not meaning: a citation passes when the line holds the symbol, so
+         a wrong line that happens to mention the same name survives. The 23 citations that name
+         no symbol are checked for "not blank" only — that is where the three wrong ones were, and
+         reading found them, not the suite.
+Commit   fbb8d95
