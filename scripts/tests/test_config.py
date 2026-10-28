@@ -30,6 +30,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
@@ -143,6 +144,32 @@ class BrokenFileTest(unittest.TestCase):
             with self.assertRaises(db.ConfigError) as ctx:
                 db.load_config(path)
         self.assertIn("top_n", str(ctx.exception))
+
+    def test_a_file_saved_in_another_encoding_is_a_config_error(self):
+        """The bytes are not UTF-8 is the same class of problem as the TOML not parsing:
+        the file is the user's to fix, and every caller already turns a ConfigError into
+        a sentence. It used to raise UnicodeDecodeError straight through main() and
+        cbut health — the one command you run to find out what is wrong — so a settings
+        file saved by an editor in another encoding was a traceback.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_bytes(b"top_n = 5\n# \xff\xfe\n")
+            with self.assertRaises(db.ConfigError) as ctx:
+                db.load_config(path)
+        message = str(ctx.exception)
+        self.assertIn(str(path), message, "the message must say which file is unusable")
+        self.assertIn("cannot be read", message)
+
+    def test_a_file_that_cannot_be_read_is_a_config_error_too(self):
+        """A permission problem is a settings file the user can fix, not a crash."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_config(tmp, "top_n = 5\n")
+            with mock.patch.object(Path, "read_text",
+                                   side_effect=PermissionError("permission denied")):
+                with self.assertRaises(db.ConfigError) as ctx:
+                    db.load_config(path)
+        self.assertIn("cannot be read", str(ctx.exception))
 
     def test_an_out_of_range_value_is_refused(self):
         """Zero rows of Top tools is not a preference, it is a broken panel."""
@@ -394,6 +421,20 @@ class HealthSurfaceTest(unittest.TestCase):
         self.assertIn(str(cfg), out, "the report must say which file is unusable")
         self.assertRegex(out, r"(?i)not valid toml|toml")
         self.assertRegex(out, r"line \d+", "and where in it the parse stopped")
+
+    def test_health_reports_an_undecodable_file_instead_of_crashing(self):
+        """The report is the diagnostic. A traceback where the diagnosis belongs is the
+        one failure this command cannot afford — it is what you run when a number is
+        wrong, and a settings file in another encoding is a reason a number is wrong."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config.toml"
+            cfg.write_bytes(b"top_n = 5\n# \xff\xfe\n")
+            rc, out = self._health(self._env(self._make_db(tmp),
+                                                {"CBUT_CONFIG": str(cfg)}))
+        self.assertEqual(rc, 0, out)
+        self.assertIn(str(cfg), out, "the report must name the file it could not read")
+        self.assertIn("NOT READ", out)
+        self.assertNotIn("Traceback", out)
 
     def test_health_reports_the_database_it_was_handed(self):
         """`--db` must not print a different path than the one it opened."""

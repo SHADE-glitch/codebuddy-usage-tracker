@@ -253,7 +253,7 @@ name_cap = 28        # 单元格最宽渲染多少字符，超出就截断
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 627 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 630 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -274,7 +274,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 627 tests ... OK
 | `test_usage.py` | 121 | 自然日窗口（今天 / 2 / 3 / 7 / 14 / 30 天 / 全部）与自定义范围的标签、日期时间的宽松输入归一化（24 小时显示、输入仍兼容 12 小时）、token 汇总与提供方分组、Dashboard 查询、下钻查询（窗口内按实体汇总、插件使用计数、单条调用的整行）、结构版本门禁、索引值不值得留、无界面会话列表（窗口、最新在前、limit） |
 | `test_indexes.py` | 4 | 前两次切索引只能靠一次手写读数的那条规则：报告面真的会跑的每条语句都被抓下来用 `EXPLAIN QUERY PLAN` 过一遍，声明了却没有任何计划点名的索引一律失败——外加 v9 那次真正用上的结构规则：键是另一个已声明索引键的严格前缀 |
 | `test_stats.py` | 40 | 无界面报告 CLI（`cbut stats`）：总览与各分类表、按模型的 token 报告及窄终端下被丢弃的 cache 列、`show`/`recent`/`inventory`/`export`、`health`（结构版本、设置行、未识别计数）、`backup`→`restore` 往返、`vacuum`（先快照、回收字节数、行数不变）、生成的 `format` 表面，以及空数据时的 `(none)` 提示 |
-| `test_config.py` | 22 | 设置层：默认值没变、文件、env 优先级与取值边界、坏文件会让 `main()` 在启动 TUI 前就退出、app 真的读了哪些键，以及 `cbut health` 把每个键都报出来——环境变量会被藏起来，所以一台配置过的机器也不会把这些用例变成假失败 |
+| `test_config.py` | 25 | 设置层：默认值没变、文件、env 优先级与取值边界、坏文件会让 `main()` 在启动 TUI 前就退出、app 真的读了哪些键，以及 `cbut health` 把每个键都报出来——环境变量会被藏起来，所以一台配置过的机器也不会把这些用例变成假失败 |
 | `test_dispatcher.py` | 12 | `bin/cbut`：子命令转发、venv 解析、装不上时 help 仍然能跑 |
 | `test_format_registry.py` | 10 | CodeBuddy 格式登记表与解析器双向一致 |
 | `test_privacy.py` | 11 | import 白名单，**加上绕过它的调用方式**（`__import__`/`eval`/`import_module`）、任何表任何文本列都不落自由文本、不写 CodeBuddy 自己的文件 |
@@ -298,7 +298,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 627 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `vacuum` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 627 个用例 |
+| `scripts/tests/` | 上面那 630 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、体积与性能的固定度量法和基线，以及从一条日志记录到屏幕上那个数字的 `file:line` 路线图 |
 | `systemd/` | 可选的 15 分钟同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |

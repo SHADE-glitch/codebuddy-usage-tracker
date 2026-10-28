@@ -108,8 +108,17 @@ def load_config(path=None):
     cfg = dict(DEFAULTS)
     source = Path(path if path is not None else CONFIG_PATH)
     if source.is_file():
+        # Reading is its own failure: a file saved in another encoding, or one the
+        # user cannot read, is a settings file they have to fix — the same answer the
+        # parse error below gets. Letting UnicodeDecodeError or PermissionError out
+        # here would turn `cbut health`, the command you run to find out what is
+        # wrong, into a traceback.
         try:
-            parsed = tomllib.loads(source.read_text(encoding="utf-8"))
+            text = source.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ConfigError(f"{source}: cannot be read ({exc})") from None
+        try:
+            parsed = tomllib.loads(text)
         except tomllib.TOMLDecodeError as exc:
             raise ConfigError(f"{source}: not valid TOML ({exc})") from None
         for key, value in parsed.items():
