@@ -87,6 +87,31 @@ def entry_ids(text):
     return [int(m) for m in re.findall(r"^### D-(\d+) · ", text, re.M)]
 
 
+def fields_without_a_body(text):
+    """`"<entry> <field>"` for every field that is padded out and followed by nothing.
+
+    A field carries its text on the field line or on the indented continuation lines
+    under it; either counts. What does not count is `Cost     ` and then straight into
+    the next field — a heading with no body, which `test_kind_and_fields` accepts
+    because the name is present.
+    """
+    empty = []
+    for block in re.split(r"^### ", text, flags=re.M)[1:]:
+        head, _, body = block.partition("\n")
+        entry = head.split(" · ")[0]
+        lines = body.splitlines()
+        for index, line in enumerate(lines):
+            for field in FIELDS:
+                if not re.match(rf"^{field}\s", line):
+                    continue
+                rest = line[len(field):].strip()
+                following = lines[index + 1] if index + 1 < len(lines) else ""
+                if rest or (following.startswith("         ") and following.strip()):
+                    continue
+                empty.append(f"{entry} {field}")
+    return empty
+
+
 class TestRecordCoverage(unittest.TestCase):
     def setUp(self):
         self.text = changelog_text()
@@ -107,6 +132,33 @@ class TestRecordCoverage(unittest.TestCase):
                 EMPTY_DECLARATION, self.text,
                 "an empty window is legal only when CHANGELOG.md declares it with a line "
                 "starting %r" % EMPTY_DECLARATION)
+
+    def test_a_field_has_a_body(self):
+        """A field name on its own is a heading with nothing under it.
+
+        `test_kind_and_fields` asks whether the five names are present, which an entry
+        can satisfy with five empty lines: a record that says nothing, in the right
+        shape. Every field has to carry at least one character, on its own line or on
+        an indented continuation. All 91 entries did when this was written, so the rule
+        costs nothing to state.
+        """
+        empty = fields_without_a_body(self.text)
+        self.assertEqual(empty, [],
+                         "entries state a field and then nothing under it: "
+                         + ", ".join(empty))
+
+        # Control, both directions: a padded field with no body is reported, and the
+        # same field with a continuation line under it is not.
+        self.assertEqual(
+            fields_without_a_body("### D-999 · 2026-01-01 · chore\n"
+                                  "Symptom  \nChange   ok\n"),
+            ["D-999 Symptom"],
+            "the checker cannot see a field with no body, so it proves nothing")
+        self.assertEqual(
+            fields_without_a_body("### D-999 · 2026-01-01 · chore\n"
+                                  "Symptom  \n         a body under it\n"),
+            [],
+            "the checker reports a field whose body is on the next line")
 
     def test_ids_are_monotonic_and_gapless(self):
         numbers = entry_ids(self.text)
