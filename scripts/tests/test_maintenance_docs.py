@@ -258,6 +258,79 @@ class CiMatrixIsDocumentedAsItRuns(unittest.TestCase):
         self.assertNotIn(2, [hit[0] for hit in found])
 
 
+class TimersAreDocumentedAsTheyRun(unittest.TestCase):
+    """A live document may not name a periodic job the TUI does not run.
+
+    `measurements.md` is a page of dated readings, and two of its sentences explained a
+    number with a cadence: "the TUI's 30-second worker" and "the 5-second timer". Neither
+    existed any more — `on_mount` syncs once and then stays still, and `r` is the only thing
+    that syncs again — yet a reading wrapped in a mechanism reads as a fact about the
+    program, not as a note about the day it was taken. D-073 corrected this same sentence in
+    AGENTS.md and the maintenance index and left these two behind, which is the argument for
+    a scan instead of a reading: the claim is cheap to make and expensive to remember.
+
+    The check is about the number *and* the noun. "a 30-second timeout" is somebody else's
+    fact and is not swept in; "30-second worker" names a job that either runs or does not.
+    `CHANGELOG.md` is deliberately not scanned: its entries record what was true when they
+    were written, and D-003 really did add a guard to a timer that existed then.
+    """
+
+    TUI = SCRIPTS / "cbut-tui.py"
+    DOCS = ("AGENTS.md", "README.md", "README.zh-CN.md",
+            "docs/maintenance/README.md", "docs/maintenance/pipeline.md",
+            "docs/maintenance/measurements.md", "docs/maintenance/compatibility.md")
+    CLAIM_RE = re.compile(r"\b(\d+)-second (?:timer|worker|auto-?sync)\b", re.I)
+    # The cadences the TUI really sets. A `set_interval()` that passes an expression
+    # instead of a literal fails `setUp` rather than being skipped: a guard that cannot
+    # read the cadence must not report that there is none.
+    SET_INTERVAL_RE = re.compile(r"set_interval\(\s*(\d+)\s*,")
+
+    def setUp(self):
+        text = self.TUI.read_text(encoding="utf-8")
+        literals = self.SET_INTERVAL_RE.findall(text)
+        calls = text.count("set_interval(")
+        self.assertEqual(calls, len(literals),
+                         "a set_interval() call passes something other than a literal "
+                         "number, so this scan cannot say which cadences exist")
+        self.timers = set(literals)
+
+    def offending(self, text):
+        """Lines naming a periodic job, with the cadences they name."""
+        out = []
+        for number, line in enumerate(text.splitlines(), 1):
+            for match in self.CLAIM_RE.finditer(line):
+                if match.group(1) not in self.timers:
+                    out.append((number, match.group(0), line.strip()[:72]))
+        return out
+
+    def test_every_cadence_a_live_document_names_is_one_the_tui_sets(self):
+        wrong = {}
+        for name in self.DOCS:
+            found = self.offending((REPO / name).read_text(encoding="utf-8"))
+            if found:
+                wrong[name] = found
+        self.assertEqual(
+            wrong, {},
+            f"the TUI sets {sorted(self.timers) or 'no timer'}, but these lines name "
+            f"another cadence: {wrong}")
+
+    def test_the_scan_reaches_every_document(self):
+        """Positive control on coverage: a missing file would otherwise read as a clean
+        scan, which is how a guard over nothing passes forever."""
+        for name in self.DOCS:
+            path = REPO / name
+            self.assertTrue(path.is_file(), f"{name} is gone; the scan is no longer whole")
+            self.assertGreater(len(path.read_text(encoding="utf-8")), 200, name)
+
+    def test_a_claimed_timer_the_tui_does_not_run_is_detected(self):
+        """The failure mode, reproduced: a cadence that no `set_interval` sets, next to a
+        number that is not a cadence at all."""
+        self.timers = {"30"}
+        fake = ("A full refresh is ~40 statements; the 5-second timer re-queries the tab.\n"
+                "The client gives up after a 30-second timeout.\n")
+        self.assertEqual([hit[1] for hit in self.offending(fake)], ["5-second timer"])
+
+
 PIPELINE = REPO / "docs" / "maintenance" / "pipeline.md"
 
 # A citation is a backticked ``:123`` (the file comes from the enclosing section's

@@ -360,7 +360,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 615 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 618 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -393,7 +393,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 | `test_privacy.py` | 11 | import allowlist **plus the calls that bypass it** (`__import__`/`eval`/`import_module`), no free-text value in any column, CodeBuddy's own files untouched |
 | `test_hermetic.py` | 13 | a runtime tripwire: the suite never opens the real `usage.db` (no in-process `sqlite3.connect`, no child that would resolve it without `CBUT_DB` or `--db`), and never reads the real host footprint (`~/.codebuddy` — no `open`, directory walk or child without `CBUT_CODEBUDDY_DIR`) |
 | `test_snapshots.py` | 9 | automatic snapshots before destructive steps, listing, restore, pruning |
-| `test_maintenance_docs.py` | 19 | the generated format doc cannot drift from the code, no document may state a CI version the workflow does not run, and every `file:line` citation in `pipeline.md` still lands on the symbol it names |
+| `test_maintenance_docs.py` | 22 | the generated format doc cannot drift from the code, no document may state a CI version the workflow does not run or a timer the TUI never sets, and every `file:line` citation in `pipeline.md` still lands on the symbol it names |
 | `test_readme_counts.py` | 6 | the suite table above is the suite table the runner would print, and both pages document every setting the loader knows |
 | `test_record_coverage.py` | 6 | every covered commit is recorded in `CHANGELOG.md` |
 | `test_readme_bilingual.py` | 5 | the two READMEs stay one document in two languages, and every table-of-contents link has a heading to land on |

@@ -82,8 +82,8 @@ this recipe left to memory.
 What the re-measurement also makes visible is that **the store is live**. Two reads fifteen minutes apart
 printed 49,470 and then 49,828 rows, and the file's mtime advanced between them — with `usage.db-wal` at
 **0 bytes** and **no new file in `backups/`**. Those two details are what say it was an ordinary
-incremental sync (whatever is driving it — the TUI's 30-second worker or a `cbut sync`) rather than a
-rebuild or a migration: both of those take a snapshot first, and a snapshot would still be sitting in
+incremental sync (whatever is driving it — a `cbut sync`, or the TUI's sync on launch and on `r`) rather
+than a rebuild or a migration: both of those take a snapshot first, and a snapshot would still be sitting in
 `backups/`. Nothing in this document should therefore be read as a fixed property of the data; the
 one-significant-digit rounding is the defence, and `PRAGMA page_count` is the field that moves first.
 
@@ -295,8 +295,10 @@ Order of magnitude is the point: every dashboard query costs tens of millisecond
 imperceptible and latency work is not the next thing to do. If a re-run puts any of these into the
 hundreds of milliseconds, that is the drift worth chasing.
 
-A full Dashboard refresh is ~40 statements; the 5-second timer re-queries **only the visible tab**,
-and hidden tabs refresh when opened — which is why these costs are tolerable rather than urgent.
+A full Dashboard refresh is ~40 statements; a sync that finds nothing new re-queries **only the
+visible tab** (`cbut-tui.py:2684`), and hidden tabs are queried when opened — which is why these costs
+are tolerable rather than urgent. None of it runs on a timer: the TUI syncs once at launch and then on
+`r`, and it re-queries when you change tab, window, sort or filter.
 
 ## Re-index time
 
