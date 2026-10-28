@@ -258,6 +258,39 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(row["session_id"], "s-1")
         self.assertEqual(row["status"], "completed")
 
+    # -- what cannot be read ------------------------------------------------
+
+    def test_a_trace_that_cannot_be_read_is_counted_not_dropped(self):
+        """Both trace readers report through the same reason, so drift shows up.
+
+        A trace tree that silently stops growing looks exactly like a quiet day.
+        The stream's bad line and the final file's wrong shape are two different
+        readers — ``_read_incremental`` and ``_load_json`` — and each has to land in
+        ``unparsed`` under one reason, which is what ``cbut health`` reports.
+        """
+        traces = self.host / "traces" / "42"
+        traces.mkdir(parents=True)
+        with open(traces / "trace_a.jsonl", "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(agent_start("sp1", "summaryGenerator", 1000)) + "\n")
+            fh.write("{not json at all\n")
+            # Declined on purpose: claimed and never counted, so the reason stays
+            # a drift signal instead of padding itself with a fixed total.
+            fh.write(json.dumps({"type": "trace_start"}) + "\n")
+            fh.write(json.dumps({"type": "trace_unknown", "span": {}}) + "\n")
+        (traces / "trace_b.json").write_text("[1, 2]", encoding="utf-8")
+
+        stats = sync._run(self.conn, quiet=True)
+        self.conn.commit()
+
+        self.assertEqual(stats["agent_spans"], 1,
+                         "the readable span must still be indexed")
+        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(
+            {r["reason"]: r["count"] for r in
+             self.conn.execute("SELECT reason, count FROM unparsed")},
+            {"unparseable_line": 2, "type:trace_unknown": 1})
+        self.assertEqual(stats["unparsed_this_run"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()

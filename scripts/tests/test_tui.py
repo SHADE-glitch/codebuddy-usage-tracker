@@ -3752,5 +3752,90 @@ class EntityRowColumnsTest(unittest.TestCase):
                     f"{kind}: the cell pinned as {header!r} does not carry {key!r}")
 
 
+class AppStructureTest(unittest.TestCase):
+    """Where a method lives in the app is a decision, not an accident.
+
+    D-079 split a 1,356-line ``TrackerApp`` into six mixins, and a split that nothing
+    enforces drifts back: one convenient helper lands in ``TrackerApp``, then the next,
+    and the class is a god object again. The sets below are the contract — moving or
+    adding a method fails here, which is the moment to ask whether the method belongs
+    where it is going, rather than a reason to widen the pin without thinking.
+    """
+
+    # Pinned rather than derived: a pin that computes itself checks nothing.
+    OWNS = {
+        "WideTableMixin": {
+            "name_cap", "_cap_cell", "_clean_cell", "_fill", "_fill_or_empty",
+            "_column_widths", "_set_columns", "_fill_wide", "_plan_wide_tables"},
+        "FilterSortMixin": {
+            "_matches", "_sorted_indices", "_sort_fields_for", "_sort_label",
+            "_render_filter_note", "_sync_filter_bar", "_clear_filter",
+            "action_cycle_sort", "action_toggle_unused", "action_open_filter",
+            "action_close_filter", "on_input_changed", "on_input_submitted",
+            "_focus_active_table", "_anchor_active_table_top"},
+        "DashboardMixin": {
+            "_fill_dashboard", "_fit_dashboard", "_render_summary_panels",
+            "_render_dashboard_models", "_render_dashboard_tools",
+            "_render_dashboard_projects", "_render_dashboard_usage",
+            "_render_dashboard_tokens", "_render_dashboard_cache",
+            "_panel_line", "_put_panel"},
+        "UsagePageMixin": {
+            "_refresh_usage", "_render_usage_window", "_render_usage_status",
+            "_fill_usage_logs", "_hit_rate"},
+        "SyncMixin": {"_request_sync", "_do_sync", "_on_sync_done"},
+        "RangeMixin": {
+            "_sync_range_widget", "_set_date_label", "on_select_changed",
+            "_open_date_range", "action_date_range", "on_button_pressed",
+            "_bounds_for", "_range_of", "_now_ms"},
+        "TrackerApp": {
+            "__init__", "compose", "_compose_dashboard", "_compose_usage",
+            "on_mount", "_cycle_tab", "action_next_tab", "action_previous_tab",
+            "_set_status", "_fill_entity", "_render_entity_rows", "_entity_tab",
+            "refresh_data", "_status_line", "_report_query_error",
+            "_refresh_active_tab", "on_tabbed_content_tab_activated",
+            "_apply_responsive_layout", "on_resize", "on_data_table_row_selected",
+            "_active_pane", "check_action", "action_refresh"},
+    }
+
+    # The base order is behaviour, not layout: when two mixins define one name the
+    # earlier one wins silently, so the order is part of the contract as well.
+    BASES = ["WideTableMixin", "FilterSortMixin", "DashboardMixin",
+             "UsagePageMixin", "SyncMixin", "RangeMixin", "App"]
+
+    def own_methods(self, name):
+        """Every callable the class body defines, inherited ones excluded.
+
+        Properties and static/class methods are functions in the source but
+        descriptors in ``vars()``, so they are counted by their wrapper.
+        """
+        cls = getattr(tui, name)
+        wrappers = (property, staticmethod, classmethod)
+        return {key for key, value in vars(cls).items()
+                if inspect.isfunction(value) or isinstance(value, wrappers)}
+
+    def test_each_class_defines_exactly_the_methods_it_is_pinned_with(self):
+        for name, pinned in self.OWNS.items():
+            actual = self.own_methods(name)
+            self.assertEqual(
+                actual, pinned,
+                f"{name} gained {sorted(actual - pinned)} and lost "
+                f"{sorted(pinned - actual)}; decide where the method belongs, "
+                f"then move it in this pin")
+
+    def test_the_app_inherits_the_mixins_in_the_declared_order(self):
+        actual = [cls.__name__ for cls in TrackerApp.__bases__]
+        self.assertEqual(actual, self.BASES)
+
+    def test_no_two_mixins_define_the_same_method(self):
+        owner = {}
+        for name in self.BASES[:-1]:
+            for method in sorted(self.own_methods(name)):
+                first = owner.setdefault(method, name)
+                self.assertEqual(
+                    first, name,
+                    f"{method!r} is defined by both {first} and {name}; the "
+                    f"earlier base wins silently, so one of them is dead code")
+
+
 if __name__ == "__main__":
     unittest.main()
