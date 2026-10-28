@@ -1966,3 +1966,24 @@ Cost     The shape check reads the numbers from a sentence, not from a table: a 
          anywhere in the document, so a reason named only in the generated block — `invalid_tool_name`
          is — satisfies it without appearing in the checklist itself.
 Commit   bd6e68a
+
+### D-086 · 2026-10-28 · fix
+Symptom  A settings file saved in anything but UTF-8 — or one the user cannot read — ended the run
+         with a traceback. `load_config` read the file outside its own error handling, so
+         `UnicodeDecodeError` and `PermissionError` went straight through `cbut-tui.py`'s
+         `except db.ConfigError` and through `cbut health`'s. Health is the command you run when a
+         number is wrong, and a settings file it cannot read is a reason a number is wrong.
+Change   The read has its own `except (OSError, UnicodeDecodeError)` that raises `ConfigError` naming
+         the path — the same answer the TOML parse error below it already gave. Every caller
+         (`cbut` TUI `main`, `cbut-stats.py` `main`, `cbut health`) turns that into a sentence
+         without changing. The nine lines it adds moved every `cbut_db.py` citation in
+         `pipeline.md`, so all twenty were re-pointed in the same commit — the citation guard
+         named them on the next run, which is the guard doing its job rather than a regression.
+Evidence L0 2026-10-28: a file holding `b"top_n = 5\\n# \\xff\\xfe\\n"` — before the fix
+         `load_config` raised `UnicodeDecodeError` and `cbut health` exited non-zero with a traceback;
+         after it, health exits 0 and prints `settings NOT READ — <path>: cannot be read (...)`. The
+         three new cases fail without the change (1 failure, 2 errors) and pass with it; suite 630.
+Cost     Only reading is covered. A file that reads as UTF-8 and then fails to parse is still the
+         old path, and the message now says "cannot be read" where a user might expect "is not
+         valid TOML" — the parenthesised OS error is what distinguishes them.
+Commit   044b9fb
