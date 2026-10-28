@@ -2615,6 +2615,59 @@ class SyncLockTest(unittest.TestCase):
         self.assertEqual(row["tokens"], 100,
                          "two serialized syncs must count the turn once")
 
+    def test_a_refused_flock_costs_serialization_not_the_fd(self):
+        """A filesystem that cannot flock degrades to no lock, not to a leak.
+
+        ``None`` is the documented answer when the sidecar or fcntl is not there —
+        a network mount, a read-only directory — and ``run()`` reads it as "no lock"
+        rather than as a failure. The descriptor is closed on the way out: the TUI
+        starts a sync on every launch and on ``r``, so one leaked fd per run would
+        grow with use.
+        """
+        opened = []
+        real_open = os.open
+
+        def recording_open(*args, **kwargs):
+            fd = real_open(*args, **kwargs)
+            opened.append(fd)
+            return fd
+
+        with mock.patch.object(sync.os, "open", recording_open), \
+                mock.patch.object(sync.fcntl, "flock",
+                                  side_effect=OSError("flock not supported")):
+            self.assertIsNone(sync._acquire_sync_lock(self.db_path),
+                              "a refused flock must not be fatal")
+        self.assertEqual(len(opened), 1)
+        with self.assertRaises(OSError):
+            os.fstat(opened[0])          # EBADF: the fd was closed, not leaked
+
+    def test_a_sidecar_that_cannot_be_created_degrades_to_no_lock(self):
+        """The parent directory is a regular file, so the open fails, not raises."""
+        (Path(self.tmp.name) / "afile").write_text("", encoding="utf-8")
+        blocked = Path(self.tmp.name) / "afile" / "t.db"
+        self.assertIsNone(sync._acquire_sync_lock(blocked),
+                          "an unopenable sidecar must not raise")
+
+    def test_an_unlocked_run_still_counts_one_turn_once(self):
+        """Degraded is not broken: the pass indexes with no lock held.
+
+        This is also the only path that releases a lock it never took, so it
+        covers ``_release_sync_lock(None)`` — the run has to end cleanly having held
+        nothing.
+        """
+        self._write_turn()
+        with mock.patch.object(sync.fcntl, "flock",
+                               side_effect=OSError("flock not supported")):
+            self._run()
+        conn = db.open_db(self.db_path)
+        try:
+            row = conn.execute("SELECT tokens FROM sessions"
+                               " WHERE session_id='S'").fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row["tokens"], 100,
+                         "an unlocked run must still count the turn once")
+
 
 if __name__ == "__main__":
     unittest.main()

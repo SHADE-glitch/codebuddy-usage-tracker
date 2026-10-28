@@ -251,7 +251,7 @@ name_cap = 28        # 单元格最宽渲染多少字符，超出就截断
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 608 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 611 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -260,7 +260,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 608 tests ... OK
 
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
-| `test_sync.py` | 149 | 转录解析、工具归类、路由出处列（`requestModelId` → 内置 / 厂商 / 主机 / 端点）、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数、整程同步锁、OTel agent 轨迹读取器（流式与完结文件按
+| `test_sync.py` | 152 | 转录解析、工具归类、路由出处列（`requestModelId` → 内置 / 厂商 / 主机 / 端点）、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数、整程同步锁、OTel agent 轨迹读取器（流式与完结文件按
   spanId 合并；会话关联、状态只升不降） |
 | `test_traces.py` | 12 | 轨迹读取端到端：span 结果只落一次、
   `cli`/`ptc` 拒收、running 占位升级且重放不降级、

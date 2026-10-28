@@ -354,7 +354,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 608 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 611 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -364,7 +364,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 
 | Suite | Tests | Covers |
 |---|---:|---|
-| `test_sync.py` | 149 | transcript parsing, tool classification, the route-origin column (`requestModelId` → built-in / vendor / host / endpoint), incremental vs `--full` re-sync, crash recovery, unparsed-record accounting, the whole-run sync lock, the
+| `test_sync.py` | 152 | transcript parsing, tool classification, the route-origin column (`requestModelId` → built-in / vendor / host / endpoint), incremental vs `--full` re-sync, crash recovery, unparsed-record accounting, the whole-run sync lock, the
   OTel agent-span trace reader (stream and final files merge on the spanId key;
   session link, status upgrades) |
 | `test_traces.py` | 12 | the trace reader end to end: span
