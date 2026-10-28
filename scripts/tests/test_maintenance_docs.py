@@ -154,12 +154,18 @@ class GeneratedFormatBlockTest(unittest.TestCase):
 
 class DocTreeTest(unittest.TestCase):
     def test_the_maintenance_docs_exist(self):
-        for name in ("README.md", "codebuddy-format.md", "compatibility.md",
-                     "measurements.md"):
-            path = DOCDIR / name
-            self.assertTrue(path.is_file(), f"missing {path}")
+        """Every page in the directory, and none of them a stub.
+
+        The list here used to name four of the five — `pipeline.md` was missing,
+        though the citation guard in this same module reads it — so a new page was
+        covered only by whatever happened to mention it.
+        """
+        pages = sorted(DOCDIR.glob("*.md"))
+        self.assertGreaterEqual(len(pages), 5,
+                                f"the maintenance docs are gone: {pages}")
+        for path in pages:
             self.assertGreater(len(path.read_text(encoding="utf-8")), 200,
-                               f"{name} is a stub")
+                               f"{path.name} is a stub")
 
     def test_every_document_is_reachable_from_the_index(self):
         index = (DOCDIR / "README.md").read_text(encoding="utf-8")
