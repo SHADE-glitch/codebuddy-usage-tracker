@@ -11,7 +11,11 @@ Nothing here touches the real database or ~/.codebuddy: every path is a temp
 directory, and the scripts being exec'd are stubs that print their own argv.
 """
 
+import contextlib
+import importlib.util
+import io
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -23,6 +27,11 @@ import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the r
 
 ROOT = Path(__file__).resolve().parents[2]
 CBUT = ROOT / "bin" / "cbut"
+
+# The two verbs `bin/cbut` handles itself rather than handing to a script. There is
+# no machine-readable list of them — the dispatch is a bash case — so they are named
+# here, and `cbut help` must mention them like any other.
+SHELL_VERBS = ("tui", "sync")
 
 STUB = (
     "import sys, os\n"
@@ -151,12 +160,39 @@ class DispatcherTest(unittest.TestCase):
     # --- help text drift (D-001) --------------------------------------------
 
     def test_help_lists_the_subcommands_that_actually_exist(self):
+        """Every verb the parser accepts, read from the parser.
+
+        The names here used to be typed out — seven of the seventeen — so `cbut
+        models`, `cbut sessions` and `cbut format` worked while help never
+        mentioned them, which is the D-001 drift this case was written for.
+        """
         out = self.run_cbut("help").stdout
-        for name in ("sync", "stats", "tools", "health", "backup", "restore",
-                     "vacuum"):
-            self.assertIn(name, out, f"cbut {name} works but help never mentions it")
+        verbs = self.subcommands() | set(SHELL_VERBS)
+        self.assertGreaterEqual(len(verbs), 15,
+                                f"the parser reported almost no subcommands: {verbs}")
+        # Case-insensitive because help is prose: `tui` is documented by the bare
+        # `cbut` line — "launch the interactive TUI (eight tabs)" — and never spelled
+        # as a verb of its own.
+        for name in sorted(verbs):
+            self.assertIn(name, out.lower(),
+                          f"cbut {name} works but help never mentions it")
         self.assertIn("eight tabs", out,
                       "the tab count in help drifted from the TUI again")
+
+    def subcommands(self):
+        """Every subcommand `cbut-stats.py` accepts, read from its own parser."""
+        spec = importlib.util.spec_from_file_location(
+            "cbut_stats_for_help", ROOT / "scripts" / "cbut-stats.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit):
+                module.main(["--help"])
+        match = re.search(r"\{([a-z,\-]+)\}", out.getvalue())
+        self.assertIsNotNone(match,
+                             f"cannot read the subcommand list: {out.getvalue()!r}")
+        return set(match.group(1).split(","))
 
     def test_help_does_not_leak_bash_internals(self):
         # The header is printed by stripping a leading '#'; the shebang and the

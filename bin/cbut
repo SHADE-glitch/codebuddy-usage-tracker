@@ -4,7 +4,8 @@
 #   cbut                 launch the interactive TUI (eight tabs)
 #   cbut sync            index new CodeBuddy logs into the database
 #   cbut sync --full     rebuild the database from scratch
-#   cbut stats|tools|skills|agents|plugins|mcp|show|recent|inventory|export|health
+#   cbut stats|tools|skills|agents|plugins|mcp|models|sessions
+#        show|recent|inventory|export|health|format
 #                        headless reports (no TUI, stdlib only)
 #   cbut backup          snapshot the database before a risky step
 #   cbut restore         list snapshots, or restore one: cbut restore NAME
