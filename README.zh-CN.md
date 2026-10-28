@@ -283,7 +283,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 650 tests ... OK
 | `test_privacy.py` | 11 | import 白名单，**加上绕过它的调用方式**（`__import__`/`eval`/`import_module`）、任何表任何文本列都不落自由文本、不写 CodeBuddy 自己的文件 |
 | `test_hermetic.py` | 13 | 一个运行时绊线：套件绝不打开真实的 `usage.db`（进程内没有 `sqlite3.connect`，也没有哪个子进程会在没钉 `CBUT_DB`/`--db` 时去解析它），也绝不读真实的 host 足迹（`~/.codebuddy`——没有 `open`、目录遍历，也没有哪个子进程会在没钉 `CBUT_CODEBUDDY_DIR` 时去读它） |
 | `test_snapshots.py` | 9 | 破坏性步骤前自动留快照、列举、回滚、保留份数 |
-| `test_maintenance_docs.py` | 30 | 生成的格式依赖文档不可能与代码脱节，任何文档也不许写工作流里并没有的 CI 版本、TUI 并没有的定时器、代码并不写的 schema 版本或表/视图数量、并不读取的 trace 目录，`cbut health` 的每种原因都在列它们的页面上点名，`pipeline.md` 里每条 `file:line` 引用都仍落在它点名的符号上 |
+| `test_maintenance_docs.py` | 30 | 生成的格式依赖文档不可能与代码脱节，任何文档也不许写工作流里并没有的 CI 版本、TUI 并没有的定时器、代码并不写的 schema 版本或表/视图数量、并不读取的 trace 目录，`cbut health` 的每种原因都在列它们的页面上点名，`docs/maintenance/` 下每条 `file:line` 引用都仍落在它点名的符号上 |
 | `test_readme_counts.py` | 7 | 上面这张表就是运行器会打印的那张表，并且两份页面都把 loader 认识的每个设置项写全了 |
 | `test_record_coverage.py` | 6 | 每个被覆盖的提交都记录进 `CHANGELOG.md` |
 | `test_readme_bilingual.py` | 4 | 两份 README 始终是「一份文档、两种语言」：同样的分节、同样的状态码、同样的语言开关 |

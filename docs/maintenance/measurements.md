@@ -296,9 +296,10 @@ imperceptible and latency work is not the next thing to do. If a re-run puts any
 hundreds of milliseconds, that is the drift worth chasing.
 
 A full Dashboard refresh is ~40 statements; a sync that finds nothing new re-queries **only the
-visible tab** (`cbut-tui.py:2684`), and hidden tabs are queried when opened — which is why these costs
-are tolerable rather than urgent. None of it runs on a timer: the TUI syncs once at launch and then on
-`r`, and it re-queries when you change tab, window, sort or filter.
+visible tab** (`_refresh_active_tab()`, `cbut-tui.py:2688`), and hidden tabs are queried when
+opened — which is why these costs are tolerable rather than urgent. None of it runs on a timer:
+the TUI syncs once at launch and then on `r`, and it re-queries when you change tab, window,
+sort or filter.
 
 ## Re-index time
 

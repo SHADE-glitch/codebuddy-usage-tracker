@@ -19,5 +19,6 @@ Four standing checks cover this area — all part of `python3 -m unittest discov
   `cbut format` output. Edit the registry, run `cbut format --write`.
 - `test_privacy.py` — nothing is read that could leave the machine, and no free-text value lands in
   any column of any table.
-- `test_maintenance_docs.py` (also) — every `file:line` citation in `pipeline.md` still points at a
-  line that carries the symbol it names, and the tab table there still matches `TAB_IDS`.
+- `test_maintenance_docs.py` (also) — every `file:line` citation under `docs/maintenance/` still
+  points at a line that carries the symbol it names, and the tab table in `pipeline.md` still
+  matches `TAB_IDS`.
