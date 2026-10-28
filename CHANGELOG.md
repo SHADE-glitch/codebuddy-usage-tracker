@@ -2084,3 +2084,24 @@ Cost     A behaviour change: where a directory or a FIFO at the config path used
          TUI starts on the shipped defaults. The file holds only the five knobs and no other copy
          of them exists, so moving it aside costs those lines, not data.
 Commit   ca8c719
+
+### D-091 · 2026-10-28 · fix
+Symptom  `cbut help` is the leading comment block of `bin/cbut`, and it listed eleven of the
+         seventeen subcommands the parser accepts: `models`, `sessions` and `format` all worked
+         and were never mentioned. The case that guarded it held a second hand-typed list of
+         seven names, so neither the page nor its guard knew about the rest — the same D-001
+         shape, one layer up.
+Change   The comment block names all of them, wrapped over two lines. `test_dispatcher` reads the
+         subcommand set from `cbut-stats.py`'s own parser — the `--help` scrape
+         `test_readme_counts` already uses — and requires `cbut help` to mention every one, plus
+         `tui` and `sync`, which the dispatcher handles itself and no parser lists. The
+         comparison is case-insensitive because `tui` is documented by the bare `cbut` line
+         ("launch the interactive TUI (eight tabs)") rather than as a verb.
+Evidence L0 2026-10-28: the derived case against the old block failed with `cbut format works but
+         help never mentions it`; after the change `./bin/cbut help` prints all seventeen and
+         exits 0. Suite 650.
+Cost     Help output gains three names and one line break; nothing else about the dispatcher
+         changed, and the exit code, the resolution rules and the fallback to `cbut-stats.py` are
+         untouched. The case can now fail for a new reason — a verb added to the parser and not
+         to the comment block — which is the point, but it is a new way to go red.
+Commit   43fc283
