@@ -1901,3 +1901,21 @@ Cost     The scan knows one phrasing. A cadence written as "every 30 s" or "twic
          fails `setUp` instead of being read — deliberately, so the guard cannot report "no timer"
          from a call it could not parse.
 Commit   766ee95
+
+### D-083 · 2026-10-28 · guard
+Symptom  Both READMEs' repository-layout row read "the 591 tests above" while the command block
+         fifty lines above it read 618. `AGGREGATE` could not see it: that check reads the
+         `Ran NNN tests` line, and this was a sentence. The same row had already gone stale once
+         for listing a `vacuum` subcommand the parser did not have, and nothing was watching the
+         number in it.
+Change   Both pages say 619, and `PROSE_COUNT` checks every "N tests" / "N 个用例" in either
+         page against the loader — which also covers the `Ran` line a second time. A positive
+         control requires at least two such counts per page, so a pattern that stopped matching
+         cannot pass as a clean result.
+Evidence L0 2026-10-28: run over the pre-fix pages the check names `:363` "618 tests" and
+         `:415` "591 tests" in the English page, `:256` and `:301` in the Chinese one; after
+         the edit it is empty and the suite reports 619 tests, OK.
+Cost     The pattern knows two phrasings. A total written as "six hundred tests", or a count
+         stated in a table cell rather than a sentence, is still unchecked — the per-suite rows
+         have their own pattern and are covered.
+Commit   fd0115a
