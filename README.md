@@ -345,7 +345,9 @@ name_cap = 28        # widest cell a table renders before it cuts the value
   `CBUT_LOG_LIMIT`, `CBUT_DETAIL_LIMIT` and `CBUT_NAME_CAP`.
 - **A broken file stops the TUI** with the path and the reason rather than quietly starting on
   defaults — being ignored while you edit it is the worst outcome a settings layer can offer.
-  `cbut health` prints the same verdict, including which file it read.
+  A path that exists but is not a regular file (a directory, a FIFO, one you cannot even stat) is
+  refused the same way; only a *missing* file means defaults. `cbut health` prints the same
+  verdict, including which file it read.
 - **Unknown keys are refused**: a typo'd setting would otherwise do nothing, silently, forever.
   Values are type- and range-checked (`top_n = 0` is a blank panel, not a preference).
 - Parsed by the standard library's `tomllib`, so this adds **no dependency** and no network path.
@@ -360,7 +362,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 640 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 645 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -387,7 +389,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
   newest-first order, limit) |
 | `test_indexes.py` | 4 | the rule the two earlier index cuts relied on a hand-taken reading for: every statement the report surface really runs is captured and planned with `EXPLAIN QUERY PLAN`, and a declared index no plan names fails — plus the structural rule that caught the v9 cut, a key that is a strict prefix of a wider declared key |
 | `test_stats.py` | 45 | the headless report CLI (`cbut stats`): the overview and the per-category tables, the model/token report and the cache columns it drops on a narrow terminal, `show`/`recent`/`inventory`/`export`, `health` (schema version, settings line, unparsed accounting), the `backup`→`restore` round trip, `vacuum` (snapshot first, reclaimed bytes, rows unchanged), the generated `format` surface, and the empty-state `(none)` notice |
-| `test_config.py` | 25 | the settings layer: defaults unchanged, file, env precedence and bounds, a broken file that stops `main()` before the TUI starts, the keys the app actually reads, and every key `cbut health` reports — with the environment hidden, so a configured shell cannot turn these into false failures |
+| `test_config.py` | 30 | the settings layer: defaults unchanged, file, env precedence and bounds, a broken file that stops `main()` before the TUI starts, the keys the app actually reads, and every key `cbut health` reports — with the environment hidden, so a configured shell cannot turn these into false failures |
 | `test_dispatcher.py` | 12 | `bin/cbut`: subcommand routing, venv resolution, help without a resolvable install |
 | `test_format_registry.py` | 10 | the CodeBuddy format registry and the parser agree, both directions |
 | `test_privacy.py` | 11 | import allowlist **plus the calls that bypass it** (`__import__`/`eval`/`import_module`), no free-text value in any column, CodeBuddy's own files untouched |
@@ -412,7 +414,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `vacuum` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 640 tests above |
+| `scripts/tests/` | the 645 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, the size & performance baseline with the commands that produced it, and the `file:line` map from a log record to the number on screen |
 | `systemd/` | optional 15-minute sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

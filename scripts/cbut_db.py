@@ -16,6 +16,7 @@ import importlib.util
 import os
 import re
 import sqlite3
+import stat
 import sys
 import tomllib
 from datetime import datetime, timedelta
@@ -107,7 +108,20 @@ def load_config(path=None):
     """
     cfg = dict(DEFAULTS)
     source = Path(path if path is not None else CONFIG_PATH)
-    if source.is_file():
+    # `is_file()` answers False for four different situations — absent, a directory, a
+    # FIFO, and a path this user cannot even stat — and swallowing all four meant a
+    # settings file nobody could read looked exactly like no settings file at all.
+    # `os.stat` keeps them apart: only "not there" is the normal case.
+    try:
+        info = os.stat(source)
+    except FileNotFoundError:
+        info = None                    # absent, or a symlink whose target is absent
+    except OSError as exc:
+        # Unsearchable parent, ENOTDIR, a loop: the file may well be there.
+        raise ConfigError(f"{source}: cannot be read ({exc})") from None
+    if info is not None:
+        if not stat.S_ISREG(info.st_mode):
+            raise ConfigError(f"{source}: is not a regular file")
         # Reading is its own failure: a file saved in another encoding, or one the
         # user cannot read, is a settings file they have to fix — the same answer the
         # parse error below gets. Letting UnicodeDecodeError or PermissionError out

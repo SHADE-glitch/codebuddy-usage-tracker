@@ -183,6 +183,63 @@ class BrokenFileTest(unittest.TestCase):
                     db.load_config(path)
 
 
+class PathShapeTest(unittest.TestCase):
+    """What sits at the config path, and what the loader says about it.
+
+    `is_file()` answers False for four different situations — absent, a directory, a FIFO,
+    and a path this user cannot even stat — so all four read as "no settings file" and the
+    loader returned the defaults without a word. Only the first is the normal case; the
+    other three are a settings file somebody has to fix, and `cbut health` reported them as
+    "(absent — defaults)", which was a false statement about the path.
+    """
+
+    def test_a_directory_where_the_file_should_be_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.mkdir()
+            with self.assertRaises(db.ConfigError) as ctx:
+                db.load_config(path)
+        self.assertIn(str(path), str(ctx.exception))
+        self.assertIn("not a regular file", str(ctx.exception))
+
+    def test_a_symlink_to_a_directory_is_refused_too(self):
+        """`stat` follows the link, so what is refused is what would have been read."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "real"
+            target.mkdir()
+            link = Path(tmp) / "config.toml"
+            link.symlink_to(target)
+            with self.assertRaises(db.ConfigError) as ctx:
+                db.load_config(link)
+        self.assertIn("not a regular file", str(ctx.exception))
+
+    def test_a_symlink_to_nothing_is_still_absent(self):
+        """The normal case has to stay silent: a dotfile manager that links a file it has
+        not created yet is not a misconfiguration, and refusing it would make the tool
+        unusable for that setup."""
+        with tempfile.TemporaryDirectory() as tmp:
+            link = Path(tmp) / "config.toml"
+            link.symlink_to(Path(tmp) / "not-there.toml")
+            self.assertEqual(db.load_config(link), db.DEFAULTS)
+
+    @unittest.skipIf(os.geteuid() == 0, "root can stat through a 0o000 directory")
+    def test_a_file_this_user_cannot_stat_is_refused(self):
+        """`exists()` swallows the permission error and answers False, so the file read
+        as absent. It is there, and it gets the answer every other unreadable file
+        gets."""
+        with tempfile.TemporaryDirectory() as tmp:
+            inner = Path(tmp) / "locked"
+            inner.mkdir()
+            (inner / "config.toml").write_text("top_n = 3\n", encoding="utf-8")
+            inner.chmod(0o000)
+            try:
+                with self.assertRaises(db.ConfigError) as ctx:
+                    db.load_config(inner / "config.toml")
+            finally:
+                inner.chmod(0o755)
+        self.assertIn("cannot be read", str(ctx.exception))
+
+
 class PrecedenceTest(unittest.TestCase):
     def test_environment_beats_the_file(self):
         with tempfile.TemporaryDirectory() as tmp, no_settings_env():
@@ -435,6 +492,19 @@ class HealthSurfaceTest(unittest.TestCase):
         self.assertIn(str(cfg), out, "the report must name the file it could not read")
         self.assertIn("NOT READ", out)
         self.assertNotIn("Traceback", out)
+
+    def test_health_reports_a_directory_instead_of_calling_it_absent(self):
+        """The line said "(absent — defaults)" for a path that exists. With the loader
+        refusing a non-regular file, the same sentence is the honest one it already has
+        for a broken file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config.toml"
+            cfg.mkdir()
+            rc, out = self._health(self._env(self._make_db(tmp), {"CBUT_CONFIG": str(cfg)}))
+        self.assertEqual(rc, 0, out)
+        self.assertIn(str(cfg), out)
+        self.assertIn("is not a regular file", out)
+        self.assertNotIn("absent", out)
 
     def test_health_reports_the_database_it_was_handed(self):
         """`--db` must not print a different path than the one it opened."""
