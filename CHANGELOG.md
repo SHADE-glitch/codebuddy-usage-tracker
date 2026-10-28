@@ -2011,3 +2011,26 @@ Cost     The message says "move it aside", which is the right advice for a file 
          tools — nothing here tries to repair a file, and `cbut restore` remains the way back if a
          snapshot exists.
 Commit   1c2bb94
+
+### D-088 · 2026-10-28 · fix
+Symptom  A transcript whose `timestamp` is text — ISO-8601, or junk — put that string in an INTEGER
+         column. SQLite accepts it, `MIN(ts)` then returns the string, and `cbut stats` died in
+         `ts()` with `TypeError: unsupported operand type(s) for /: 'str' and 'int'`. The TUI's
+         `local_time()` divided the same value inside a refresh, which is a crash in the event loop
+         rather than a wrong cell. D-080's Cost note had already recorded that the gate checks
+         shapes, not types, and that `timestamp: "abc"` "lands as text and poisons arithmetic" —
+         poisoning turned out to include ending the report.
+Change   `_handle_record` and `_record_function_result` normalise a string timestamp through the
+         `_iso_ms` helper the trace reader has used since it was written: ISO-8601 becomes epoch ms,
+         anything else becomes NULL, and the call is still stored. `ts()` and `ms()` in the report
+         and `local_time()` in the TUI render a non-number instead of dividing it, so rows written
+         before this commit keep printing.
+Evidence L0 2026-10-28: a two-record transcript — `2026-10-01T12:00:00Z` and `"abc"` — into a fresh
+         index stores both calls, with `ts` `1790856000000` and NULL; the same file made
+         `cbut stats` traceback before the change. Five new cases (two in `test_sync`, one in
+         `test_stats`, two in `test_tui`) fail without it and pass with it; suite 639.
+Cost     The gate still checks shapes, not types: `timestamp` is the one field normalised, so any
+         other numeric field can still arrive as a string. `ms()` now renders one instead of
+         raising, which keeps the panel alive but hides the drift — a duration of `"12"` prints as
+         `12` and is counted as zero by every SUM.
+Commit   82d6faa
