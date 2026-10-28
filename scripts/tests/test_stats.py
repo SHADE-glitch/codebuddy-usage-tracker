@@ -135,11 +135,18 @@ class StatsCliTest(unittest.TestCase):
                          "an unknown total was printed as a measurement")
 
     def test_stats_prints_every_section(self):
+        """Every section the overview is built from, read from the table it iterates.
+
+        The five titles used to be typed here as well as in `OVERVIEW_SECTIONS`, so a
+        sixth kind would have been added to the report and to nothing that checks it.
+        """
         rc, out, err = run("--db", self.db_path, "stats")
         self.assertEqual(rc, 0, err)
         self.assertIn("CodeBuddy usage — overview", out)
-        for section in ("Top tools", "Skills", "Agents", "Plugins", "MCP"):
-            self.assertIn(section, out, f"the overview lost its {section} section")
+        titles = [title for _kind, title, _empty in stats.OVERVIEW_SECTIONS]
+        self.assertGreaterEqual(len(titles), 5, "the section table went missing")
+        for title in titles:
+            self.assertIn(title, out, f"the overview lost its {title!r} section")
         # The one tool call took 1200 ms, which the report must render as seconds.
         self.assertIn("1.2s", out, "the avg column no longer scales ms to s")
 
@@ -269,14 +276,51 @@ class StatsCliTest(unittest.TestCase):
         self.assertIn("p1", out)
         self.assertNotIn("Read", out, "--kind plugin must filter the tool out")
 
+    # Tables and views `cbut export` deliberately leaves out, and why. This is the
+    # status quo, not an endorsement: export is a summary, and the raw per-call rows
+    # are what the views already aggregate. A table that is neither exported nor
+    # named here fails the test below — which is the decision this list exists to
+    # force.
+    NOT_EXPORTED = {
+        "agent_usage": "raw per-agent rows; v_agents aggregates them",
+        "commands": "slash-command counts; no report reads the table alone",
+        "mcp_usage": "raw per-tool rows; v_mcp aggregates them",
+        "meta": "schema version and bookkeeping, not usage",
+        "plugin_usage": "raw per-plugin rows; v_plugins aggregates them",
+        "skill_usage": "raw per-skill rows; v_skills aggregates them",
+        "sync_state": "incremental-sync bookkeeping, not usage",
+        "tool_calls": "the raw call log; export is a summary, not every row",
+        "unparsed": "diagnostic rows the parser could not classify",
+    }
+
     def test_export_dumps_every_table_as_json(self):
+        """Every table and view is exported, or named as deliberately not.
+
+        The exported keys used to be typed here as well as in `cmd_export`, so a
+        table added to the schema would have been missing from the report and from
+        the test, and nothing would have said so. The schema is the authority now.
+        """
         rc, out, err = run("--db", self.db_path, "export")
         self.assertEqual(rc, 0, err)
         data = json.loads(out)          # a traceback would not parse
-        for key in ("v_tools", "v_skills", "v_agents", "v_mcp", "v_plugins",
-                    "inventory", "model_tokens", "model_responses", "sessions",
-                    "overview"):
-            self.assertIn(key, data, f"export dropped the {key} table")
+        conn = sqlite3.connect(self.db_path)
+        try:
+            schema = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
+        finally:
+            conn.close()
+        schema -= {"sqlite_sequence"}   # SQLite's own, created by AUTOINCREMENT
+        self.assertGreaterEqual(len(schema), 15, f"the schema went missing: {schema}")
+
+        uncovered = schema - set(data) - set(self.NOT_EXPORTED)
+        self.assertEqual(set(), uncovered,
+                         "export and this test both ignore these tables — export "
+                         "them, or name them in NOT_EXPORTED with a reason: %s"
+                         % sorted(uncovered))
+        stale = set(self.NOT_EXPORTED) - schema
+        self.assertEqual(set(), stale,
+                         "NOT_EXPORTED names tables the schema no longer has: %s"
+                         % sorted(stale))
         self.assertEqual(data["overview"]["tool_calls"], 1)
 
     def test_missing_database_is_named_not_traced(self):
