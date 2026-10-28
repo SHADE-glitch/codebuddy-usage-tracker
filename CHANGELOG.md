@@ -2078,7 +2078,7 @@ Cost     A behaviour change: where a directory or a FIFO at the config path used
          say no. `FileNotFoundError` is the only silent case left, so a path that disappears between
          the stat and the read still lands in the "cannot be read" branch rather than being treated
          as absent.
-         **Migrating into this:** if `cbut` now refuses to start, `cbut health` names the path and
+         **Upgrading into this:** if `cbut` now refuses to start, `cbut health` names the path and
          the reason on its `settings` line — `NOT READ — /path: is not a regular file`, or
          `cannot be read (…)`. Move that path aside (`mv` it, or `rmdir` an empty directory) and the
          TUI starts on the shipped defaults. The file holds only the five knobs and no other copy

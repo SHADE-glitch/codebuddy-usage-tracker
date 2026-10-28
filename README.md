@@ -347,8 +347,8 @@ name_cap = 28        # widest cell a table renders before it cuts the value
   defaults — being ignored while you edit it is the worst outcome a settings layer can offer.
   A path that exists but is not a regular file (a directory, a FIFO, one you cannot even stat) is
   refused the same way; only a *missing* file means defaults. `cbut health` prints the same
-  verdict, including which file it read. Upgrading into that rule: if the TUI now refuses to
-  start, that line names the path and the reason — move it aside (`mv` it, or `rmdir` an empty
+  verdict, including which file it read. Upgrading into this: if the TUI now refuses to start,
+  that line names the path and the reason — move it aside (`mv` it, or `rmdir` an empty
   directory) and the shipped defaults are back.
 - **Unknown keys are refused**: a typo'd setting would otherwise do nothing, silently, forever.
   Values are type- and range-checked (`top_n = 0` is a blank panel, not a preference).
