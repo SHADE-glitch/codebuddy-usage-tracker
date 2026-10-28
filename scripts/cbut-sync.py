@@ -2104,7 +2104,16 @@ def main(argv=None) -> int:
     ap.add_argument("--db", default=str(db.DB_PATH))
     args = ap.parse_args(argv)
     t0 = time.time()
-    run(full=args.full, quiet=args.quiet, db_path=args.db)
+    try:
+        run(full=args.full, quiet=args.quiet, db_path=args.db)
+    except sqlite3.DatabaseError as exc:
+        # A file that is not a SQLite database — truncated by a full disk, copied
+        # from somewhere else, or not a database at all. Every caller that can
+        # show a message already has one (the TUI reports "Sync failed"); this is
+        # the one that would otherwise print a traceback and nothing else.
+        print(f"cbut sync: {args.db} is not a database this build can write ({exc})\n"
+              f"      move it aside and run: cbut sync", file=sys.stderr)
+        return 2
     if not args.quiet:
         print(f"done in {time.time() - t0:.1f}s -> {args.db}")
     return 0

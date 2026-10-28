@@ -285,6 +285,27 @@ class StatsCliTest(unittest.TestCase):
         self.assertIn("no database at", err)
         self.assertNotIn("Traceback", err)
 
+    def test_a_file_that_is_not_a_database_is_named_not_traced(self):
+        """A damaged file is the case `cbut health` exists for, and it used to print
+        `sqlite3.DatabaseError: file is not a database` from inside its first query."""
+        bad = Path(self.tmp.name) / "not-a-db.db"
+        bad.write_bytes(b"not a database")
+        rc, out, err = run("--db", bad, "stats")
+        self.assertEqual(rc, 2, err)
+        self.assertIn("is not a database this build can read", err)
+        self.assertIn(str(bad), err)
+        self.assertNotIn("Traceback", err)
+
+    def test_a_directory_where_the_database_should_be_is_named(self):
+        """It exists, so the "no database at" check passes; sqlite then says "disk
+        I/O error" from inside connect(), which names nothing a reader can act on."""
+        directory = Path(self.tmp.name) / "dbdir"
+        directory.mkdir()
+        rc, out, err = run("--db", directory, "stats")
+        self.assertEqual(rc, 1, err)
+        self.assertIn("is a directory, not a database", err)
+        self.assertNotIn("Traceback", err)
+
     def test_an_unknown_subcommand_is_rejected_by_the_parser(self):
         with self.assertRaises(SystemExit) as caught:
             run("--db", self.db_path, "definitely-not-a-command")
@@ -549,6 +570,21 @@ class SnapshotCliTest(unittest.TestCase):
         rc, out, err = run("--db", self.db_path, "restore", "usage-19990101-000000-manual.db")
         self.assertEqual(rc, 1)
         self.assertIn("no backup named", err)
+
+    def test_a_damaged_file_is_named_by_the_file_level_commands(self):
+        """These three are the commands that are supposed to work when the database is
+        in trouble — `restore` already did. The other two opened it with `open_db`, whose
+        `PRAGMA journal_mode = WAL` raised `DatabaseError` outside any handler, so a
+        truncated file produced a traceback naming a PRAGMA instead of the file."""
+        bad = Path(self.tmp.name) / "bad.db"
+        bad.write_bytes(b"not a database")
+        cases = {"backup": str(bad), "vacuum": str(bad), "restore": "no backups"}
+        for cmd, needle in cases.items():
+            with self.subTest(cmd=cmd):
+                rc, out, err = run("--db", bad, cmd)
+                self.assertNotEqual(rc, 0, err)
+                self.assertIn(needle, out + err)
+                self.assertNotIn("Traceback", out + err)
 
     def test_backup_refuses_when_the_database_is_missing(self):
         rc, out, err = run("--db", Path(self.tmp.name) / "absent.db", "backup")

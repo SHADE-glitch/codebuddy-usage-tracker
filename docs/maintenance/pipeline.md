@@ -183,7 +183,7 @@ one written in the class.
   `_fill_wide` (`:1123`) keeps the longest column prefix that fits.
 - The sync worker (`_request_sync` `:2030`, `_do_sync` `:2039`, `_on_sync_done` `:2051`) runs on
   launch and on `r`, in a thread, and refreshes every tab only when it indexed a file.
-- `cbut-stats.py` reads the same `db` functions through a read-only connection (`cbut-stats.py:763`)
+- `cbut-stats.py` reads the same `db` functions through a read-only connection (`open_db` `cbut-stats.py:783`)
   and prints the full union; `cmd_stats` (`cbut-stats.py:253`) is the report a headless run gets.
 
 ## Following one number

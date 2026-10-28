@@ -543,11 +543,20 @@ def cmd_backup(args) -> int:
     if not path.exists():
         print(f"no database at {path} — run: cbut sync", file=sys.stderr)
         return 1
-    conn = db.open_db(path)
+    conn = None
     try:
+        conn = db.open_db(path)
         dest = db.snapshot(conn, reason="manual")
+    except sqlite3.DatabaseError as exc:
+        # The file exists and is not a database. There is nothing to snapshot, and the
+        # traceback this used to print named a PRAGMA rather than the file.
+        print(f"cbut: {path} is not a database this build can read ({exc})\n"
+              f"      there is nothing to snapshot; move it aside and run: cbut sync",
+              file=sys.stderr)
+        return 2
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     print(f"snapshot  {dest}  ({dest.stat().st_size:,} bytes)")
     print(f"          keeping the newest {db.BACKUP_KEEP} under {dest.parent}")
     return 0
@@ -619,8 +628,9 @@ def cmd_vacuum(args) -> int:
     if not path.exists():
         print(f"no database at {path} — run: cbut sync", file=sys.stderr)
         return 1
-    conn = db.open_db(path)
+    conn = None
     try:
+        conn = db.open_db(path)
         # Fold the WAL back into the main file *before* anything is measured: the file
         # size of a database whose newest pages are still in `-wal` is not the file this
         # command is about, and reading it there is how a compaction looks like it grew.
@@ -637,7 +647,8 @@ def cmd_vacuum(args) -> int:
                   file=sys.stderr)
         return 1
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     # The file is only truncated to its new page count when the last connection lets go
     # of it, so the final size is read after the close. Reading it before reports a
     # compaction that reclaimed nothing while dropping pages.
@@ -760,8 +771,16 @@ def main(argv=None) -> int:
     if not Path(args.db).exists():
         print(f"no database at {args.db} — run: cbut sync", file=sys.stderr)
         return 1
-    conn = db.open_db(args.db, readonly=True)
+    if Path(args.db).is_dir():
+        # Exists, so the check above passed; opens as a directory and fails with
+        # "disk I/O error" from inside sqlite3.connect, which is nobody's idea of
+        # what went wrong.
+        print(f"cbut: {args.db} is a directory, not a database\n"
+              f"      pass the file itself, or run: cbut sync", file=sys.stderr)
+        return 1
+    conn = None
     try:
+        conn = db.open_db(args.db, readonly=True)
         COMMANDS[args.cmd](conn, args)
     except sqlite3.OperationalError as exc:
         # A database written by an older build of this tool has no table or
@@ -770,8 +789,16 @@ def main(argv=None) -> int:
         print(f"cbut: this database is older than this build ({exc})\n"
               f"      run: cbut sync", file=sys.stderr)
         return 2
+    except sqlite3.DatabaseError as exc:
+        # Not a SQLite file at all, or one damaged past reading. `OperationalError`
+        # is a subclass and is handled above; this is the rest of `DatabaseError`,
+        # which used to reach the terminal as a traceback from the first query.
+        print(f"cbut: {args.db} is not a database this build can read ({exc})\n"
+              f"      move it aside and run: cbut sync", file=sys.stderr)
+        return 2
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     return 0
 
 

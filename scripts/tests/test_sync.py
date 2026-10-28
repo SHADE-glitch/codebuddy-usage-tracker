@@ -3,7 +3,9 @@
 Run:  python3 -m unittest discover -s scripts/tests
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -2667,6 +2669,27 @@ class SyncLockTest(unittest.TestCase):
             conn.close()
         self.assertEqual(row["tokens"], 100,
                          "an unlocked run must still count the turn once")
+
+
+class SyncMainTest(unittest.TestCase):
+    """The entry point on a file that is not a database.
+
+    `run()` keeps raising — the TUI shows "Sync failed: ..." for the same exception — but
+    the command line had nothing above it, so `cbut sync` printed a traceback and nothing
+    else for a file that was truncated by a full disk or copied from somewhere else.
+    """
+
+    def test_a_file_that_is_not_a_database_is_named_not_traced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "bad.db"
+            bad.write_bytes(b"not a database")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = sync.main(["--db", str(bad), "--quiet"])
+        self.assertEqual(rc, 2)
+        self.assertIn("is not a database this build can write", err.getvalue())
+        self.assertIn(str(bad), err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
 
 
 if __name__ == "__main__":
