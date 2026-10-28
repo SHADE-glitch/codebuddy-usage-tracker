@@ -594,10 +594,13 @@ def cmd_restore(args) -> int:
     try:
         db.restore(target, db_path=path)
     except sqlite3.Error as exc:
-        # Almost always the TUI holding the file open.
-        print(f"could not restore over {path}: {exc}\n"
-              f"  close the TUI (and stop cbut-sync.timer) and retry",
-              file=sys.stderr)
+        # Almost always the TUI holding the file open — but not when the snapshot itself
+        # is not a database, and telling someone to close a TUI they do not have open is
+        # the kind of advice that costs an afternoon. Same split as `cmd_vacuum`.
+        busy = "lock" in str(exc).lower() or "busy" in str(exc).lower()
+        hint = ("close the TUI (and stop cbut-sync.timer) and retry" if busy
+                else "the snapshot itself may be damaged; list the others with: cbut restore")
+        print(f"could not restore over {path}: {exc}\n  {hint}", file=sys.stderr)
         return 1
     print(f"restored  {path}\n  from      {target}")
     print(f"  the database that was there is kept in {db.backup_dir(path)}")

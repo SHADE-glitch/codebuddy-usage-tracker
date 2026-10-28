@@ -586,6 +586,20 @@ class SnapshotCliTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("no backup named", err)
 
+    def test_restoring_a_damaged_snapshot_does_not_blame_the_tui(self):
+        """The hint was written for the common case — the TUI holding the file open —
+        and printed for every failure, including a snapshot that is not a database.
+        Closing a TUI that is not running is not a fix, and `cmd_vacuum` already
+        splits the two."""
+        backups = db.backup_dir(self.db_path)
+        backups.mkdir(parents=True, exist_ok=True)
+        broken = backups / "usage-20260101-000000-manual.db"
+        broken.write_bytes(b"garbage")
+        rc, out, err = run("--db", self.db_path, "restore", broken.name)
+        self.assertEqual(rc, 1, err)
+        self.assertIn("snapshot itself may be damaged", err)
+        self.assertNotIn("close the TUI", err)
+
     def test_a_damaged_file_is_named_by_the_file_level_commands(self):
         """These three are the commands that are supposed to work when the database is
         in trouble — `restore` already did. The other two opened it with `open_db`, whose
