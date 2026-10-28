@@ -2050,3 +2050,32 @@ Cost     The split is on the message text, not on an error code, because `sqlite
          none here — a lock reported in different words would take the snapshot branch and send the
          reader looking at a file that is fine.
 Commit   4414a37
+
+### D-090 · 2026-10-28 · fix
+Symptom  `load_config` decided with `Path.is_file()`, which answers False for four different
+         situations: absent, a directory, a FIFO, and a path this user cannot even `stat`. All four
+         returned the defaults without a word, and `cbut health` — which decides its own wording the
+         same way — printed "(absent — defaults)" for the last three. A settings file sitting behind
+         an unsearchable directory, or a `config.toml` created as a directory, read exactly like no
+         settings file at all: you could edit it forever and nothing would change.
+Change   `os.stat` replaces the predicate: `FileNotFoundError` keeps the silent default (absent, and
+         a symlink whose target is absent); any other `OSError` — EACCES on a parent, ENOTDIR, a
+         loop — becomes a `ConfigError` naming the path; `stat.S_ISREG` false becomes
+         `"… is not a regular file"`. Both surfaces already turn `ConfigError` into a sentence, so
+         `cbut health` now prints `NOT READ — … is not a regular file` and the TUI refuses to start,
+         which is what its own docstring promised. `stat` joins `ALLOWED_ROOTS` in
+         `test_privacy.py` (constants and one predicate, no I/O), and both READMEs say which shapes
+         are refused.
+Evidence L0 2026-10-28, the same seven-shape matrix before and after: directory, symlink→directory
+         and FIFO went from "loaded top_n=5" to "is not a regular file"; an unsearchable parent and
+         a parent that is a regular file went from silent to "cannot be read ([Errno 13/20] …)"; a
+         broken symlink stayed silent. `cbut health` on a directory printed "(absent — defaults)"
+         before and `NOT READ — … is not a regular file` after; the TUI exits 2 with the same
+         sentence. Four of the five new cases fail without the change (the fifth is the
+         broken-symlink control); suite 645.
+Cost     A behaviour change: where a directory or a FIFO at the config path used to start the TUI
+         on defaults, it now refuses to start. That is the point, but it is a new way for the app to
+         say no. `FileNotFoundError` is the only silent case left, so a path that disappears between
+         the stat and the read still lands in the "cannot be read" branch rather than being treated
+         as absent.
+Commit   ca8c719
