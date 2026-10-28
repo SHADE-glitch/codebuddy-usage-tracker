@@ -1944,3 +1944,25 @@ Cost     Both checks are phrase-level. A version stated as "the thirteenth schem
          only sees lines that name the directory — a denial in a paragraph about "OTel spans" is
          not caught.
 Commit   7b1d1d9
+
+### D-085 · 2026-10-28 · guard
+Symptom  Two numbers in `pipeline.md` and one list in `codebuddy-format.md` were the last unchecked
+         claims in the pages that describe the store. "12 tables and 5 views" sits beside the schema
+         version, which D-084 made checked; a migration that adds a table moves both numbers and only
+         the version would have been caught. And the reason list the "When a panel goes empty"
+         checklist points at ended at `unreadable_file`, so `unusable_record` — added by D-080 and
+         printed by `cbut health` ever since — was reachable from the tool and absent from the page
+         a reader follows when a number is wrong.
+Change   `SchemaShapeIsDocumentedAsItRuns` builds the schema in memory, counts
+         `sqlite_master` and compares the pair with what `pipeline.md` states.
+         `UnparsedReasonsAreDocumented` takes every reason constant from the sync module and requires
+         the page to name it, with `unreadable_file:` and `type:` checked as the prefixes they are.
+Evidence L0 2026-10-28: the counts agree today (12 / 5) and the page names all four reasons; before
+         the reason was added to the page, `unusable_record` was the only constant missing, which is
+         how the gap was found. `test_maintenance_docs.py` runs 30 tests OK, the suite 627.
+Cost     The shape check reads the numbers from a sentence, not from a table: a second sentence
+         stating a different pair would fail, which is intended, but a page that stopped stating the
+         shape at all fails the same way rather than passing quietly. The reason check is presence
+         anywhere in the document, so a reason named only in the generated block — `invalid_tool_name`
+         is — satisfies it without appearing in the checklist itself.
+Commit   bd6e68a
