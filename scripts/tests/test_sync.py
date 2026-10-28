@@ -169,6 +169,62 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual(row["skill"], "commit")
         self.assertEqual(row["has_args"], 1)
 
+    def test_a_skill_card_read_is_recorded_in_skill_reads(self):
+        write_records(self.tr, [
+            {"type": "function_call", "name": "Read", "callId": "r1",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps(
+                 {"file_path": "/home/u/.agents/skills/code-review/SKILL.md"})},
+            # A plugin's manifest sits at <plugin>/<version>/SKILL.md; the
+            # version directory is not the skill.
+            {"type": "function_call", "name": "Read", "callId": "r2",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps(
+                 {"file_path": "/home/u/.codebuddy/plugins/cache/m/"
+                               "agent-browser/1.3.0/SKILL.md"})},
+            # A plugin's single-skill layout is <plugin>/skills/SKILL.md: the
+            # folder is "skills", the card is the plugin.
+            {"type": "function_call", "name": "Read", "callId": "r3",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps(
+                 {"file_path": "/home/u/.codebuddy/plugins/cache/m/"
+                               "playwright-cli/0.1.0/skills/SKILL.md"})},
+        ])
+        self.index()
+        rows = self.conn.execute(
+            "SELECT * FROM skill_reads ORDER BY skill").fetchall()
+        self.assertEqual([r["skill"] for r in rows],
+                         ["agent-browser", "code-review", "playwright-cli"])
+        self.assertEqual(rows[1]["session_id"], "s1")
+        self.assertEqual(self.count("skill_usage"), 0,
+                         "a read is not an invocation")
+
+    def test_a_read_of_anything_else_is_not_a_skill_read(self):
+        write_records(self.tr, [
+            {"type": "function_call", "name": "Read", "callId": "r2",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps(
+                 {"file_path": "/home/u/.agents/skills/code-review/references/x.md"})},
+            {"type": "function_call", "name": "Read", "callId": "r3",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps({"file_path": "/home/u/notes.md"})},
+        ])
+        self.index()
+        self.assertEqual(self.count("skill_reads"), 0)
+
+    def test_a_skill_read_takes_its_verdict_and_duration_from_the_result(self):
+        write_records(self.tr, [
+            {"type": "function_call", "name": "Read", "callId": "r4",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 1000,
+             "arguments": json.dumps({"file_path": "/x/skills/tdd/SKILL.md"})},
+            {"type": "function_call_result", "callId": "r4",
+             "status": "completed", "timestamp": 1250},
+        ])
+        self.index()
+        row = self.conn.execute("SELECT * FROM skill_reads").fetchone()
+        self.assertEqual((row["status"], row["duration_ms"]),
+                         ("completed", 250))
+
     def test_agent_subagent_type(self):
         write_records(self.tr, [
             {"type": "function_call", "name": "Agent", "callId": "c4",
@@ -1357,6 +1413,36 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual(
             conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0], 0)
         conn.close()
+
+    def test_a_v14_upgrade_clears_the_cursor_once_for_skill_read_backfill(self):
+        """The reads are already in the transcripts; the cursor must release them.
+
+        `ensure_schema` runs every migration step on every open, so the step also
+        has to be gated on the version — an ungated one cleared the cursor on
+        every sync and silently rebuilt sessions from scratch.
+        """
+        self.conn.execute(
+            "INSERT INTO sync_state(file_path, size, mtime, offset)"
+            " VALUES('x', 1, 1.0, 1)")
+        self.conn.execute(
+            "INSERT INTO sessions(session_id, tokens) VALUES('s', 1)")
+        self.conn.execute(
+            "UPDATE meta SET value='13' WHERE key='schema_version'")
+        self.conn.commit()
+        db.ensure_schema(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM sync_state").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM sessions").fetchone()[0], 0)
+        self.assertEqual(db.stored_version(self.conn), db.SCHEMA_VERSION)
+        # ...and a later open is not another upgrade.
+        self.conn.execute(
+            "INSERT INTO sync_state(file_path, size, mtime, offset)"
+            " VALUES('y', 1, 1.0, 1)")
+        self.conn.commit()
+        db.ensure_schema(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM sync_state").fetchone()[0], 1)
 
     # -- F2: plugin-owned skills/agents reached via slash commands ----------
 

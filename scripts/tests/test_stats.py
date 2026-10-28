@@ -288,6 +288,7 @@ class StatsCliTest(unittest.TestCase):
         "meta": "schema version and bookkeeping, not usage",
         "plugin_usage": "raw per-plugin rows; v_plugins aggregates them",
         "skill_usage": "raw per-skill rows; v_skills aggregates them",
+        "skill_reads": "raw per-card Read rows; v_skills counts invocations, not reads",
         "sync_state": "incremental-sync bookkeeping, not usage",
         "tool_calls": "the raw call log; export is a summary, not every row",
         "unparsed": "diagnostic rows the parser could not classify",

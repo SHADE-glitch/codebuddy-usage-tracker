@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # --- locations -------------------------------------------------------------
 
@@ -289,6 +289,21 @@ CREATE TABLE IF NOT EXISTS skill_usage (
     duration_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_skill_name ON skill_usage(skill);
+
+-- A direct Read of a skill card is not a Skill tool call: it has no args, no
+-- plugin, and no ok/fail verdict of its own. It gets its own table rather than a
+-- row in skill_usage, because every existing COUNT over that table answers
+-- "how many times was a skill invoked" and would silently start counting reads.
+-- `skill` is the card's parent dir (or the plugin above a <version>/ dir); path not stored.
+CREATE TABLE IF NOT EXISTS skill_reads (
+    call_id     TEXT PRIMARY KEY,
+    skill       TEXT,
+    session_id  TEXT,
+    project     TEXT,
+    ts          INTEGER,
+    status      TEXT,
+    duration_ms INTEGER
+);
 
 -- `agent_type` is the Agent tool's own identifier (and the documented default
 -- when the caller omits it). There is no `description` column: that argument is
@@ -1014,6 +1029,32 @@ def _null_unreported_session_totals(conn: sqlite3.Connection) -> bool:
     return changed > 0
 
 
+def _reset_cursor_for_skill_reads(conn: sqlite3.Connection) -> bool:
+    """v14: skill_reads is new, and the reads are already in the transcripts.
+
+    The incremental cursor only reads bytes appended since the last pass, so a
+    table added by a version bump would start empty even though the history is on
+    disk. Clearing the cursor makes the next sync walk every transcript again.
+    ``sessions`` and ``unparsed`` are cleared with it for the reason v3/v4 did:
+    they accumulate, and a full re-read would add their deltas a second time.
+    Every call table is keyed by call_id, so re-reading is an upsert, not a
+    duplicate.
+
+    No-op on a fresh or never-synced database: there is no history to backfill
+    and no cursor to clear. Also a no-op once the database already records v14 —
+    `ensure_schema` runs every step on every open, so without this gate a plain
+    sync would clear the cursors again every time.
+    """
+    if stored_version(conn) >= 14:
+        return False
+    if not _has_indexed_state(conn):
+        return False
+    conn.execute("DELETE FROM sync_state")
+    conn.execute("DELETE FROM sessions")
+    conn.execute("DELETE FROM unparsed")
+    return True
+
+
 MIGRATIONS = (
     ("model_responses cache and total columns", _migrate_model_responses),
     ("prose columns removed", _drop_prose_columns),
@@ -1023,6 +1064,7 @@ MIGRATIONS = (
     ("negative durations nulled", _null_negative_durations),
     ("plugin_usage key without nullable columns", _plugin_usage_key_without_nulls),
     ("unreported session totals nulled", _null_unreported_session_totals),
+    ("skill reads cursor reset", _reset_cursor_for_skill_reads),
 )
 
 
@@ -1098,6 +1140,7 @@ def reset(conn: sqlite3.Connection) -> None:
         "mcp_usage",
         "agent_usage",
         "skill_usage",
+        "skill_reads",
         "tool_calls",
         "model_responses",
         "sessions",

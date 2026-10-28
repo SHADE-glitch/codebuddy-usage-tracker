@@ -32,7 +32,7 @@ import sqlite3
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -349,12 +349,15 @@ TOOL_RESULT_FIELDS = frozenset({"content", "error"})
 # measured 2026-10-09) are deliberately NOT among the fields we read: see
 # ``_text_blocks`` for what filtering on them cost.
 # Tool *argument names*. Reading a name is metadata; reading its value is the
-# privacy line, and only these two are ever stored: the skill name and the agent
-# type, both of which are catalog entries rather than prose.
+# privacy line. Only the skill name and the agent type are stored — catalog
+# entries, not prose. `file_path` is read only to recognise a Read of
+# `.../SKILL.md`; the path itself is dropped and the skill name is the card's
+# parent directory.
 TOOL_ARG_FIELDS = frozenset({
     "skill", "command", "args",               # Skill tool
     "subagent_type", "agent_type",            # Agent tool
     "toolName", "tool_name",                  # meta tools that wrap another tool
+    "file_path",                              # Read: recognises a skill card
 })
 # JSON keys of the non-transcript files we read: the inventory files plus
 # models.json (whose "models"[].id/url give the custom routes their host).
@@ -1316,6 +1319,41 @@ def _record_commands(conn, content, sid, project, ts,
                 )
 
 
+_VERSION_DIR = re.compile(r"\d+(?:\.\d+)*")
+
+
+def _skill_read_name(path) -> str | None:
+    """The skill a ``Read .../SKILL.md`` names; None for any other file.
+
+    CodeBuddy's Read tool takes ``file_path``. A card under a skills root is ``skills/<name>/SKILL.md``; a plugin
+    whose manifest sits at its install root is ``<plugin>/<version>/SKILL.md``
+    (the version is a directory, not a name). Nothing else is read out of the path.
+    """
+    if not isinstance(path, str) or not path:
+        return None
+    p = PurePosixPath(path)
+    if p.name != SKILL_MANIFEST:
+        return None
+    parts = p.parts
+    parent = p.parent
+    if parent.name == DIR_SKILLS:
+        # A plugin can ship one skill as `skills/SKILL.md`; the card is the
+        # plugin, not the folder. A bare `.agents/skills/SKILL.md` names none.
+        up = parent.parent
+        name = up.name
+        if not name or name.startswith(INVENTORY_HIDDEN_PREFIX):
+            return None
+        if _VERSION_DIR.fullmatch(name) or name == "unknown":
+            name = up.parent.name
+        return name or None
+    if len(parts) >= 3 and parts[-3] == DIR_SKILLS:
+        return parts[-2] or None
+    name = parent.name
+    if name and (_VERSION_DIR.fullmatch(name) or name == "unknown"):
+        return parent.parent.name or None
+    return name or None
+
+
 def _record_function_call(conn, rec, sid, project, ts, skill_owner,
                           unparsed=None) -> None:
     """One tool call: its row, plus the skill/agent/mcp row it belongs to."""
@@ -1336,6 +1374,15 @@ def _record_function_call(conn, rec, sid, project, ts, skill_owner,
         " VALUES(?,?,?,?,?,?,NULL,?)",
         (call_id, sid, project, name, category, ts, model),
     )
+    if name.casefold() == "read":
+        skill = _skill_read_name(args.get("file_path"))
+        if skill:
+            conn.execute(
+                "INSERT OR IGNORE INTO skill_reads"
+                "(call_id, skill, session_id, project, ts)"
+                " VALUES(?,?,?,?,?)",
+                (call_id, skill, sid, project, ts),
+            )
     if category == "skill":
         skill = args.get("skill") or args.get("command") or "?"
         conn.execute(
@@ -1389,7 +1436,7 @@ def _record_function_result(conn, rec, unparsed=None) -> None:
     # negative duration that every AVG then averaged in. A negative one is not
     # a short call, it is the two records disagreeing, so it is stored as NULL
     # and the averages skip it.
-    for table in ("tool_calls", "skill_usage", "agent_usage", "mcp_usage"):
+    for table in ("tool_calls", "skill_usage", "skill_reads", "agent_usage", "mcp_usage"):
         conn.execute(
             f"UPDATE {table} SET status=?,"
             " duration_ms = CASE"
@@ -2008,7 +2055,7 @@ def _prune_orphans(conn, rebuilt: bool) -> None:
     """
     if not rebuilt:
         return
-    for table in ("tool_calls", "model_responses", "skill_usage",
+    for table in ("tool_calls", "model_responses", "skill_usage", "skill_reads",
                   "agent_usage", "mcp_usage"):
         conn.execute(
             f"DELETE FROM {table} WHERE project IS NOT NULL"

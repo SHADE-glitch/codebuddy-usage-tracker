@@ -112,7 +112,7 @@ tab 栏和页脚就是全部按键面：<kbd>q</kbd> 退出，<kbd>r</kbd> 同�
 
 **Tokens 记录的是真正回答过的模型，不是目录里有什么。** 每个至少回答过一次的 (模型, provider) 占一行。已安装包的 `product.json` 会随升级和账号地区变化，而 `~/.codebuddy/models.json` 里的是路由 id（`ark-code-latest`），它实际回答时是另一个模型（`deepseek-v4-1-flash`）—— 把两者任何一边列进来，都会产生「没人调用过」的 0 请求行。历史才是持久的一侧：从目录里消失的模型（`glm-5.1`）保留它自己挣到的每一行和每一笔合计。没有 `requestModelId` 的响应当作 `Built-in` 读，所以同一个模型不会裂成 `Built-in` 和 `-` 两行。
 
-**Credits 是计费，不是 token。** 当响应带有 `providerData.rawUsage.credit` 时，原值存入独立列，并显示在所有能承载它的页面上、紧挨 token 合计。它绝不会被加进任何 token 计数，也不会由它反推 token。没有上报 credit 的路由显示 `-`（NULL），绝不伪造 `0`；一个聚合里若没有任何一行带过该字段，同样显示 `-`。旧索引会原地升级（schema v13）：下一次 `cbut sync` 会重读转录，为已知的响应补上 credit 列。
+**Credits 是计费，不是 token。** 当响应带有 `providerData.rawUsage.credit` 时，原值存入独立列，并显示在所有能承载它的页面上、紧挨 token 合计。它绝不会被加进任何 token 计数，也不会由它反推 token。没有上报 credit 的路由显示 `-`（NULL），绝不伪造 `0`；一个聚合里若没有任何一行带过该字段，同样显示 `-`。旧索引会原地升级（schema v14）：下一次 `cbut sync` 会重读转录，为已知的响应补上 credit 列。
 
 > **API 总计** = 有 provider 原始值时用原始值，否则用 `输入 + 输出`。
 > **Usage 总计** 是仅展示的指标（`输入 + 输出 + 缓存 hit`），它**重复加了一次缓存 hit**（hit 本就包含在输入里），所以约为 API 总计的 2 倍 —— 绝不要把它当作 API 总计。
@@ -256,7 +256,7 @@ name_cap = 28        # 单元格最宽渲染多少字符，超出就截断
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 652 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 656 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -265,7 +265,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 652 tests ... OK
 
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
-| `test_sync.py` | 155 | 转录解析、工具归类、路由出处列（`requestModelId` → 内置 / 厂商 / 主机 / 端点）、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数、整程同步锁、OTel agent 轨迹读取器（流式与完结文件按
+| `test_sync.py` | 159 | 转录解析、工具归类、路由出处列（`requestModelId` → 内置 / 厂商 / 主机 / 端点）、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数、整程同步锁、OTel agent 轨迹读取器（流式与完结文件按
   spanId 合并；会话关联、状态只升不降） |
 | `test_traces.py` | 12 | 轨迹读取端到端：span 结果只落一次、
   `cli`/`ptc` 拒收、running 占位升级且重放不降级、
@@ -302,7 +302,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 652 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `vacuum` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 652 个用例 |
+| `scripts/tests/` | 上面那 656 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、体积与性能的固定度量法和基线，以及从一条日志记录到屏幕上那个数字的 `file:line` 路线图 |
 | `systemd/` | 可选的 15 分钟同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |

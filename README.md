@@ -170,7 +170,7 @@ nobody had called. History is the durable side: a model that leaves the catalogu
 value is stored verbatim in its own column and shown beside the token totals on every surface that
 can carry it. It is never added into a token count, and no token number is ever derived from it. A
 route that reports no credit leaves `-` (NULL), never a fabricated `0`; an aggregate reads `-` when
-none of its contributing rows carried the field. An older index upgrades in place (schema v13):
+none of its contributing rows carried the field. An older index upgrades in place (schema v14):
 the next `cbut sync` re-reads the transcripts and backfills the credit column from responses it
 already knows.
 
@@ -364,7 +364,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 652 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 656 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -374,7 +374,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
 
 | Suite | Tests | Covers |
 |---|---:|---|
-| `test_sync.py` | 155 | transcript parsing, tool classification, the route-origin column (`requestModelId` → built-in / vendor / host / endpoint), incremental vs `--full` re-sync, crash recovery, unparsed-record accounting, the whole-run sync lock, the
+| `test_sync.py` | 159 | transcript parsing, tool classification, the route-origin column (`requestModelId` → built-in / vendor / host / endpoint), incremental vs `--full` re-sync, crash recovery, unparsed-record accounting, the whole-run sync lock, the
   OTel agent-span trace reader (stream and final files merge on the spanId key;
   session link, status upgrades) |
 | `test_traces.py` | 12 | the trace reader end to end: span
@@ -417,7 +417,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `vacuum` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 652 tests above |
+| `scripts/tests/` | the 656 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, the size & performance baseline with the commands that produced it, and the `file:line` map from a log record to the number on screen |
 | `systemd/` | optional 15-minute sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |

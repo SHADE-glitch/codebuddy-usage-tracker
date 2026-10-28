@@ -29,7 +29,7 @@ cbut format --write      # refresh the block in this file after changing the reg
 - **`_meta` fields**: `baggage`
 - **message content-block fields**: `text`
 - **`providerData.toolResult` fields**: `content`, `error`
-- **tool argument names**: `agent_type`, `args`, `command`, `skill`, `subagent_type`, `toolName`, `tool_name`
+- **tool argument names**: `agent_type`, `args`, `command`, `file_path`, `skill`, `subagent_type`, `toolName`, `tool_name`
 - **inventory JSON keys**: `agents`, `commands`, `id`, `installPath`, `mcpServers`, `models`, `name`, `plugins`, `tools`, `url`, `version`
 - **Tool names that drive classification**: `Skill`, `Agent`, prefix `mcp__` with separator `__`
 - **Meta tools (wrap another tool)**: `DeferExecuteTool`, `ListMcpResources`, `ReadMcpResource`, `ToolSearch`, `WaitForMcpServers`
