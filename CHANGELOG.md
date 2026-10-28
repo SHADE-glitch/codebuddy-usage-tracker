@@ -2034,3 +2034,19 @@ Cost     The gate still checks shapes, not types: `timestamp` is the one field n
          raising, which keeps the panel alive but hides the drift — a duration of `"12"` prints as
          `12` and is counted as zero by every SUM.
 Commit   82d6faa
+
+### D-089 · 2026-10-28 · fix
+Symptom  `cbut restore` printed "close the TUI (and stop cbut-sync.timer) and retry" for every
+         failure. That hint was written for the common case — the TUI holding the file open — and a
+         snapshot that is not a database took it too: closing a TUI that is not running is not a
+         fix, and `cmd_vacuum` had already learned to split the two.
+Change   The hint follows the error: `lock`/`busy` keeps the TUI advice, anything else says the
+         snapshot itself may be damaged and points at `cbut restore` with no name, which lists the
+         others. Same split, same wording shape as `cmd_vacuum`.
+Evidence L0 2026-10-28: a 7-byte file named like a managed snapshot — before, the TUI advice and no
+         mention of the file; after, "the snapshot itself may be damaged; list the others with:
+         cbut restore" and no "close the TUI". One new case; suite 640.
+Cost     The split is on the message text, not on an error code, because `sqlite3.Error` carries
+         none here — a lock reported in different words would take the snapshot branch and send the
+         reader looking at a file that is fine.
+Commit   4414a37
