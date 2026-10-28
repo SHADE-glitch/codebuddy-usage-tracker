@@ -1987,3 +1987,27 @@ Cost     Only reading is covered. A file that reads as UTF-8 and then fails to p
          old path, and the message now says "cannot be read" where a user might expect "is not
          valid TOML" — the parenthesised OS error is what distinguishes them.
 Commit   044b9fb
+
+### D-087 · 2026-10-28 · fix
+Symptom  A database file that is not SQLite — truncated by a full disk, copied from another machine,
+         or never one — ended every read command with `sqlite3.DatabaseError: file is not a
+         database` and a traceback. `cbut health` was the worst case: it is the command you run to
+         find out what is wrong. `cbut sync`, `cbut backup` and `cbut vacuum` failed the same way
+         from inside `open_db`'s `PRAGMA journal_mode = WAL`, which is before their own error
+         handling; and `--db` pointing at a directory passed the "no database at" check and died
+         with `disk I/O error` from `sqlite3.connect`.
+Change   `cbut-stats.py`: a directory is refused by name; `open_db` moved inside the report's
+         `try`, which gained `except sqlite3.DatabaseError` after the existing
+         `OperationalError` handler (a subclass, so the "older than this build" message is
+         unchanged); `cmd_backup` and `cmd_vacuum` open inside their own `try`, with `conn = None`
+         so the `finally` still closes. `cbut-sync.py` `main()` wraps `run()` — `run()` itself keeps
+         raising, because the TUI reports the same exception as "Sync failed".
+Evidence L0 2026-10-28: `printf 'not a database' > bad.db`; before, all four commands printed a
+         traceback and `health` died halfway through its report; after, each prints one sentence
+         naming the path and exits 2 (`vacuum` 1). The three new cases fail without the change
+         (2 errors in `test_stats`, 1 in `test_sync`) and pass with it; suite 634.
+Cost     The message says "move it aside", which is the right advice for a file that is not a
+         database and the wrong advice for one that is damaged but recoverable by `sqlite3`'s own
+         tools — nothing here tries to repair a file, and `cbut restore` remains the way back if a
+         snapshot exists.
+Commit   1c2bb94
