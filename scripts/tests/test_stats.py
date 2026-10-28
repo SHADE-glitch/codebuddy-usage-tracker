@@ -213,6 +213,46 @@ class StatsCliTest(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertIn("no recorded calls for", out)
 
+    def test_show_model_keeps_two_routes_apart(self):
+        """One model name served two ways is two rows, not one merged row.
+
+        ``show model`` is keyed on (model, provider) for this reason: the built-in
+        route and a vendor route are not comparable, and merging them would hide
+        that the same name was billed twice. The two rows also differ in what they
+        measured — the built-in one carries its cache counters, the vendor one
+        carries none — so a cell that renders 0 where the provider reported nothing
+        fails here instead of reading like a real measurement.
+        """
+        conn = db.open_db(self.db_path)
+        conn.execute(
+            "INSERT INTO model_responses(message_id, model, provider,"
+            " prompt_tokens, completion_tokens, ts, usage_available)"
+            " VALUES('r3','claude-sonnet-4','api.vendor.example',7,3,?,1)",
+            (TS + 2,))
+        conn.commit()
+        conn.close()
+
+        rc, out, err = run("--db", self.db_path, "show", "model", "claude-sonnet-4")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("model claude-sonnet-4 — 2 recent responses", out)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 5,
+                         "a title, a header, a rule, and one row per route")
+        self.assertIn("cache write", lines[1], "the cache counters lost their column")
+        builtin = next(line for line in lines if "Built-in" in line)
+        vendor = next(line for line in lines if "api.vendor.example" in line)
+        # provider, in, out, total, credits, hit, miss, write, session — the
+        # vendor total is derived from prompt + completion, and its unreported
+        # counters read "-", not 0.
+        self.assertRegex(builtin, r"Built-in\s+100\s+20\s+120\s+-\s+30\s+60\s+10\s*$")
+        self.assertRegex(
+            vendor, r"api\.vendor\.example\s+7\s+3\s+10\s+-\s+-\s+-\s+-\s*$")
+
+    def test_show_model_says_when_nothing_recorded(self):
+        rc, out, err = run("--db", self.db_path, "show", "model", "no-such-model")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("no recorded responses for model 'no-such-model'", out)
+
     def test_recent_lists_newest_calls(self):
         rc, out, err = run("--db", self.db_path, "recent")
         self.assertEqual(rc, 0, err)
