@@ -120,6 +120,8 @@ tab 栏和页脚就是全部按键面：<kbd>q</kbd> 退出，<kbd>r</kbd> 同�
 
 **一个坏名字不能弄坏一行。** 工具名为空、超过 200 字符、或含空白/控制字符时，会计入 `invalid_tool_name`，不会作为一次调用存下来。这条规则之前已经入库的值会在 TUI 和无头报告里统一压成一行显示，所以模型错误生成的换行或转义序列既不能把表格行拆开，也不能移动光标。
 
+**一条坏记录不能弄坏整次同步。** 一行能解析成 JSON 却不是记录（`null`、裸数组、字符串），或者某字段该是标量却放了列表/对象时，会计入 `unusable_record` 并跳过。代价是一条记录、在 `cbut health` 里看得见，而不是所有项目的索引一起停摆。
+
 ### 📊 Usage 页
 
 Usage tab 仿照会话用量面板的样式，但每个数字都来自磁盘上的转录：
@@ -251,7 +253,7 @@ name_cap = 28        # 单元格最宽渲染多少字符，超出就截断
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 611 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 615 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -266,6 +268,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 611 tests ... OK
   `cli`/`ptc` 拒收、running 占位升级且重放不降级、
   完结文件用 `trace.sessionId` 补上流式拿不到的会话、重读幂等、
   `_run` 集成 |
+| `test_hostile_inputs.py` | 4 | 给两个读取器喂生成式恶意输入：真实记录形状的每个字段轮流换成各种坏值、删掉、或整条替换（结构内部也下一层）—— 没有哪种形状能中断整次运行，读不了的计入 `unusable_record` 而不是被静默丢掉 |
 | `test_tui.py` | 143 | tab 接线与报告结构（走 Textual 自带的 `run_test`）、每 tab 独立的日期选择器（日历翻月/跨年、当前目标卡片、能整行放下的预设与快选快捷项、输入框读写的 24 小时时钟、小时网格、微调步进选择器、切 tab 后顶栏跨度仍完整）、两级下钻（窗口内汇总头、Enter 打开单条全字段、长值折行不裁剪、插件路径）、窄终端布局，以及**每张表**都不再把列切半的"列计划"、单元格上限与它背后的设置项、状态栏诚实性、默认只显示用过的（每 tab `a` 开关）、`/` 名称过滤（Enter 应用、Esc 取消）、Usage 请求日志只保留最新 100 行且没有翻页键、同名模型的提供方后缀、Dashboard 的 Projects 项目板，以及路由未上报时显示 `-` 的 credits 单元格 |
 | `test_cross_repo_golden.py` | 17 | 跨仓 golden fixture：一组固定输入（NULL / 部分上报 / cache 列缺失的 token 行、不同 model 拼写、本地午夜与跨小时边界、2026 年两个美国夏令时切换日）经过本仓自己的 Usage Total 表达式、窗口聚合、模型 rollup、日期时间输入与自然日窗口，钉在与 ocut、qcut 共享的权威文件上 |
 | `test_usage.py` | 121 | 自然日窗口（今天 / 2 / 3 / 7 / 14 / 30 天 / 全部）与自定义范围的标签、日期时间的宽松输入归一化（24 小时显示、输入仍兼容 12 小时）、token 汇总与提供方分组、Dashboard 查询、下钻查询（窗口内按实体汇总、插件使用计数、单条调用的整行）、结构版本门禁、索引值不值得留、无界面会话列表（窗口、最新在前、limit） |

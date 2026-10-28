@@ -166,6 +166,10 @@ tool_name_chars_re = re.compile(r"[\s\x00-\x1f\x7f-\x9f]")
 # not JSON, and "unreadable_file:<OSError>" for a file that could not be opened.
 UNPARSEABLE_LINE = "unparseable_line"
 INVALID_TOOL_NAME = "invalid_tool_name"
+# A line that *is* JSON but is not a record the indexer can read: ``null``, a
+# bare list, or a record whose bound field holds a container. Counted and
+# skipped — the alternative was an exception that ended the whole run.
+UNUSABLE_RECORD = "unusable_record"
 
 # Code Mode's own answer to a name it does not expose directly: "X is not a
 # direct tool — it is a REPL sandbox global". A call carrying it never reached a
@@ -368,6 +372,70 @@ CODEBUDDY_FIELDS = (RECORD_FIELDS | PROVIDER_FIELDS | BAGGAGE_FIELDS
                     | INVENTORY_JSON_FIELDS | RAW_USAGE_FIELDS
                     | NESTED_USAGE_FIELDS
                     | TRACE_SPAN_FIELDS | TRACE_FINAL_KEYS)
+# The keys whose value is walked rather than bound: a record's provider block and
+# baggage, the arguments blob, and the block lists a message or a result carries.
+# Every other key in RECORD_FIELDS and TRACE_SPAN_FIELDS is bound as a scalar.
+_STRUCTURED_FIELDS = frozenset({"providerData", "_meta", "arguments", "content",
+                                "output"})
+# Every field bound as a scalar, at the record level and inside a span: the two
+# registries overlap ('type', 'name', 'status' are read in both places).
+_BOUND_FIELDS = RECORD_FIELDS | TRACE_SPAN_FIELDS
+
+
+def _usable_record(rec) -> bool:
+    """True when every field the indexer reads holds a shape it can read.
+
+    sqlite3 binds str, int, float, bytes and None. A list or dict where one of
+    those belongs raises ProgrammingError at the bind; a non-object record raises
+    AttributeError at the dispatch; a container in ``span.status`` is unhashable
+    as a dict key. Any of them used to end the run, so one unreadable line
+    stopped the whole index — every project's, not just that record's.
+
+    A record that fails is counted as UNUSABLE_RECORD and skipped: one lost
+    record, visible in ``cbut health``, instead of a lost run. Rejecting rather than
+    coercing to NULL is the same call the tool-name rule makes — a row with a
+    NULL project would claim the field was never reported, which is a different
+    fact from "the writer sent something no reader can use".
+
+    The field lists are the mirrors above, not copies of them: a field added to
+    the registry is shape-checked here without a second edit.
+    """
+    if not isinstance(rec, dict):
+        return False
+    for key, value in rec.items():
+        if key in _STRUCTURED_FIELDS:
+            # providerData and _meta are read with .get(); content, output and
+            # arguments are walked by helpers that accept str, list or dict.
+            if (key in ("providerData", "_meta") and value is not None
+                    and not isinstance(value, dict)):
+                return False
+        elif key in _BOUND_FIELDS and isinstance(value, (dict, list)):
+            return False
+    provider = rec.get("providerData")
+    if isinstance(provider, dict):
+        # rawUsage and toolResult are the two structures read inside the block;
+        # every other provider field is bound or regexed as a scalar.
+        for key in PROVIDER_FIELDS - {"rawUsage", "toolResult"}:
+            if isinstance(provider.get(key), (dict, list)):
+                return False
+        raw = provider.get("rawUsage")
+        if raw is not None and not isinstance(raw, dict):
+            return False
+        if isinstance(raw, dict):
+            for key in RAW_USAGE_FIELDS:
+                if isinstance(raw.get(key), (dict, list)):
+                    return False
+    meta = rec.get("_meta")
+    if isinstance(meta, dict):
+        baggage = meta.get("baggage")
+        if baggage and not isinstance(baggage, str):
+            return False
+    span = rec.get("span")
+    if isinstance(span, dict):
+        for key in _BOUND_FIELDS:
+            if isinstance(span.get(key), (dict, list)):
+                return False
+    return True
 
 
 def _session_id(rec) -> str | None:
@@ -941,6 +1009,10 @@ def index_trace_stream(conn: sqlite3.Connection, path: Path, offset: int,
     if bad_lines and unparsed is not None:
         _bump(unparsed, UNPARSEABLE_LINE, bad_lines)
     for rec in recs:
+        if not _usable_record(rec):
+            if unparsed is not None:
+                _bump(unparsed, UNUSABLE_RECORD)
+            continue
         rtype = rec.get("type")
         if rtype in TRACE_STREAM_TYPES:
             verdict = _record_agent_span(conn, rec.get("span"), None)
@@ -974,6 +1046,10 @@ def index_final_trace(conn: sqlite3.Connection, path: Path,
     spans = data.get("spans")
     n = 0
     for span in spans if isinstance(spans, list) else []:
+        if not _usable_record(span):
+            if unparsed is not None:
+                _bump(unparsed, UNUSABLE_RECORD)
+            continue
         if _record_agent_span(conn, span, sid) == "stored":
             n += 1
     return n
@@ -1413,6 +1489,10 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
     here falls to the final branch and is counted as unparsed — the only signal
     a CodeBuddy format change gives, since the run prints "done" either way.
     """
+    if not _usable_record(rec):
+        if unparsed is not None:
+            _bump(unparsed, UNUSABLE_RECORD)
+        return
     rtype = rec.get("type")
     sid = _session_id(rec)
     project = rec.get("cwd")
@@ -1594,6 +1674,11 @@ def format_doc(tools=None, agents=None, models=None, commands=None,
         "refused as \"not a direct tool\" is withdrawn the same way when the "
         "installed catalogue does not hold it either — nothing ran, and the row "
         "read `removed` for a tool that never existed\n",
+        "- **Record usability**: a line that parses as JSON but is not an "
+        "object (`null`, a bare list), or a record whose bound field holds a "
+        "list or object where a scalar belongs, is counted as "
+        f"`{UNUSABLE_RECORD}` and skipped — one lost record, visible in "
+        "`cbut health`, instead of a lost run\n",
         f"- **Builtin catalogue source**: {origin}{where} — the installed "
         f"`{PRODUCT_CLI_NAME}` package's `{PRODUCT_JSON}`, found by resolving "
         "the executable on `PATH` and walking up; `CBUT_PRODUCT_JSON` overrides "

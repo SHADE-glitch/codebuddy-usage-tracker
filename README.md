@@ -189,6 +189,12 @@ characters, or contains whitespace or a control character is counted as
 flattened for display in both the TUI and the headless reports, so a newline or escape
 sequence from a broken model call cannot split a table row or move the cursor.
 
+**A malformed record cannot break the run.** A line that parses as JSON but is not a
+record (`null`, a bare list, a string) — or a record holding a list or object where a
+scalar belongs — is counted as `unusable_record` and skipped. One unreadable record
+costs that record, visible in `cbut health`, instead of stopping the index for every
+project.
+
 ### 📊 The Usage page
 
 The Usage tab mirrors the style of a session-usage panel, but every number comes from
@@ -354,7 +360,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 611 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 615 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -372,6 +378,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
   running placeholder upgraded and never downgraded on replay, the final file's
   `trace.sessionId` linking what the stream could not, re-reads
   idempotent, the full `_run` integration |
+| `test_hostile_inputs.py` | 4 | generated hostile input to both readers: every field of a real record shape replaced by each bad value, deleted, or the record replaced whole, one level inside its structures too — no shape may end the run, and a record that cannot be read is counted as `unusable_record` instead of dropped |
 | `test_tui.py` | 143 | tab wiring and report shapes through Textual's own `run_test` harness, the per-tab date picker (calendar month/year stepping, the active-card target, preset and quick-time chips that fit their column, the 24-hour clock the fields read and write, the hour grid, the nudge-step selector, the top-bar span surviving a tab switch), the two-level drill-down (the windowed summary header, Enter opening a call's full detail, a long value folding instead of clipping, the plugin path), narrow-terminal layout and the column plan that replaces a clipped tail on **every** table, the cell cap and the setting behind it, status-line truthfulness, the used-only default with the per-tab `a` toggle, the `/` name filter (Enter applies, Esc cancels),
   the Usage log's newest-100 cap with no page key, provider suffixes on shared model names,
   the Dashboard's Projects board and the credit cells that read `-` when a route reported none |

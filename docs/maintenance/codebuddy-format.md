@@ -35,6 +35,7 @@ cbut format --write      # refresh the block in this file after changing the reg
 - **Meta tools (wrap another tool)**: `DeferExecuteTool`, `ListMcpResources`, `ReadMcpResource`, `ToolSearch`, `WaitForMcpServers`
 - **Tolerant name tables** (an unknown name still indexes): 35 builtin tools, 17 builtin agents, 0 builtin models, 0 builtin commands, default agent type `general-purpose`
 - **Tool-name validity**: empty, over 200 characters, or containing whitespace/control characters is counted as `invalid_tool_name` and not stored as a call. A name the CLI refused as "not a direct tool" is withdrawn the same way when the installed catalogue does not hold it either — nothing ran, and the row read `removed` for a tool that never existed
+- **Record usability**: a line that parses as JSON but is not an object (`null`, a bare list), or a record whose bound field holds a list or object where a scalar belongs, is counted as `unusable_record` and skipped — one lost record, visible in `cbut health`, instead of a lost run
 - **Builtin catalogue source**: fallback constants (product.json unresolved) — the installed `codebuddy` package's `product.json`, found by resolving the executable on `PATH` and walking up; `CBUT_PRODUCT_JSON` overrides the search. Membership follows the package, so a name it drops stops being inventoried; `kind` (active/internal) stays this tool's taxonomy
 - **Markers parsed out of text**: `<command-name>\s*/?([^<\s]+)\s*</command-name>` · `codebuddy\.session_id=([^,\s]+)`
 - **On-disk layout, relative to `~/.codebuddy`**:
