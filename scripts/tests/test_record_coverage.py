@@ -33,6 +33,10 @@ CODE_PATHS = ["bin/cbut", "scripts/cbut_db.py", "scripts/cbut-sync.py",
 EXCLUDED_SUBJECT = re.compile(r"^feat(\([^)]*\))?!?:")
 KINDS = {"fix", "perf", "taste", "guard", "revert", "chore"}
 FIELDS = ["Symptom", "Change", "Evidence", "Cost", "Commit"]
+# `Commit` is read by tools — `git show <ref>` — so it holds refs, and every entry so
+# far uses the seven-character abbreviation. Prose in that field looks like data and
+# is not.
+COMMIT_REF = re.compile(r"^[0-9a-f]{7,40}$")
 EMPTY_DECLARATION = "No covered commits:"
 
 
@@ -112,6 +116,20 @@ def fields_without_a_body(text):
     return empty
 
 
+def commit_refs_not_hashes(text):
+    """`"<entry> <ref>"` for every Commit token that is not a lowercase hex ref."""
+    wrong = []
+    for block in re.split(r"^### ", text, flags=re.M)[1:]:
+        head, _, body = block.partition("\n")
+        entry = head.split(" · ")[0]
+        for line in body.splitlines():
+            if not re.match(r"^Commit\s", line):
+                continue
+            wrong += [f"{entry} {ref!r}" for ref in line[len("Commit"):].split()
+                      if not COMMIT_REF.match(ref)]
+    return wrong
+
+
 class TestRecordCoverage(unittest.TestCase):
     def setUp(self):
         self.text = changelog_text()
@@ -159,6 +177,31 @@ class TestRecordCoverage(unittest.TestCase):
                                   "Symptom  \n         a body under it\n"),
             [],
             "the checker reports a field whose body is on the next line")
+
+    def test_the_commit_field_is_a_hash(self):
+        """`Commit` holds a ref, not a description of where to look.
+
+        The resolution check only reaches commits that touched production code, so an
+        entry documenting a docs-only commit could say `Commit   see the branch` and
+        nothing would read it. A ref is what `git show` takes; an abbreviation of seven
+        or more lowercase hex characters is what every entry uses.
+        """
+        wrong = commit_refs_not_hashes(self.text)
+        self.assertEqual(wrong, [],
+                         "Commit must be a hash, not prose: " + ", ".join(wrong))
+
+        # Control, both directions: prose is reported, and a field citing two refs is
+        # not — four entries do.
+        self.assertEqual(
+            commit_refs_not_hashes("### D-999 · 2026-01-01 · chore\n"
+                                   "Commit   see the branch\n"),
+            ["D-999 'see'", "D-999 'the'", "D-999 'branch'"],
+            "the checker cannot see prose in the Commit field")
+        self.assertEqual(
+            commit_refs_not_hashes("### D-999 · 2026-01-01 · chore\n"
+                                   "Commit   43fc283 2aea51a\n"),
+            [],
+            "the checker rejects a field that cites two commits")
 
     def test_ids_are_monotonic_and_gapless(self):
         numbers = entry_ids(self.text)
