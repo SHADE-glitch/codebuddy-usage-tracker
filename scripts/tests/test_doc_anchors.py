@@ -58,6 +58,11 @@ EXTERNAL = ("http://", "https://", "mailto:", "ftp://")
 # hyphen, then spaces to hyphens. Emoji disappear with it — but the variation selector
 # and zero-width joiner survive, hiding inside the anchor.
 _ANCHOR_KEEP = re.compile(r"[^\w \-️‍]+", re.U)
+# A heading is not the only way to mint an anchor: `<a name="x"></a>` above a heading
+# pins a fragment that survives a retranslation, which is how ocut keeps one
+# `#known-limitations` working across both of its languages. A guard that read only
+# headings would call such a link dead.
+EXPLICIT_ANCHOR = re.compile(r"<[a-z][^>]*?\b(?:name|id)\s*=\s*[\"']([^\"']+)[\"']", re.I)
 
 
 def anchor_of(heading):
@@ -66,13 +71,14 @@ def anchor_of(heading):
 
 def anchors_of(text):
     """Every anchor GitHub would mint for this document, `-1`/`-2` repeats included."""
+    body = FENCE.sub("", text)
     seen, anchors = {}, set()
-    for match in HEADING.finditer(FENCE.sub("", text)):
+    for match in HEADING.finditer(body):
         base = anchor_of(match.group(1))
         count = seen.get(base, 0)
         seen[base] = count + 1
         anchors.add(base if count == 0 else "%s-%d" % (base, count))
-    return anchors
+    return anchors | set(EXPLICIT_ANCHOR.findall(body))
 
 
 def sections(text):
