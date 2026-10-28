@@ -256,7 +256,7 @@ name_cap = 28        # 单元格最宽渲染多少字符，超出就截断
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 645 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 648 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -286,7 +286,8 @@ python3 -m unittest discover -s scripts/tests     # Ran 645 tests ... OK
 | `test_maintenance_docs.py` | 30 | 生成的格式依赖文档不可能与代码脱节，任何文档也不许写工作流里并没有的 CI 版本、TUI 并没有的定时器、代码并不写的 schema 版本或表/视图数量、并不读取的 trace 目录，`cbut health` 的每种原因都在列它们的页面上点名，`pipeline.md` 里每条 `file:line` 引用都仍落在它点名的符号上 |
 | `test_readme_counts.py` | 7 | 上面这张表就是运行器会打印的那张表，并且两份页面都把 loader 认识的每个设置项写全了 |
 | `test_record_coverage.py` | 6 | 每个被覆盖的提交都记录进 `CHANGELOG.md` |
-| `test_readme_bilingual.py` | 5 | 两份 README 始终是「一份文档、两种语言」，且目录里每个链接都落得到真实标题 |
+| `test_readme_bilingual.py` | 4 | 两份 README 始终是「一份文档、两种语言」：同样的分节、同样的状态码、同样的语言开关 |
+| `test_doc_anchors.py` | 4 | 每份入库文档里的每个相对链接都指向真实存在的文件，每个 `#片段` 都落得到真实标题——页内与跨文件都算，按 GitHub 的解析方式 |
 | `test_conventions.py` | 9 | A 档根文件层是否在根目录齐备、AGENTS.md 是否用一行指明档位而不是抄规范正文，以及忽略清单覆盖的运行态是否真的没有被跟踪 |
 
 `test_readme_counts.py` 负责让这张表不说谎：新增套件却不加行、或行里的数字过期，套件就会红。
@@ -301,7 +302,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 645 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `vacuum` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 645 个用例 |
+| `scripts/tests/` | 上面那 648 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、体积与性能的固定度量法和基线，以及从一条日志记录到屏幕上那个数字的 `file:line` 路线图 |
 | `systemd/` | 可选的 15 分钟同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
