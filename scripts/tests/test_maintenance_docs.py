@@ -263,7 +263,11 @@ PIPELINE = REPO / "docs" / "maintenance" / "pipeline.md"
 # A citation is a backticked ``:123`` (the file comes from the enclosing section's
 # heading) or ``name.py:123``; a range is allowed. Requiring both the backticks and
 # the colon is what keeps prose such as "local 00:00" out of the scan.
-CITATION_RE = re.compile(r"`(?:(?P<file>[\w./-]+\.py):)?:(?P<start>\d+)(?:-(?P<end>\d+))?`")
+# Both forms occur: `:123` inside a section that names the file, and
+# `file.py:123` where it does not. The file-prefixed form used to need a double
+# colon, so every `file.py:123` in the page went unchecked — and four of them had
+# drifted to lines that hold something else.
+CITATION_RE = re.compile(r"`(?:(?P<file>[\w./-]+\.py))?::?(?P<start>\d+)(?:-(?P<end>\d+))?`")
 HEADING_FILE_RE = re.compile(r"`([\w./-]+\.py)`")
 # The symbol the sentence claims the cited line carries: the last backticked
 # identifier before the citation, with nothing but a comma or spaces in between.

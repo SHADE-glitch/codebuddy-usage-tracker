@@ -23,7 +23,7 @@ that reads `tab.query` only agree because both resolve the function at call time
 
 ### One run
 
-`run()` (`:1807`) takes an exclusive lock (`:1770`), opens one read-write connection and closes it in
+`run()` (`:1807`) takes an exclusive lock (`:1791`), opens one read-write connection and closes it in
 `finally`; the TUI calls this from a worker thread, so a leaked connection would be one per failed
 run rather than one per process. `_run()` (`:2072`) is the pipeline in order, one call per stage:
 
@@ -38,9 +38,9 @@ run rather than one per process. `_run()` (`:2072`) is the pipeline in order, on
    `traces/*/trace_*.jsonl` and `traces/*/trace_*.json`.
 5. **Stale-offset pre-pass** — `_clear_stale_files` (`:1847`): if *any* file's stored offset is
    stale (shrunk, rewritten, no longer on a line boundary), the whole database is rebuilt: snapshot
-   first, carry the sessions no surviving file can rebuild (`:1966`), re-read every file from zero.
+   first, carry the sessions no surviving file can rebuild (`:2089`), re-read every file from zero.
    This is the only destructive step a plain `cbut sync` can take. The predicate is `_needs_reset`
-   (`:1743`), which leans on `_starts_on_line_boundary` (`:1732`).
+   (`:1747`), which leans on `_starts_on_line_boundary` (`:1732`).
 6. **Main loop** — `_index_files` (`:1891`): per file, read the new bytes, index them, write
    `sync_state(file_path, size, mtime, offset)` (`:1942`) and commit. `size` is the file's real
    size, not the offset, because that is what the next run compares to notice a rewrite.
@@ -49,10 +49,12 @@ run rather than one per process. `_run()` (`:2072`) is the pipeline in order, on
 8. **Backfill** — `backfill_plugin_usage` (`:1561`) attributes skill/agent/command rows to a
    plugin once the inventory can name one; it runs after the reads because the ownership tables are
    built from the inventory.
-9. **Report** — `_collect_stats` (`:2010`) builds the dict that `cbut sync` prints, the TUI's
-   status line reads and `cbut health` elaborates; `_report` (`:2048`) prints it. An
-   unrecognised record type is counted and printed loudly (`:2053`) because a silent format change
-   is the one failure every panel shares.
+9. **Report** — `_collect_stats` (`:2010`) builds the run's counters — what `cbut sync`
+   prints and what `run()` returns — and `_report` (`:2048`) prints them. The TUI's status line
+   and `cbut health` read `db.overview()` (`cbut_db.py:2051`) instead: the same counts computed from
+   the database rather than from one run, which is also why the run dict keeps `files_indexed` and
+   `trace_finals` — facts only a run knows. An unrecognised record type is counted and printed
+   loudly (`:2057`) because a silent format change is the one failure every panel shares.
 
 ### One file
 
@@ -112,8 +114,9 @@ in; a tool name that no table can render is rejected as `invalid_tool_name` rath
 
 `SCHEMA_VERSION = 13` (`:25`); 12 tables and 5 views (`TABLES_SQL` `:155`, `VIEWS_SQL` `:585`).
 `ensure_schema` (`:1021`) is additive and runs on every open; `migrate` (`:1051`) applies the
-per-step functions above it (`:783-1018`), each of which returns whether it changed anything.
-`reset` (`:1070`) empties the derived tables for `--full` without touching `inventory` or `meta`.
+per-step functions above it (`:783-991`), each of which returns whether it changed anything.
+`reset` (`:1070`) empties every table but `meta` for `--full` — the inventory snapshot
+included, because `--full` rescans it — so the schema and the stored version survive.
 The five views are not written out by hand: `_entity_aggregate` (`:544`) holds each kind's
 aggregate once, and the same text backs the view and that kind's `q_*` function — the view leaves
 out only the time window (a view cannot be parameterized) and the `ORDER BY`.
@@ -180,8 +183,8 @@ one written in the class.
   `_fill_wide` (`:1123`) keeps the longest column prefix that fits.
 - The sync worker (`_request_sync` `:2030`, `_do_sync` `:2039`, `_on_sync_done` `:2051`) runs on
   launch and on `r`, in a thread, and refreshes every tab only when it indexed a file.
-- `cbut-stats.py` reads the same `db` functions through a read-only connection (`cbut-stats.py:694`)
-  and prints the full union; `cmd_stats` (`cbut-stats.py:118`) is the report a headless run gets.
+- `cbut-stats.py` reads the same `db` functions through a read-only connection (`cbut-stats.py:763`)
+  and prints the full union; `cmd_stats` (`cbut-stats.py:253`) is the report a headless run gets.
 
 ## Following one number
 
@@ -191,22 +194,22 @@ The Tokens tab, window `7d`, the row for one model:
 2. `_fill_entity` (`cbut-tui.py:2531`) → `db.q_model_tokens(conn, start_ts, end_ts)` (`cbut_db.py:1477`).
 3. That query groups `model_responses` by `(model, provider)` and computes `usage_total_tokens`
    with `_AGG_USAGE_TOTAL_EXPR` (`cbut_db.py:1611`).
-4. The rows come from `_record_model_response` (`cbut-sync.py:1099`) reading
+4. The rows come from `_record_model_response` (`cbut-sync.py:1175`) reading
    `providerData.rawUsage` out of a `message` record.
 5. `_token_row` (`cbut-tui.py:368`) formats the cells; `_fill_wide` (`cbut-tui.py:1123`) decides
    which columns survive the terminal width.
 
 A disagreement between two screens is therefore usually a different window (step 1) or a different
 expression (step 3). The one case that is neither: the context-token total comes from
-`turn-metrics` (`cbut-sync.py:1427`), not from a model response, and summing it with these is wrong by design.
+`turn-metrics` (`cbut-sync.py:1402`), not from a model response, and summing it with these is wrong by design.
 
 ## When a number looks wrong
 
 | Symptom | First place to look |
 |---|---|
-| A panel is empty that used to have rows | `cbut health` → `unparsed` reasons (`cbut-stats.py:388`); a new `type:` is a format change |
+| A panel is empty that used to have rows | `cbut health` → `unparsed` reasons (`cbut-stats.py:509`); a new `type:` is a format change |
 | Rows exist but a count is `0` | the window (`_bounds_for`) before the query |
 | Two screens disagree | API total vs Usage Total (`cbut_db.py:1606`) — they are different measurements |
 | A model has two rows | `(model, provider)` keying (`cbut_db.py:1477`); one model served by two routes is two rows |
-| Totals doubled after a rebuild | `carried` sessions (`cbut-sync.py:1885`) — the path that must not re-add them |
+| Totals doubled after a rebuild | `carried` sessions (`cbut-sync.py:1970`) — the path that must not re-add them |
 | Numbers stop moving | the sync worker only runs on launch and on `r` (`cbut-tui.py:2030`) |
