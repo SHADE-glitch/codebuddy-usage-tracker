@@ -3668,6 +3668,23 @@ class ModelLeaderLabelsTest(unittest.TestCase):
         self.assertEqual(tui.model_leader_labels(rows), ["solo"])
 
 
+class TimestampRenderTest(unittest.TestCase):
+    """A timestamp that is not a number is rendered, not divided.
+
+    Rows written before the sync normalised its timestamps keep the raw string, and
+    `local_time` divided whatever it was handed — inside a refresh, where a TypeError is
+    a crash in the event loop rather than a wrong cell.
+    """
+
+    def test_a_text_timestamp_is_shown_as_it_arrived(self):
+        # Truncated to the width the numeric path renders, so a column stays aligned.
+        self.assertEqual(tui.local_time("2026-10-01T12:00:00Z"), "2026-10-01T12:00:00")
+
+    def test_epoch_ms_still_renders_as_local_time(self):
+        self.assertEqual(tui.local_time(1_790_856_000_000)[:4], "2026")
+        self.assertEqual(tui.local_time(None), "-")
+
+
 class EntityRowColumnsTest(unittest.TestCase):
     """Every cell the TUI renders for an entity row comes from a declared column.
 

@@ -285,6 +285,21 @@ class StatsCliTest(unittest.TestCase):
         self.assertIn("no database at", err)
         self.assertNotIn("Traceback", err)
 
+    def test_a_text_timestamp_in_an_old_row_is_printed_not_divided(self):
+        """Rows written before the sync normalised timestamps are still in the file,
+        and `ts()` divided whatever it was given — so one of them made the whole report
+        a TypeError. The row is the user's history; the crash is not."""
+        conn = db.open_db(self.db_path)
+        # `overview()` takes MIN/MAX over tool_calls.ts, and every panel's "last used"
+        # formats the same column, so a pre-fix database has the text there too.
+        conn.execute("UPDATE sessions SET started_at='2026-10-01T12:00:00Z'")
+        conn.execute("UPDATE tool_calls SET ts='2026-10-01T12:00:00Z'")
+        conn.commit()
+        conn.close()
+        rc, out, err = run("--db", self.db_path, "stats")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("2026-10-01T12:00", out)
+
     def test_a_file_that_is_not_a_database_is_named_not_traced(self):
         """A damaged file is the case `cbut health` exists for, and it used to print
         `sqlite3.DatabaseError: file is not a database` from inside its first query."""

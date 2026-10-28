@@ -99,6 +99,35 @@ class IndexerTest(unittest.TestCase):
     def count(self, table):
         return self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
+    # -- timestamps: text in an INTEGER column --------------------------------
+
+    def test_an_iso_timestamp_is_stored_as_epoch_ms(self):
+        """The trace reader has accepted ISO-8601 since it was written (`_iso_ms`); the
+        transcript reader passed the value straight to the bind, and SQLite stores a
+        string in an INTEGER column without complaint. `cbut stats` then died dividing
+        it, and every strftime over it read 0."""
+        write_records(self.tr, [
+            {"type": "function_call", "name": "Read", "callId": "c1",
+             "sessionId": "s1", "cwd": "/p", "status": "completed",
+             "timestamp": "2026-10-01T12:00:00Z"},
+        ])
+        self.index()
+        row = self.conn.execute("SELECT ts FROM tool_calls").fetchone()
+        self.assertEqual(row["ts"], 1_790_856_000_000)
+
+    def test_a_timestamp_that_is_not_a_time_keeps_the_call_and_drops_the_time(self):
+        """The call happened; only its clock is unusable. NULL is the honest value —
+        the alternative was text in a column every query does arithmetic on."""
+        write_records(self.tr, [
+            {"type": "function_call", "name": "Read", "callId": "c2",
+             "sessionId": "s1", "cwd": "/p", "status": "completed",
+             "timestamp": "abc"},
+        ])
+        self.index()
+        row = self.conn.execute("SELECT ts, tool_name FROM tool_calls").fetchone()
+        self.assertIsNone(row["ts"])
+        self.assertEqual(row["tool_name"], "Read", "the call is still a call")
+
     # -- MCP: unwrap the deferred-tool wrapper (no real data exists yet) -----
 
     def test_mcp_unwrapped_from_defer(self):

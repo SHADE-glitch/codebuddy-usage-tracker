@@ -188,6 +188,10 @@ def local_time(ms):
     """Local-time render of an epoch-ms value (query bounds stay in Unix ms)."""
     if not ms:
         return "-"
+    if not isinstance(ms, (int, float)):
+        # An old row whose timestamp was stored as text. Dividing it raised TypeError
+        # inside a refresh, which is a crash in the event loop rather than a cell.
+        return str(ms)[:19]
     return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
 
 

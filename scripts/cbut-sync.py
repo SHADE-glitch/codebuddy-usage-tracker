@@ -1380,6 +1380,8 @@ def _record_function_result(conn, rec, unparsed=None) -> None:
         return
     status = rec.get("status")
     rts = rec.get("timestamp")
+    if isinstance(rts, str):          # same rule as `_handle_record`
+        rts = _iso_ms(rts)
     # A duration is a *difference*, so the two timestamps have to agree about
     # their order first. They do not always: CodeBuddy writes the result
     # record before the call record for some calls (measured 2026-10-21:
@@ -1496,7 +1498,15 @@ def _handle_record(conn, rec, skill_owner, agent_owner, command_owner,
     rtype = rec.get("type")
     sid = _session_id(rec)
     project = rec.get("cwd")
+    # A transcript timestamp is epoch ms. The trace reader has accepted ISO-8601 since
+    # it was written (`_iso_ms`); the transcript reader passed the value straight to
+    # the bind, and SQLite stores a string in an INTEGER column without complaint —
+    # after which MIN(started_at) returns that string and every strftime over it reads
+    # 0. Normalised once here, so no writer below can put text in that column. A stamp
+    # that is neither a number nor ISO keeps its record and loses its time.
     ts = rec.get("timestamp")
+    if isinstance(ts, str):
+        ts = _iso_ms(ts)
 
     _record_model_response(conn, rec, sid, project, ts, model_hosts)
 

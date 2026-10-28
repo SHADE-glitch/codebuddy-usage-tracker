@@ -35,13 +35,22 @@ import cbut_db as db  # noqa: E402
 def ts(v):
     if not v:
         return "-"
+    if not isinstance(v, (int, float)):
+        # A row written before the sync normalised timestamps, or by a build that
+        # stored the raw string: it survives in an old database, and dividing it is
+        # how `cbut stats` used to die with a TypeError. Shown as it arrived.
+        return str(v)[:16]
     return datetime.fromtimestamp(v / 1000).strftime("%Y-%m-%d %H:%M")
 
 
 def ms(v):
     # Negative: the call and result records disagree about their order (see
     # db._null_negative_durations); "-" rather than a believable "-4611ms".
-    if v is None or v < 0:
+    if v is None:
+        return "-"
+    if not isinstance(v, (int, float)):
+        return str(v)[:8]          # same rule as `ts`
+    if v < 0:
         return "-"
     if v < 1000:
         return f"{v}ms"
