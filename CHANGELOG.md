@@ -2132,3 +2132,19 @@ Cost     A `Skill(...)` written in prose inside a REPL program counts as a call 
          like the guard D-066 accepts. Historical rows are not backfilled: `sync_state` resumes at
          a byte offset, so only `--full` re-reads the old transcripts.
 Commit   5e0dcb9
+
+### D-093 · 2026-11-02 · fix
+Symptom  `cbut health` carried one record under `type:resend-fork-notice` in the NEW bucket, every
+         run, because no build had ever seen the type. It is the CLI's own bookkeeping for a forked
+         conversation being re-sent with the run skipped (`providerData.skipRun`,
+         `providerData.resendForkNotice`): no call, no usage, no text.
+Change   The type joins `UNCLAIMED_RECORD_TYPES`, with its shape and the date it was first seen in
+         the comment beside the other three. It stays inside the unparsed tally — the split that
+         makes the number mean "the format moved" is the reason it is named rather than removed.
+Evidence L0 2026-11-02: before, `cbut health` printed `39831 known, 1 not` and the NEW line;
+         after, `39832 known, 0 not` with no NEW line. The known-reason case in `test_sync`
+         covers the new member. Suite 660.
+Cost     A future record of this type no longer raises the flag, which is the point; the cost is
+         that if it ever starts carrying something indexable, only a person re-reading the format
+         will notice — the same trade the other three declined types already make.
+Commit   a90e7b2
