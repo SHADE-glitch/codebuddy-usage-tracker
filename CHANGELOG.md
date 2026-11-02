@@ -2148,3 +2148,23 @@ Cost     A future record of this type no longer raises the flag, which is the po
          that if it ever starts carrying something indexable, only a person re-reading the format
          will notice — the same trade the other three declined types already make.
 Commit   a90e7b2
+
+### D-094 · 2026-11-02 · fix
+Symptom  D-092 counted the skill syntax wherever it appeared in a REPL program, so a session that
+         writes *about* `Skill({ skill: ... })` logged a skill named after its placeholder
+         (`name`), and a shell loop over `"$b/SKILL.md"` logged `$b`, `$n` and `**` as cards. The
+         rows reached `aut`, where a cross-tracker table showed them with 0 calls and 2–4 reads.
+Change   Three rules separate a call from prose. `await` must precede `Skill(` — every real call
+         in this harness is awaited, and a mention in a comment carries plain quotes and no
+         await. The quote must not be backslash-escaped — a mention inside a JS string keeps its
+         escapes, which is what a session writing documentation produces. A card path must be
+         absolute and free of `$` and `*` — a relative path or a shell variable names no card.
+Evidence L0 2026-11-02: four new cases (prose inside a string, a path inside a string, a comment
+         with plain quotes, a `$b` path); before the change the two-skill case logged `name`.
+         After a `sync --full`, `skill_usage` holds 55 rows over 25 names with no `$`/`*` rows
+         left; one `name` row survives, from a comment that spells an awaited example. Suite 664.
+Cost     A call written without `await` is not counted — the harness makes that shape rare, but a
+         fire-and-forget call would now be invisible where D-092 counted it. The residual `name`
+         row shows the limit of the rule: text that is character-for-character a call cannot be
+         told apart from one.
+Commit   43cdc3d
