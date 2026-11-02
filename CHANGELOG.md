@@ -2105,3 +2105,30 @@ Cost     Help output gains three names and one line break; nothing else about th
          untouched. The case can now fail for a new reason — a verb added to the parser and not
          to the comment block — which is the point, but it is a new way to go red.
 Commit   43fc283
+
+### D-092 · 2026-11-02 · fix
+Symptom  `skill_usage` stopped growing on 2026-10-17 while `tool_calls` in the same database kept
+         going to 10-28. The cause is Code Mode: it exposes one tool, `REPL`, and the real call is
+         text inside its `code` argument (`Skill({ skill: "grilling" })`), so `_classify` keyed on
+         `name == SKILL_TOOL` and saw nothing. A 30-day scan of 364 transcripts found 7 `Skill`
+         tool calls against 35 / 31 / 27 direct reads of the three conventions cards — the table
+         was not describing low usage, it was describing a layer the parser no longer reached.
+Change   `_repl_skill_calls` and `_repl_card_reads` scan the code text: `Skill(\{ ... \})` yields
+         the skill name and whether `args` is present, and string literals ending in `SKILL.md`
+         go through the same `_skill_read_name` as a Read call. Rows are written under
+         `<call_id>#skill<i>` / `#read<i>`, because one program can carry several and both tables
+         key on `call_id`. `code` joins `TOOL_ARG_FIELDS`; the generated format block, the
+         `pipeline.md` line map and both README counts follow. The builtin catalogue snapshot is
+         regenerated: the installed package added `ComputerProvider`, `RemoteHostAutomation` and
+         `RemoteHostContext`.
+Evidence L0 2026-11-02: before the change the drift guard was the suite's only failure (3 new
+         tools); after `product_snapshot.py` it passes. Four new cases in `test_sync` cover one
+         skill, two skills in one program, a card read, and a REPL call with no skill code; the
+         two-skill case failed first with `('gh', 1)` because the `args` probe read past the
+         object into the next call, which is why the object is now captured whole. Suite 660.
+Cost     A `Skill(...)` written in prose inside a REPL program counts as a call — the same
+         trade-off `_skill_read_name` already makes for a card path. The three-level escaping means
+         the text is regex-matched, not parsed; an alias (`const S = Skill`) is invisible, exactly
+         like the guard D-066 accepts. Historical rows are not backfilled: `sync_state` resumes at
+         a byte offset, so only `--full` re-reads the old transcripts.
+Commit   5e0dcb9
