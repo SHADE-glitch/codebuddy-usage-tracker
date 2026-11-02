@@ -204,6 +204,12 @@ HANDLED_RECORD_TYPES = frozenset({
 # ``reasoning`` by the tens of thousands, ``file-history-snapshot`` by the
 # thousands, ``summary`` by the hundreds.
 #
+# ``resend-fork-notice`` (first seen 2026-11-02, one record) is the CLI's own
+# bookkeeping: it marks a forked conversation being re-sent with the run
+# skipped (``providerData.skipRun``), so it carries no call, no usage and no
+# text. It is claimed here rather than left to shout "the format moved" every
+# day, which is what an unnamed reason does.
+#
 # They stay *inside* the unparsed tally, because an allowlist that removed them
 # would also hide the day one of them starts carrying something we index. What
 # they get instead of removal is a **name**: a single total that mixes a
@@ -212,7 +218,7 @@ HANDLED_RECORD_TYPES = frozenset({
 # reads. So every view splits it: `cbut health` marks each reason, and the TUI
 # status line raises its "!" only for a reason outside this set.
 UNCLAIMED_RECORD_TYPES = frozenset(
-    {"reasoning", "file-history-snapshot", "summary"})
+    {"reasoning", "file-history-snapshot", "summary", "resend-fork-notice"})
 # The same three as they are spelled in the ``unparsed`` table, plus one reason
 # that is not a record type at all: a call whose name cannot be a tool
 # (``INVALID_TOOL_NAME``). It is a model artifact rather than the log format

@@ -1817,7 +1817,7 @@ class UnparsedAccountingTest(unittest.TestCase):
         self.assertEqual(stats["unparsed_this_run"], 0)
 
     def test_a_known_unclaimed_type_is_counted_but_is_not_drift(self):
-        """The three prose types are named, so "unparsed" can mean drift again.
+        """The known types are named, so "unparsed" can mean drift again.
 
         They stay inside the tally — removing them would hide the day one of them
         starts carrying something we index — and what they gain is a name, so every
@@ -1825,7 +1825,7 @@ class UnparsedAccountingTest(unittest.TestCase):
         views share; the views themselves are pinned where they print.
         """
         for reason in ("type:reasoning", "type:file-history-snapshot",
-                       "type:summary"):
+                       "type:summary", "type:resend-fork-notice"):
             self.assertTrue(sync.unparsed_is_expected(reason), reason)
         # A model emitting a name no tool has is understood and recurring, not
         # the format moving: counted as drift it put a permanent "!" on the
