@@ -155,16 +155,21 @@ MCP_TOOL_SEP = "__"
 CMD_RE = re.compile(r"<command-name>\s*/?([^<\s]+)\s*</command-name>")
 BAGGAGE_SID_RE = re.compile(r"codebuddy\.session_id=([^,\s]+)")
 
-# A REPL program that loads a skill writes ``Skill({ skill: "name", args: ... })``.
-# ``arguments`` is decoded twice before this runs, so the quotes are plain and a
-# regex over the code text is enough. The object is flat, so the bounded,
-# brace-free gap keeps the match inside one call.
-REPL_SKILL_CALL_RE = re.compile(r"Skill\(\s*\{([^{}]{0,400}?)\}")
-REPL_SKILL_NAME_RE = re.compile(r"skill\s*:\s*[\"']([A-Za-z0-9:_.-]+)[\"']")
+# A REPL program that loads a skill writes ``await Skill({ skill: "name" })``.
+# Three things separate that from prose about the syntax, and all three are
+# needed: the ``await`` (every real call in this harness is awaited), quotes that
+# are not backslash-escaped (a mention inside a JS string keeps its escapes), and
+# the bounded brace-free gap, which keeps the match inside one flat object.
+# A mention in a comment carries plain quotes and no await, so the first rule is
+# what catches it.
+REPL_SKILL_CALL_RE = re.compile(r"await\s+Skill\(\s*\{([^{}]{0,400}?)\}")
+REPL_SKILL_NAME_RE = re.compile(r"(?<!\\)(?P<q>[\"'])(?P<name>[A-Za-z0-9:_.-]+)(?P=q)")
 # Read out of the same object, so a later call on the next line cannot lend it.
 REPL_SKILL_ARGS_RE = re.compile(r"\bargs\s*:")
 # A card path written as a string literal, which is how a REPL program reads it.
-REPL_CARD_PATH_RE = re.compile(r"[\"']([^\"'\n]{1,400}?SKILL\.md)[\"']")
+# It has to be absolute: a relative path or one holding a shell variable
+# (``$b/SKILL.md``, ``**/SKILL.md``) names no card, and would log the variable.
+REPL_CARD_PATH_RE = re.compile(r"(?<!\\)(?P<q>[\"'])(?P<path>/[^\"'\n]{1,400}?SKILL\.md)(?P=q)")
 
 # A tool name is one token. A real call never contains whitespace or a control
 # character, and one that does (a model-generated malformed call produced
@@ -1388,7 +1393,7 @@ def _repl_skill_calls(code: str):
         body = match.group(1)
         name = REPL_SKILL_NAME_RE.search(body)
         if name:
-            calls.append((name.group(1),
+            calls.append((name.group("name"),
                           1 if REPL_SKILL_ARGS_RE.search(body) else 0))
     return calls
 
@@ -1396,7 +1401,12 @@ def _repl_skill_calls(code: str):
 def _repl_card_reads(code: str):
     """Skill names whose card a REPL program reads as a string literal."""
     names = []
-    for path in REPL_CARD_PATH_RE.findall(code):
+    for match in REPL_CARD_PATH_RE.finditer(code):
+        path = match.group("path")
+        if "$" in path or "*" in path:
+            # A shell variable or a glob, not a path anything opened: the card
+            # name would be the variable spelled out (``$b``, ``**``).
+            continue
         name = _skill_read_name(path)
         if name:
             names.append(name)

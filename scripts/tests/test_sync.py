@@ -223,6 +223,62 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual(self.count("skill_usage"), 0)
         self.assertEqual(self.count("skill_reads"), 0)
 
+    def test_the_call_syntax_inside_a_string_is_not_a_call(self):
+        """Writing about the syntax is not calling it.
+
+        The quotes of a real call are plain in the decoded code; the same text
+        inside a JS string keeps its backslashes. That is the whole
+        discriminator, and it is what keeps a session that documents the syntax
+        from logging a skill named after its placeholder.
+        """
+        code = ('await Write({ content: "usage: Skill({ skill: \\\"name\\\" })" })\n'
+                'return await Skill({ skill: "pr" })')
+        write_records(self.tr, [
+            {"type": "function_call", "name": "REPL", "callId": "x5",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps({"code": code})},
+        ])
+        self.index()
+        rows = self.conn.execute("SELECT skill FROM skill_usage").fetchall()
+        self.assertEqual([r["skill"] for r in rows], ["pr"])
+
+    def test_a_card_path_inside_a_string_is_not_a_read(self):
+        code = ('await Write({ content: "see \\\"/skills/gh/SKILL.md\\\"" })')
+        write_records(self.tr, [
+            {"type": "function_call", "name": "REPL", "callId": "x6",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps({"code": code})},
+        ])
+        self.index()
+        self.assertEqual(self.count("skill_reads"), 0)
+
+    def test_a_call_without_await_is_not_counted(self):
+        """The call has to look like one: every real call here is awaited.
+
+        Prose in a comment carries plain quotes, so the quote test alone does
+        not catch it. Requiring the await is what separates the syntax being
+        discussed from the syntax being run.
+        """
+        code = ('# a call looks like Skill({ skill: "gh" })\n'
+                'return 1')
+        write_records(self.tr, [
+            {"type": "function_call", "name": "REPL", "callId": "x7",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps({"code": code})},
+        ])
+        self.index()
+        self.assertEqual(self.count("skill_usage"), 0)
+
+    def test_a_path_holding_a_shell_variable_is_not_a_card_read(self):
+        code = ('await Read({ file_path: "/tmp/$b/SKILL.md" })')
+        write_records(self.tr, [
+            {"type": "function_call", "name": "REPL", "callId": "x8",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps({"code": code})},
+        ])
+        self.index()
+        self.assertEqual(self.count("skill_reads"), 0)
+
     def test_a_skill_card_read_is_recorded_in_skill_reads(self):
         write_records(self.tr, [
             {"type": "function_call", "name": "Read", "callId": "r1",

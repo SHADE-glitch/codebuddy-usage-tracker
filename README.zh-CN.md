@@ -256,7 +256,7 @@ name_cap = 28        # 单元格最宽渲染多少字符，超出就截断
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 660 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 664 tests ... OK
 ```
 
 测试是纯 `unittest`（只用标准库，所以 `pytest` 也能收集）。每一份都在临时目录里建自己的
@@ -265,7 +265,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 660 tests ... OK
 
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
-| `test_sync.py` | 163 | 转录解析、工具归类、路由出处列（`requestModelId` → 内置 / 厂商 / 主机 / 端点）、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数、整程同步锁、OTel agent 轨迹读取器（流式与完结文件按
+| `test_sync.py` | 167 | 转录解析、工具归类、路由出处列（`requestModelId` → 内置 / 厂商 / 主机 / 端点）、增量同步与 `--full` 重建、崩溃恢复、未识别记录计数、整程同步锁、OTel agent 轨迹读取器（流式与完结文件按
   spanId 合并；会话关联、状态只升不降） |
 | `test_traces.py` | 12 | 轨迹读取端到端：span 结果只落一次、
   `cli`/`ptc` 拒收、running 占位升级且重放不降级、
@@ -302,7 +302,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 660 tests ... OK
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `vacuum` · `format` |
 | `scripts/cbut-tui.py` | 八个 tab 的 Textual 界面 |
-| `scripts/tests/` | 上面那 660 个用例 |
+| `scripts/tests/` | 上面那 664 个用例 |
 | `docs/maintenance/` | CodeBuddy 变了之后要复查什么：生成的格式依赖清单、版本兼容矩阵、体积与性能的固定度量法和基线，以及从一条日志记录到屏幕上那个数字的 `file:line` 路线图 |
 | `systemd/` | 可选的 15 分钟同步 service + timer |
 | `requirements.txt` | `textual>=8.2,<9` —— 只有 TUI 需要，其余全是标准库 |
