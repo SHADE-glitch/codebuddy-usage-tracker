@@ -169,6 +169,60 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual(row["skill"], "commit")
         self.assertEqual(row["has_args"], 1)
 
+    # -- Code Mode: the call is code inside one REPL tool call --------------
+
+    def test_a_skill_called_inside_repl_code_is_recorded(self):
+        code = ('const r = await Skill({ skill: "grilling", args: "\u65b9\u6848" })\n'
+                'return r')
+        write_records(self.tr, [
+            {"type": "function_call", "name": "REPL", "callId": "x1",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps({"code": code})},
+        ])
+        self.index()
+        row = self.conn.execute("SELECT * FROM skill_usage").fetchone()
+        self.assertEqual(row["skill"], "grilling")
+        self.assertEqual(row["has_args"], 1)
+        self.assertEqual(row["session_id"], "s1")
+
+    def test_one_repl_program_can_carry_several_skill_calls(self):
+        code = ('await Skill({ skill: "gh" })\n'
+                'await Skill({ skill: "pr", args: "body" })')
+        write_records(self.tr, [
+            {"type": "function_call", "name": "REPL", "callId": "x2",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps({"code": code})},
+        ])
+        self.index()
+        rows = self.conn.execute(
+            "SELECT skill, has_args FROM skill_usage ORDER BY skill").fetchall()
+        self.assertEqual([(r["skill"], r["has_args"]) for r in rows],
+                         [("gh", 0), ("pr", 1)])
+
+    def test_a_card_read_inside_repl_code_is_recorded(self):
+        code = ('const p = "/home/u/.agents/skills/code-review/SKILL.md"\n'
+                'return await Read({ file_path: p })')
+        write_records(self.tr, [
+            {"type": "function_call", "name": "REPL", "callId": "x3",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps({"code": code})},
+        ])
+        self.index()
+        row = self.conn.execute("SELECT * FROM skill_reads").fetchone()
+        self.assertEqual(row["skill"], "code-review")
+        self.assertEqual(self.count("skill_usage"), 0,
+                         "a read is not an invocation")
+
+    def test_a_repl_call_without_skill_code_writes_nothing(self):
+        write_records(self.tr, [
+            {"type": "function_call", "name": "REPL", "callId": "x4",
+             "sessionId": "s1", "cwd": "/p", "timestamp": 10,
+             "arguments": json.dumps({"code": "return await Bash({command: 'ls'})"})},
+        ])
+        self.index()
+        self.assertEqual(self.count("skill_usage"), 0)
+        self.assertEqual(self.count("skill_reads"), 0)
+
     def test_a_skill_card_read_is_recorded_in_skill_reads(self):
         write_records(self.tr, [
             {"type": "function_call", "name": "Read", "callId": "r1",

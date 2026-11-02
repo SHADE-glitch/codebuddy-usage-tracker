@@ -146,11 +146,25 @@ PRODUCT_CLI_NAME = "codebuddy"
 # Tool names that carry meaning for classification (see ``_classify``).
 SKILL_TOOL = "Skill"
 AGENT_TOOL = "Agent"
+# Code Mode routes every call through this one tool: the real call is code in
+# its ``code`` argument, not a tool name (see ``_repl_calls``).
+REPL_TOOL = "REPL"
 MCP_TOOL_PREFIX = "mcp__"                # mcp__<server>__<tool>
 MCP_TOOL_SEP = "__"
 
 CMD_RE = re.compile(r"<command-name>\s*/?([^<\s]+)\s*</command-name>")
 BAGGAGE_SID_RE = re.compile(r"codebuddy\.session_id=([^,\s]+)")
+
+# A REPL program that loads a skill writes ``Skill({ skill: "name", args: ... })``.
+# ``arguments`` is decoded twice before this runs, so the quotes are plain and a
+# regex over the code text is enough. The object is flat, so the bounded,
+# brace-free gap keeps the match inside one call.
+REPL_SKILL_CALL_RE = re.compile(r"Skill\(\s*\{([^{}]{0,400}?)\}")
+REPL_SKILL_NAME_RE = re.compile(r"skill\s*:\s*[\"']([A-Za-z0-9:_.-]+)[\"']")
+# Read out of the same object, so a later call on the next line cannot lend it.
+REPL_SKILL_ARGS_RE = re.compile(r"\bargs\s*:")
+# A card path written as a string literal, which is how a REPL program reads it.
+REPL_CARD_PATH_RE = re.compile(r"[\"']([^\"'\n]{1,400}?SKILL\.md)[\"']")
 
 # A tool name is one token. A real call never contains whitespace or a control
 # character, and one that does (a model-generated malformed call produced
@@ -358,6 +372,7 @@ TOOL_ARG_FIELDS = frozenset({
     "subagent_type", "agent_type",            # Agent tool
     "toolName", "tool_name",                  # meta tools that wrap another tool
     "file_path",                              # Read: recognises a skill card
+    "code",                                   # REPL: the call is code, not a name
 })
 # JSON keys of the non-transcript files we read: the inventory files plus
 # models.json (whose "models"[].id/url give the custom routes their host).
@@ -1354,6 +1369,58 @@ def _skill_read_name(path) -> str | None:
     return name or None
 
 
+def _repl_skill_calls(code: str):
+    """[(skill, has_args)] for every ``Skill(...)`` written inside REPL code.
+
+    Code Mode exposes no tool name to key on: the model writes the call as code,
+    so the text is the only evidence. A mention in prose is indistinguishable
+    from a call and is counted — the same trade-off ``_skill_read_name`` makes
+    for a card path.
+    """
+    calls = []
+    for match in REPL_SKILL_CALL_RE.finditer(code):
+        body = match.group(1)
+        name = REPL_SKILL_NAME_RE.search(body)
+        if name:
+            calls.append((name.group(1),
+                          1 if REPL_SKILL_ARGS_RE.search(body) else 0))
+    return calls
+
+
+def _repl_card_reads(code: str):
+    """Skill names whose card a REPL program reads as a string literal."""
+    names = []
+    for path in REPL_CARD_PATH_RE.findall(code):
+        name = _skill_read_name(path)
+        if name:
+            names.append(name)
+    return names
+
+
+def _record_repl_calls(conn, call_id, code, sid, project, ts, skill_owner):
+    """Skills one REPL program invoked, and cards it read.
+
+    A single program can carry several of each, so the row id is suffixed: the
+    bare ``call_id`` already belongs to the ``tool_calls`` row and both tables
+    key on it. The suffix keeps a re-read of the same file idempotent.
+    """
+    for i, (skill, has_args) in enumerate(_repl_skill_calls(code)):
+        conn.execute(
+            "INSERT OR IGNORE INTO skill_usage"
+            "(call_id, skill, has_args, plugin, session_id, project, ts)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (f"{call_id}#skill{i}", skill, has_args,
+             skill_owner.get(skill), sid, project, ts),
+        )
+    for i, skill in enumerate(_repl_card_reads(code)):
+        conn.execute(
+            "INSERT OR IGNORE INTO skill_reads"
+            "(call_id, skill, session_id, project, ts)"
+            " VALUES(?,?,?,?,?)",
+            (f"{call_id}#read{i}", skill, sid, project, ts),
+        )
+
+
 def _record_function_call(conn, rec, sid, project, ts, skill_owner,
                           unparsed=None) -> None:
     """One tool call: its row, plus the skill/agent/mcp row it belongs to."""
@@ -1383,6 +1450,13 @@ def _record_function_call(conn, rec, sid, project, ts, skill_owner,
                 " VALUES(?,?,?,?,?)",
                 (call_id, skill, sid, project, ts),
             )
+    if name == REPL_TOOL:
+        # Code Mode: the call is code, so skill/agent/mcp rows come from the
+        # text. Only skills and card reads are extracted — the inner tool calls
+        # are not separate rows, because the REPL row already counts the work.
+        code = args.get("code")
+        if isinstance(code, str) and code:
+            _record_repl_calls(conn, call_id, code, sid, project, ts, skill_owner)
     if category == "skill":
         skill = args.get("skill") or args.get("command") or "?"
         conn.execute(
