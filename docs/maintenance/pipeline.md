@@ -23,70 +23,70 @@ that reads `tab.query` only agree because both resolve the function at call time
 
 ### One run
 
-`run()` (`:1938`) takes an exclusive lock (`:1902`), opens one read-write connection and closes it in
+`run()` (`:1944`) takes an exclusive lock (`:1908`), opens one read-write connection and closes it in
 `finally`; the TUI calls this from a worker thread, so a leaked connection would be one per failed
-run rather than one per process. `_run()` (`:2185`) is the pipeline in order, one call per stage:
+run rather than one per process. `_run()` (`:2191`) is the pipeline in order, one call per stage:
 
-1. **Schema first** — `db.ensure_schema()` (`:2205`), so the writer never meets a table it does not
+1. **Schema first** — `db.ensure_schema()` (`:2211`), so the writer never meets a table it does not
    know.
-2. **`--full`** — `_reset_if_full` (`:1953`): snapshot, then `db.reset()`; a snapshot of an empty
+2. **`--full`** — `_reset_if_full` (`:1959`): snapshot, then `db.reset()`; a snapshot of an empty
    database is skipped on purpose.
-3. **Inventory** — `scan_inventory()` (`:765`) records what is installed *right now*:
-   `collect_inventory` (`:638`) reads the disk, `replace_inventory` (`:745`) swaps the snapshot in
+3. **Inventory** — `scan_inventory()` (`:771`) records what is installed *right now*:
+   `collect_inventory` (`:644`) reads the disk, `replace_inventory` (`:751`) swaps the snapshot in
    one transaction, so a failed scan leaves the previous one intact.
-4. **Discovery** — `_source_files` (`:1965`): `projects/**/*.jsonl` for transcripts, plus
+4. **Discovery** — `_source_files` (`:1971`): `projects/**/*.jsonl` for transcripts, plus
    `traces/*/trace_*.jsonl` and `traces/*/trace_*.json`.
-5. **Stale-offset pre-pass** — `_clear_stale_files` (`:1978`): if *any* file's stored offset is
+5. **Stale-offset pre-pass** — `_clear_stale_files` (`:1984`): if *any* file's stored offset is
    stale (shrunk, rewritten, no longer on a line boundary), the whole database is rebuilt: snapshot
-   first, carry the sessions no surviving file can rebuild (`:1997`), re-read every file from zero.
+   first, carry the sessions no surviving file can rebuild (`:2003`), re-read every file from zero.
    This is the only destructive step a plain `cbut sync` can take. The predicate is `_needs_reset`
-   (`:1878`), which leans on `_starts_on_line_boundary` (`:1863`).
-6. **Main loop** — `_index_files` (`:2022`): per file, read the new bytes, index them, write
-   `sync_state(file_path, size, mtime, offset)` (`:2073`) and commit. `size` is the file's real
+   (`:1884`), which leans on `_starts_on_line_boundary` (`:1869`).
+6. **Main loop** — `_index_files` (`:2028`): per file, read the new bytes, index them, write
+   `sync_state(file_path, size, mtime, offset)` (`:2079`) and commit. `size` is the file's real
    size, not the offset, because that is what the next run compares to notice a rewrite.
-7. **Whole-trace files** — `_index_final_traces` (`:2082`): re-read entirely every run, keyed by
+7. **Whole-trace files** — `_index_final_traces` (`:2088`): re-read entirely every run, keyed by
    `spanId`, so the re-read is idempotent and needs no `sync_state` row.
-8. **Backfill** — `backfill_plugin_usage` (`:1692`) attributes skill/agent/command rows to a
+8. **Backfill** — `backfill_plugin_usage` (`:1698`) attributes skill/agent/command rows to a
    plugin once the inventory can name one; it runs after the reads because the ownership tables are
    built from the inventory.
-9. **Report** — `_collect_stats` (`:2141`) builds the run's counters — what `cbut sync`
-   prints and what `run()` returns — and `_report` (`:2179`) prints them. The TUI's status line
+9. **Report** — `_collect_stats` (`:2147`) builds the run's counters — what `cbut sync`
+   prints and what `run()` returns — and `_report` (`:2185`) prints them. The TUI's status line
    and `cbut health` read `db.overview()` (`cbut_db.py:2117`) instead: the same counts computed from
    the database rather than from one run, which is also why the run dict keeps `files_indexed` and
    `trace_finals` — facts only a run knows. An unrecognised record type is counted and printed
-   loudly (`:2168`) because a silent format change is the one failure every panel shares.
+   loudly (`:2174`) because a silent format change is the one failure every panel shares.
 
 ### One file
 
-`_read_incremental` (`:896`) is the only reader of the newline-framed tail, shared by transcripts
+`_read_incremental` (`:902`) is the only reader of the newline-framed tail, shared by transcripts
 and trace streams so the two cannot disagree about where an offset may resume. It consumes only
 complete lines; a half-written final line is retried next run unless it already parses as complete
-JSON. `index_file` (`:945`) then hands each record to `_handle_record` and returns the new offset.
+JSON. `index_file` (`:951`) then hands each record to `_handle_record` and returns the new offset.
 It never touches `sessions` — one session spans its main transcript *and* every subagent
 transcript, so a single file's contribution to the accumulated totals cannot be subtracted in
 isolation.
 
 ### One record
 
-`_handle_record` (`:1607`) is a dispatch on `rec["type"]`, and every branch either writes or
+`_handle_record` (`:1613`) is a dispatch on `rec["type"]`, and every branch either writes or
 explicitly claims the record:
 
 | `type` | Effect | Branch |
 |---|---|---|
-| `function_call` | `tool_calls`, plus `skill_usage` / `agent_usage` / `mcp_usage` by classification | `:1615` |
-| `function_call_result` | status + duration onto the four call tables; a refused call is withdrawn | `:1617` |
-| `turn-metrics` | `sessions.tokens` / `duration_ms` — the context metric, never model tokens | `:1619` |
-| `message` | the session's model, and slash-command names from the text blocks | `:1621` |
-| `session-meta`, `ai-title`, `model-usage` | claimed, nothing stored: the title is prose, and the usage echo repeats what `_record_model_response` wrote | `:1624` |
-| anything else | `unparsed` count, keyed `type:<name>` | `:1656` |
+| `function_call` | `tool_calls`, plus `skill_usage` / `agent_usage` / `mcp_usage` by classification | `:1621` |
+| `function_call_result` | status + duration onto the four call tables; a refused call is withdrawn | `:1623` |
+| `turn-metrics` | `sessions.tokens` / `duration_ms` — the context metric, never model tokens | `:1625` |
+| `message` | the session's model, and slash-command names from the text blocks | `:1627` |
+| `session-meta`, `ai-title`, `model-usage` | claimed, nothing stored: the title is prose, and the usage echo repeats what `_record_model_response` wrote | `:1630` |
+| anything else | `unparsed` count, keyed `type:<name>` | `:1662` |
 
-Each branch is one call into the handler that holds the SQL — `_record_function_call` (`:1424`),
-`_record_function_result` (`:1490`), `_record_turn_metrics` (`:1525`), `_record_message`
-(`:1546`) — and `_touch_session` (`:1581`) stamps the session's start/end after whichever branch
+Each branch is one call into the handler that holds the SQL — `_record_function_call` (`:1430`),
+`_record_function_result` (`:1496`), `_record_turn_metrics` (`:1531`), `_record_message`
+(`:1552`) — and `_touch_session` (`:1587`) stamps the session's start/end after whichever branch
 ran.
 
 A record reaches the dispatch only if every field it binds has a shape the binder can take
-(`_usable_record`, `:403`): a line that parses as JSON but is not an object (`null`, `[]`,
+(`_usable_record`, `:409`): a line that parses as JSON but is not an object (`null`, `[]`,
 `"text"`), or a record holding a list or object where a scalar belongs, is counted as
 `unusable_record` and skipped. Without that gate one such line raised out of the dispatch —
 `AttributeError` for a non-object, `sqlite3.ProgrammingError` at the bind, `TypeError` for a
@@ -94,20 +94,20 @@ container used as a dict key — and ended the run, so a single unreadable recor
 project's index. The check reads the field mirrors above rather than a second copy of them, so a
 field added to the registry is shape-checked without another edit.
 
-`_record_model_response` (`:1193`) runs before the dispatch, because a model response can arrive on
+`_record_model_response` (`:1199`) runs before the dispatch, because a model response can arrive on
 a record type that also carries other payload. It is the only writer of `model_responses`, and it
 reads `providerData.rawUsage` only: no credit arithmetic, no estimate, no `tokenDelta`.
 
-Classification (`_classify`, `:837`) decides which of the four call tables a `function_call` lands
+Classification (`_classify`, `:843`) decides which of the four call tables a `function_call` lands
 in; a tool name that no table can render is rejected as `invalid_tool_name` rather than stored.
 
 ### What is not read
 
 - `~/.codebuddy/**` is never written — the index is a separate SQLite file.
 - Prompt and response text, and tool argument *values*, are never stored; the one exception is the
-  `<command-name>` marker (`_record_commands`, `:1305`).
-- Traces are read for **agent spans only** (`index_trace_stream` `:1019`, `index_final_trace`
-  `:1047`). A trace never supplies a model response or a token count, which is why the internal
+  `<command-name>` marker (`_record_commands`, `:1311`).
+- Traces are read for **agent spans only** (`index_trace_stream` `:1025`, `index_final_trace`
+  `:1053`). A trace never supplies a model response or a token count, which is why the internal
   agents that appear only there read `0` by construction.
 
 ## 2. Store — `cbut_db.py`, schema half
@@ -194,14 +194,14 @@ The Tokens tab, window `7d`, the row for one model:
 2. `_fill_entity` (`cbut-tui.py:2535`) → `db.q_model_tokens(conn, start_ts, end_ts)` (`cbut_db.py:1543`).
 3. That query groups `model_responses` by `(model, provider)` and computes `usage_total_tokens`
    with `_AGG_USAGE_TOTAL_EXPR` (`cbut_db.py:1677`).
-4. The rows come from `_record_model_response` (`cbut-sync.py:1193`) reading
+4. The rows come from `_record_model_response` (`cbut-sync.py:1199`) reading
    `providerData.rawUsage` out of a `message` record.
 5. `_token_row` (`cbut-tui.py:372`) formats the cells; `_fill_wide` (`cbut-tui.py:1127`) decides
    which columns survive the terminal width.
 
 A disagreement between two screens is therefore usually a different window (step 1) or a different
 expression (step 3). The one case that is neither: the context-token total comes from
-`turn-metrics` (`cbut-sync.py:1505`), not from a model response, and summing it with these is wrong by design.
+`turn-metrics` (`cbut-sync.py:1511`), not from a model response, and summing it with these is wrong by design.
 
 ## When a number looks wrong
 
@@ -211,5 +211,5 @@ expression (step 3). The one case that is neither: the context-token total comes
 | Rows exist but a count is `0` | the window (`_bounds_for`) before the query |
 | Two screens disagree | API total vs Usage Total (`cbut_db.py:1669`) — they are different measurements |
 | A model has two rows | `(model, provider)` keying (`cbut_db.py:1540`); one model served by two routes is two rows |
-| Totals doubled after a rebuild | `carried` sessions (`cbut-sync.py:2008`) — the path that must not re-add them |
+| Totals doubled after a rebuild | `carried` sessions (`cbut-sync.py:2014`) — the path that must not re-add them |
 | Numbers stop moving | the sync worker only runs on launch and on `r` (`cbut-tui.py:2034`) |
