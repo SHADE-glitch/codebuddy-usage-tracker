@@ -2186,3 +2186,4 @@ Evidence  `python3 -m pytest scripts/tests/test_conventions.py` → 9 passed. Pr
 Cost      The list stays a snapshot: this repository's CI cannot read ~/.agents, so a future title change
           still needs a manual pass here. What watches for that drift now is section 13 of
           ~/.agents/scripts/audit.sh, which reports it instead of waiting for a red build that never arrives.
+Commit    fe447e3
