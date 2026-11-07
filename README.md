@@ -10,6 +10,8 @@
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=black)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/codebuddy-usage-tracker)
 
+<p align="center"><img src="docs/screenshots/dashboard.png" alt="The dashboard, running against a demo index" width="900"></p>
+
 **What it is** — A passive, read-only tracker for [CodeBuddy Code](https://cnb.cool/codebuddy/codebuddy-code): an eight-tab TUI and headless JSON reports over every built-in tool, skill, agent, plugin and MCP tool you use.
 
 **What it solves** — CodeBuddy keeps its history in local logs shaped for resuming sessions; `cbut` indexes them into one local SQLite file so you can see what you have used and what is installed.
@@ -92,6 +94,8 @@ per-tool / per-skill / per-plugin breakdown. That gap is what `cbut` fills.
 index. It never touches CodeBuddy's files, installs no hook, and adds no runtime overhead.
 
 ## 📊 The eight tabs
+
+<p align="center"><img src="docs/screenshots/demo.gif" alt="Switching the window and opening a tab" width="900"></p>
 
 The **Dashboard** opens first: an at-a-glance summary of the important numbers, so you
 know where to look before drilling in. A shared top bar above the tabs carries the range
