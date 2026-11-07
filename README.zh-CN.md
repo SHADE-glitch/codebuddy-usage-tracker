@@ -10,11 +10,17 @@
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=black)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/codebuddy-usage-tracker)
 
-<p align="center"><img src="docs/screenshots/dashboard.png" alt="仪表盘（演示索引）" width="900"></p>
-
 **是什么** —— 一个针对 CodeBuddy Code 的被动只读追踪器：八 tab 的 TUI 与无头 JSON 报告，覆盖你用过的每一个内置工具、skill、agent、插件与 MCP 工具。
 
 **解决什么** —— CodeBuddy 把历史存在为「恢复会话」而设计的本地日志里；`cbut` 把它们索引进一个本地 SQLite 文件，看清用过什么、装了什么。
+
+<p align="center"><img src="docs/screenshots/dashboard.png" alt="仪表盘（演示索引）" width="900"></p>
+
+<p align="center"><em><b>仪表盘</b> —— 用量、会话、花了钱的模型、真正用过的工具，一个窗口看完。这里的数字全部来自演示索引，不含任何真实机器的数据。</em></p>
+
+<p align="center"><img src="docs/screenshots/demo.gif" alt="依次切换 TUI 的八个标签页" width="900"></p>
+
+<p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完八个标签页——工具、技能、代理、插件、MCP、Token、用量——每页停留到能看清为止。<b>展示的功能：</b>同一份本地索引的八种视角；顶栏的时间范围只作用于当前标签页，每个标签页各自记住自己的窗口。</em></p>
 
 **怎么跑** —— `./install.sh`，然后 `cbut sync`。
 
@@ -88,10 +94,6 @@ CodeBuddy 其实**已经在写**你需要的数据，只是**从不展示**。�
 `cbut` 是一个**被动读取器**：解析 CodeBuddy 已经写好的日志并建立索引。它不碰 CodeBuddy 的任何文件、不装 hook、不增加运行时开销。
 
 ## 📊 八个 tab
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="依次切换 TUI 的八个标签页" width="900"></p>
-
-<p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完八个标签页——工具、技能、代理、插件、MCP、Token、用量——每页停留到能看清为止。<b>展示的功能：</b>同一份本地索引的八种视角；顶栏的时间范围只作用于当前标签页，每个标签页各自记住自己的窗口。</em></p>
 
 **Dashboard** 最先打开：一屏概览重要数字，让你知道该往哪里深入。tab 上方有一条共享顶部栏，其中放着范围选择器，且**每个 tab 各自保存自己的范围** —— 改一个 tab 的窗口不会影响其他 tab。实体 tab（Tools、Skills、Agents、MCP、Tokens）默认 **7 天**；Dashboard 与 Usage 页默认 **今天**。**Plugins** tab 同理：列表是全时段（已安装 ∪ 用过），而 `uses` 与 `last used` 只在它的窗口内计数。窗口只改变**计数**，绝不丢行 —— 因为每个 tab 都以名字为主键。
 

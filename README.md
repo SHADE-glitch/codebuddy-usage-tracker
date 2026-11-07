@@ -10,11 +10,17 @@
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=black)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/codebuddy-usage-tracker)
 
-<p align="center"><img src="docs/screenshots/dashboard.png" alt="The dashboard, running against a demo index" width="900"></p>
-
 **What it is** — A passive, read-only tracker for [CodeBuddy Code](https://cnb.cool/codebuddy/codebuddy-code): an eight-tab TUI and headless JSON reports over every built-in tool, skill, agent, plugin and MCP tool you use.
 
 **What it solves** — CodeBuddy keeps its history in local logs shaped for resuming sessions; `cbut` indexes them into one local SQLite file so you can see what you have used and what is installed.
+
+<p align="center"><img src="docs/screenshots/dashboard.png" alt="The dashboard, running against a demo index" width="900"></p>
+
+<p align="center"><em><b>The dashboard</b> — usage, sessions, the models you paid for and the tools you actually used, in one window. Every number comes from a demo index, not from a real machine.</em></p>
+
+<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
+
+<p align="center"><em><b>In the clip:</b> the TUI opens on the Dashboard and steps through all eight tabs — Tools, Skills, Agents, Plugins, MCP, Tokens, Usage — holding each long enough to read. <b>What it shows:</b> one local index cut eight ways; the range selector in the top bar re-scopes only the tab you are on, so every tab keeps its own window.</em></p>
 
 **How to run** — `./install.sh`, then `cbut sync`.
 
@@ -94,10 +100,6 @@ per-tool / per-skill / per-plugin breakdown. That gap is what `cbut` fills.
 index. It never touches CodeBuddy's files, installs no hook, and adds no runtime overhead.
 
 ## 📊 The eight tabs
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
-
-<p align="center"><em><b>In the clip:</b> the TUI opens on the Dashboard and steps through all eight tabs — Tools, Skills, Agents, Plugins, MCP, Tokens, Usage — holding each long enough to read. <b>What it shows:</b> one local index cut eight ways; the range selector in the top bar re-scopes only the tab you are on, so every tab keeps its own window.</em></p>
 
 The **Dashboard** opens first: an at-a-glance summary of the important numbers, so you
 know where to look before drilling in. A shared top bar above the tabs carries the range
