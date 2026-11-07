@@ -2168,3 +2168,21 @@ Cost     A call written without `await` is not counted — the harness makes tha
          row shows the limit of the rule: text that is character-for-character a call cannot be
          told apart from one.
 Commit   43cdc3d
+
+### D-095 · 2026-11-07 · guard
+Symptom   The STANDARD_HEADINGS snapshot in this file is what catches AGENTS.md restating the machine-wide
+          standard. It had gone stale in two ways: two entries were truncated spellings that this exact-match
+          rule can never hit, and sections 8-11 of STANDARD.md (the profile listing, retirement, About and
+          citation-stability sections) were never collected. A repository copying the newest section would
+          have passed, and nothing in this repository's CI could tell.
+Change    The matcher now compares every numbered heading with and without its trailing parenthetical: an
+          annotation like CONVENTIONS.md section 1's measurement note is not part of the title, while the
+          bracket in STANDARD.md section 1 is. The two truncated entries became full titles and the four
+          missing sections were added, so the tuple is 20 entries for the 20 headings the standard carries.
+Evidence  `python3 -m pytest scripts/tests/test_conventions.py` → 9 passed. Probes through copied_standard_headings(): a numbered copy of
+          the annotated CONVENTIONS title (with a fresh note), the same title bare, a copy of the new
+          citation-stability section and a copy whose bracket is part of the title all flag; '## 4. CI on
+          this machine' and a pointer sentence do not.
+Cost      The list stays a snapshot: this repository's CI cannot read ~/.agents, so a future title change
+          still needs a manual pass here. What watches for that drift now is section 13 of
+          ~/.agents/scripts/audit.sh, which reports it instead of waiting for a red build that never arrives.
