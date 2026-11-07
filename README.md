@@ -95,7 +95,9 @@ index. It never touches CodeBuddy's files, installs no hook, and adds no runtime
 
 ## 📊 The eight tabs
 
-<p align="center"><img src="docs/screenshots/demo.gif" alt="Switching the window and opening a tab" width="900"></p>
+<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
+
+<p align="center"><em><b>In the clip:</b> the TUI opens on the Dashboard and steps through all eight tabs — Tools, Skills, Agents, Plugins, MCP, Tokens, Usage — holding each long enough to read. <b>What it shows:</b> one local index cut eight ways; the range selector in the top bar re-scopes only the tab you are on, so every tab keeps its own window.</em></p>
 
 The **Dashboard** opens first: an at-a-glance summary of the important numbers, so you
 know where to look before drilling in. A shared top bar above the tabs carries the range
