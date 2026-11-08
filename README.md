@@ -22,6 +22,10 @@
 
 <p align="center"><em><b>In the clip:</b> the TUI opens on the Dashboard and steps through all eight tabs — Tools, Skills, Agents, Plugins, MCP, Tokens, Usage — holding each long enough to read. <b>What it shows:</b> one local index cut eight ways; the range selector in the top bar re-scopes only the tab you are on, so every tab keeps its own window.</em></p>
 
+<p align="center"><img src="docs/screenshots/demo-range.gif" alt="Switching the time range from 30 days to 7 days and then to 1 day" width="900"></p>
+
+<p align="center"><em><b>In the clip:</b> the Dashboard's range selector is switched from 30 days to 7 days and then to 1 day; the cards, table and charts re-scope each time. <b>What it shows:</b> every tab keeps its own time window, so changing the range here does not alter the seven other tabs.</em></p>
+
 **How to run** — `./install.sh`, then `cbut sync`.
 
 **Where to look** — See [AGENTS.md](AGENTS.md) and [MAINTENANCE.md](MAINTENANCE.md).

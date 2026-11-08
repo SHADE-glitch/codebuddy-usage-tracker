@@ -22,6 +22,10 @@
 
 <p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完八个标签页——工具、技能、代理、插件、MCP、Token、用量——每页停留到能看清为止。<b>展示的功能：</b>同一份本地索引的八种视角；顶栏的时间范围只作用于当前标签页，每个标签页各自记住自己的窗口。</em></p>
 
+<p align="center"><img src="docs/screenshots/demo-range.gif" alt="把时间范围从 30 天切到 7 天，再切到 1 天" width="900"></p>
+
+<p align="center"><em><b>动图内容：</b> 在仪表盘把时间范围从 30 天切到 7 天、再切到 1 天，卡片、表格与图表随之重算。 <b>展示的功能：</b> 每个标签页各自记住自己的时间窗口；这里的改动不会波及其余七个标签页。</em></p>
+
 **怎么跑** —— `./install.sh`，然后 `cbut sync`。
 
 **去哪看** —— 见 [AGENTS.md](AGENTS.md) 与 [MAINTENANCE.md](MAINTENANCE.md)。
