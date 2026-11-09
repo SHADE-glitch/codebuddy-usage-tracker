@@ -13,8 +13,10 @@ So this module installs a process-wide audit hook that *refuses* three things:
   included, since the rule is "never opened", not "never written";
 * **reading the real host footprint** — any ``open``, ``os.scandir``/``os.listdir`` (a glob
   reaches the host's files without an ``open``) or ``sqlite3.connect`` that names a file
-  under the host dir the reader treats as input. The host is *input*, not state, so it was
-  never covered; but a test that reads it stops testing the code and starts testing this
+  under a host dir the reader treats as input: ``~/.codebuddy``, or the settings dir
+  ``~/.config/cbut`` whose ``config.toml`` ``load_config()`` opens by default. The host is
+  *input*, not state, so it was never covered; but a test that reads it stops testing the code
+  and starts testing this
   machine. The sibling `ocut` shipped exactly that bug — a fixture read the developer's
   real plugin-events sidecar and three tests were red only where the sidecar existed. A
   test must build a throwaway host in a temp dir instead;
@@ -45,7 +47,15 @@ PROTECTED = Path.home() / ".local" / "share" / "codebuddy-usage-tracker" / "usag
 # The host's own footprint: everything the reader treats as *input*. Frozen from the real
 # home at import, for the same reason as ``PROTECTED`` — a test that fakes HOME or
 # CBUT_CODEBUDDY_DIR must not be able to redefine what counts as "the real host".
-PROTECTED_DIRS = (Path.home() / ".codebuddy",)
+# The settings directory is here for the same reason, one layer up: ``load_config()`` opens
+# ``~/.config/cbut/config.toml`` by default, so a test that reaches the loader without pinning
+# CBUT_CONFIG reads the maintainer's own settings. Frozen from the real home rather than read
+# from ``cbut_db.CONFIG_PATH``, which moves when XDG_CONFIG_HOME or CBUT_CONFIG is set — a test
+# that fakes either must not be able to redefine what is protected.
+PROTECTED_CONFIG_DIR = Path.home() / ".config" / "cbut"
+PROTECTED_DIRS = (Path.home() / ".codebuddy", PROTECTED_CONFIG_DIR)
+# The variable a test pins to point a child away from each protected directory.
+_PIN_HINTS = {PROTECTED_DIRS[0]: "CBUT_CODEBUDDY_DIR", PROTECTED_CONFIG_DIR: "CBUT_CONFIG"}
 
 # The environment variables that move each protected host dir. A child given none of these
 # falls back to the real dir; the Popen guard below refuses that.
@@ -205,9 +215,10 @@ def _refuse_host_read(path, how: str) -> None:
     """Refuse a read or listing under a real protected host dir, if ``path`` is one."""
     root = _protected_read(path)
     if root is not None:
+        hint = _PIN_HINTS.get(root, "CBUT_CODEBUDDY_DIR")
         raise Refusal(
             f"a test tried to {how} under the real host footprint {root}. The suite builds "
-            "a throwaway host in a temp directory and points CBUT_CODEBUDDY_DIR at it — see "
+            f"a throwaway host in a temp directory and points {hint} at it — see "
             "the 'Tests never touch real state' rule in AGENTS.md. Reading the real host "
             "makes the test a measurement of this machine, not of the code."
         )

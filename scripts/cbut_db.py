@@ -1665,8 +1665,8 @@ _AGG_TOTAL_SOURCE_EXPR = (
 # --- display-only "Usage Total" -------------------------------------------
 # prompt + completion + cache hit. The prompt already contains the cache hit
 # (prompt = hit + miss + write, verified on real data), so this deliberately
-# re-adds it and lands at roughly twice the API total. It is shown *next to*
-# the API total, never instead of it. NULL when the API parts are missing;
+# re-adds it and lands at roughly twice the API total. It is the only total shown;
+# the stored API total was removed. NULL when the API parts are missing;
 # a missing cache-hit column contributes 0 (COALESCE) so a row without cache
 # data is not inflated and is not silently dropped from the sum.
 _USAGE_TOTAL_EXPR = (

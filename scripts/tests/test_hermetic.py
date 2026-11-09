@@ -68,7 +68,11 @@ class PredicateTest(unittest.TestCase):
         from pathlib import Path as P
         expected = P.home() / ".local" / "share" / "codebuddy-usage-tracker" / "usage.db"
         self.assertEqual(hermetic.PROTECTED, expected)
-        self.assertEqual(hermetic.PROTECTED_DIRS, (P.home() / ".codebuddy",))
+        self.assertEqual(
+            hermetic.PROTECTED_DIRS,
+            (P.home() / ".codebuddy", P.home() / ".config" / "cbut"),
+            "the settings dir is host state too; load_config() opens it by default")
+        self.assertEqual(hermetic.PROTECTED_CONFIG_DIR, P.home() / ".config" / "cbut")
 
     def test_a_child_with_nothing_to_point_it_away_would_use_the_real_database(self):
         stats = str(SCRIPTS / "cbut-stats.py")
@@ -161,6 +165,26 @@ class EnforcementTest(unittest.TestCase):
             hermetic._hook("os.scandir", (str(hermetic.PROTECTED_DIRS[0] / "projects"),))
         with self.assertRaises(hermetic.Refusal):
             hermetic._hook("sqlite3.connect", (str(hermetic.PROTECTED_DIRS[0] / "x.vscdb"),))
+
+    def test_reading_the_real_config_file_is_refused(self):
+        """The settings file is host state too: `load_config()` opens it by default.
+
+        The tripwire guarded `~/.codebuddy` only, so a test that reached the
+        loader without pinning `CBUT_CONFIG` read the maintainer's own
+        `config.toml` and passed on their `top_n` — the same leak as reading the
+        real transcript directory, one layer up.
+        """
+        config = hermetic.PROTECTED_CONFIG_DIR / "config.toml"
+        self.assertEqual(hermetic._protected_read(str(config)),
+                         hermetic.PROTECTED_CONFIG_DIR)
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("open", (str(config), "r", 0))
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("os.listdir", (str(hermetic.PROTECTED_CONFIG_DIR),))
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = str(Path(tmp) / "config.toml")
+            self.assertIsNone(hermetic._protected_read(candidate))
+            hermetic._hook("open", (candidate, "r", 0))  # control: must not raise
 
     def test_an_ordinary_test_path_is_left_alone(self):
         """The control: the host predicate must not fire on a throwaway path."""
