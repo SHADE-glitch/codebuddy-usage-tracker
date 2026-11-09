@@ -2205,3 +2205,21 @@ Evidence  `python3 -m unittest discover -s scripts/tests` exits 0; README.md and
 Cost      The Chinese page now depends on the English one for the historical name. A future
           totals change still has to land on both sides, which the section-count guard enforces.
 Commit    8e4cb04
+
+### D-097 · 2026-11-09 · guard
+Symptom   The hermetic tripwire guarded ~/.codebuddy and its own usage.db but not the
+          settings directory: load_config() opens ~/.config/cbut/config.toml by default,
+          so a test reaching the loader unpinned read the maintainer's own settings.
+          Only Usage Total had a cross-repo guard; the other three family rules were
+          kept by eye and a unilateral drift could pass every per-repo suite.
+Change    Protect ~/.config/cbut in _hermetic.py with a positive and a control guard
+          test, add the family_contract rules/variants self-check over four identical
+          golden copies, and drop the stale "shown next to the API total" comment
+          from cbut_db.py. README counts follow the two new tests.
+Evidence  python3 -m unittest discover -s scripts/tests -q -> 666 OK; the reverse
+          proof mutates a plain DataTable, min_height and a guard-test name and each
+          turns the new check red, then green again on restore; the four golden copies
+          share one sha256 and all three CANONICAL_SHA256 pins match it.
+Cost      A legitimate family-rule change now has to land in four byte-identical
+          copies of the golden fixture and bump three digest constants together.
+Commit    a93b1f7
