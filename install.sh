@@ -7,20 +7,24 @@
 # the running install. The headless subcommands (cbut sync/stats/...) need only
 # python3; only the interactive TUI needs the venv.
 #
-#   ./install.sh            install (refuses to replace a real file)
-#   ./install.sh --force    also replace an existing non-symlink at the target
+#   ./install.sh             install (refuses to replace a real file)
+#   ./install.sh --force     also replace an existing non-symlink at the target
+#   ./install.sh --no-timer  install without enabling the scheduled-sync timer
 #
 # Environment overrides (mainly for testing a sandboxed install):
 #   CBUT_BIN_DIR    default: ~/.local/bin
 set -euo pipefail
 
 FORCE=0
+NO_TIMER=0
 for arg in "$@"; do
   case "$arg" in
     --force) FORCE=1 ;;
+    --no-timer) NO_TIMER=1 ;;
     -h|--help)
-      echo "usage: ./install.sh [--force]"
-      echo "  --force  replace an existing non-symlink at the install location"
+      echo "usage: ./install.sh [--force] [--no-timer]"
+      echo "  --force     replace an existing non-symlink at the install location"
+      echo "  --no-timer  install without enabling the scheduled-sync systemd user timer"
       exit 0
       ;;
     *) echo "install.sh: unknown option '$arg' (try --help)" >&2; exit 2 ;;
@@ -78,6 +82,29 @@ echo
 echo "==> cbut health"
 "$DST" health || echo "  (health reported a problem — see above)"
 
+# --- 4. scheduled sync -----------------------------------------------------
+# These four steps used to be printed only, at the end of the help text below.
+# Nobody ran them, so the index silently went stale. Install the timer for real;
+# skip gracefully where a user-level systemd instance is unavailable (macOS,
+# WSL, containers, CI) so install.sh still works there.
+if [ "$NO_TIMER" -eq 1 ]; then
+  echo "==> skipping scheduled sync (--no-timer)"
+elif [ ! -f "$REPO_DIR/systemd/cbut-sync.service" ] || \
+     [ ! -f "$REPO_DIR/systemd/cbut-sync.timer" ]; then
+  echo "==> skipping scheduled sync: unit files are missing"
+elif ! command -v systemctl >/dev/null 2>&1; then
+  echo "==> skipping scheduled sync: systemctl not found"
+elif ! systemctl --user show-environment >/dev/null 2>&1; then
+  echo "==> skipping scheduled sync: no user-level systemd instance"
+else
+  UNIT_DIR="$HOME/.config/systemd/user"
+  mkdir -p "$UNIT_DIR"
+  cp "$REPO_DIR/systemd/cbut-sync.service" "$REPO_DIR/systemd/cbut-sync.timer" "$UNIT_DIR/"
+  systemctl --user daemon-reload
+  systemctl --user enable --now cbut-sync.timer
+  echo "==> scheduled sync enabled: cbut-sync.timer (every 15 minutes)"
+fi
+
 cat <<EOF
 
 Installed.
@@ -85,10 +112,14 @@ Installed.
   cbut            launch the interactive TUI
   cbut sync       index new CodeBuddy logs (run this first)
   cbut stats      usage summary, no TUI required
-
-Optional background sync every 15 minutes (so the index stays current without opening the TUI):
-  mkdir -p ~/.config/systemd/user
-  cp "$REPO_DIR/systemd/cbut-sync."* ~/.config/systemd/user/
-  systemctl --user daemon-reload
-  systemctl --user enable --now cbut-sync.timer
 EOF
+if [ "$NO_TIMER" -eq 1 ]; then
+  echo
+  echo "Scheduled sync was skipped (--no-timer); re-run ./install.sh to enable it."
+else
+  cat <<EOF
+
+Scheduled sync is enabled (cbut-sync.timer, every 15 minutes). Turn it off with:
+  systemctl --user disable --now cbut-sync.timer
+EOF
+fi

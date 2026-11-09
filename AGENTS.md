@@ -43,7 +43,7 @@ This repository is public.
 
 ```bash
 python3 -m unittest discover -s scripts/tests     # stdlib unittest; pytest discovers them too
-./install.sh                                      # create .venv + link bin/cbut; optional systemd timer
+./install.sh                                      # create .venv + link bin/cbut; install+enable the systemd timer (--no-timer to skip)
 bash -n bin/cbut                                  # syntax-check the dispatcher
 ```
 

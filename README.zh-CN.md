@@ -190,10 +190,10 @@ python3 scripts/cbut-sync.py
 python3 scripts/cbut-stats.py stats
 ```
 
-### 🔄 可选：不开 TUI 也让索引保持最新
+### 🔄 定时同步（默认安装）
 
-[`systemd/`](systemd) 里带了两个用户级 unit，装上后每 15 分钟跑一次 `cbut sync --quiet`。下面这四
-行就是 `install.sh` 安装成功时最后打印的那段：
+[`systemd/`](systemd) 里带了两个用户级 unit。`install.sh` 会装好并启用它们，
+让 `cbut sync --quiet` 每 15 分钟跑一次。等价的手动步骤是：
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -311,7 +311,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 668 tests ... OK
 | 路径 | 是什么 |
 |---|---|
 | `bin/cbut` | bash 入口。刻意用 bash：venv 缺失或坏掉时它仍要能跑出有用的报错，所以不能依赖 Python。优先用 `./.venv/bin/python`，否则退回 `python3` |
-| `install.sh` | 建 venv（有 `uv` 就用）并把 `~/.local/bin/cbut` 做成符号链接。可重复执行；目标不是符号链接时，不加 `--force` 拒绝覆盖 |
+| `install.sh` | 建 venv（有 `uv` 就用）、把 `~/.local/bin/cbut` 做成符号链接，并装好启用定时同步的 systemd timer（加 `--no-timer` 可跳过）。可重复执行；目标不是符号链接时，不加 `--force` 拒绝覆盖 |
 | `scripts/cbut_db.py` | SQLite 结构，以及各入口共用的查询辅助 |
 | `scripts/cbut-sync.py` | 日志解析与增量索引器（`--full`、`--quiet`） |
 | `scripts/cbut-stats.py` | 无头报告：`stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `vacuum` · `format` |

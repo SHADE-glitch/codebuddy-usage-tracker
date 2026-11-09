@@ -288,11 +288,11 @@ python3 scripts/cbut-sync.py
 python3 scripts/cbut-stats.py stats
 ```
 
-### 🔄 Optional: keep the index fresh without opening the TUI
+### 🔄 Scheduled sync (installed by default)
 
-Two user units ship in [`systemd/`](systemd). Installing them runs
-`cbut sync --quiet` every 15 minutes — these are the same four lines `install.sh` prints at the
-end of a successful install:
+Two user units ship in [`systemd/`](systemd). `install.sh` installs and enables
+them, so `cbut sync --quiet` runs every 15 minutes. The equivalent manual steps
+are:
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -425,7 +425,7 @@ at an old number, fails the suite.
 | Path | What it is |
 |---|---|
 | `bin/cbut` | bash entry point. Bash on purpose: it must still print a useful error when the TUI venv is missing, so it cannot depend on Python. Prefers `./.venv/bin/python`, falls back to `python3` |
-| `install.sh` | creates the venv (`uv` when available) and symlinks `~/.local/bin/cbut`. Idempotent; refuses to replace a non-symlink unless `--force` |
+| `install.sh` | creates the venv (`uv` when available), symlinks `~/.local/bin/cbut`, and installs/enables the scheduled-sync systemd timer (`--no-timer` to skip). Idempotent; refuses to replace a non-symlink unless `--force` |
 | `scripts/cbut_db.py` | SQLite schema and the query helpers every entry point shares |
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `vacuum` · `format` |
