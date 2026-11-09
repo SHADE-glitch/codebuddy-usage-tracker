@@ -513,6 +513,25 @@ def cmd_health(conn, args):
           f"{o['model_responses']} model responses "
           f"({o['model_responses_with_usage']} with usage)")
     print(f"  last activity  {ts(o['last_ts'])}")
+    # A frozen index used to be invisible: health printed counts and a "last
+    # activity" line but never said how old that activity was. On 2026-11-09 the
+    # systemd timer turned out never to have been installed, and the index sat a
+    # full day behind with no warning. Name the age of the newest session.
+    try:
+        newest = conn.execute("SELECT MAX(started_at) FROM sessions").fetchone()[0]
+    except sqlite3.Error:
+        newest = None
+    if newest is None:
+        print("  ingest          UNKNOWN — no sessions indexed")
+    elif not isinstance(newest, (int, float)):
+        print("  ingest          UNKNOWN — non-numeric session timestamp")
+    else:
+        age_h = (int(datetime.now().timestamp() * 1000) - newest) / 3_600_000
+        if age_h > 24:
+            print(f"  ingest          STALE — {age_h:.0f}h since {ts(newest)}; "
+                  "sync timer may have stopped")
+        else:
+            print(f"  ingest          OK — latest session {ts(newest)}")
     # The format-change signal. Printing the "0" case too, so the line itself
     # proves the check ran rather than merely being absent when nothing broke.
     rows = db.q_unparsed(conn)

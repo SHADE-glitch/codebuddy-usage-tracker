@@ -183,7 +183,7 @@ one written in the class.
   `_fill_wide` (`:1127`) keeps the longest column prefix that fits.
 - The sync worker (`_request_sync` `:2034`, `_do_sync` `:2043`, `_on_sync_done` `:2055`) runs on
   launch and on `r`, in a thread, and refreshes every tab only when it indexed a file.
-- `cbut-stats.py` reads the same `db` functions through a read-only connection (`open_db` `cbut-stats.py:795`)
+- `cbut-stats.py` reads the same `db` functions through a read-only connection (`open_db` `cbut-stats.py:814`)
   and prints the full union; `cmd_stats` (`cbut-stats.py:262`) is the report a headless run gets.
 
 ## Following one number
@@ -207,7 +207,7 @@ expression (step 3). The one case that is neither: the context-token total comes
 
 | Symptom | First place to look |
 |---|---|
-| A panel is empty that used to have rows | `cbut health` → `unparsed` reasons (`cbut-stats.py:518`); a new `type:` is a format change |
+| A panel is empty that used to have rows | `cbut health` → `unparsed` reasons (`cbut-stats.py:537`); a new `type:` is a format change |
 | Rows exist but a count is `0` | the window (`_bounds_for`) before the query |
 | Two screens disagree | API total vs Usage Total (`cbut_db.py:1669`) — they are different measurements |
 | A model has two rows | `(model, provider)` keying (`cbut_db.py:1540`); one model served by two routes is two rows |

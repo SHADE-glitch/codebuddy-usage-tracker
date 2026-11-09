@@ -27,6 +27,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -465,6 +466,27 @@ class HealthReportTest(unittest.TestCase):
         self.assertIn("(absent — defaults)", out,
                       "the settings line no longer names a missing file")
         self.assertIn("unparsed       0 — every record type was claimed", out)
+
+    def test_health_flags_a_stalled_ingest(self):
+        # seed_db's session is pinned to 2026-10-01, so a healthy check must
+        # call out that the index is far more than 24h behind.
+        rc, out, err = self._run_health(self.db_path)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("ingest", out)
+        self.assertIn("STALE", out)
+        self.assertIn("sync timer may have stopped", out)
+
+    def test_health_says_ok_for_a_fresh_ingest(self):
+        conn = db.open_db(self.db_path)
+        conn.execute("UPDATE sessions SET started_at=?",
+                     (int(time.time() * 1000),))
+        conn.commit()
+        conn.close()
+        rc, out, err = self._run_health(self.db_path)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("ingest", out)
+        self.assertIn("OK", out)
+        self.assertNotIn("STALE", out)
 
     def test_health_flags_unparsed_records(self):
         conn = db.open_db(self.db_path)
