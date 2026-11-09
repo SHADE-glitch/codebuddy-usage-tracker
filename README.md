@@ -376,7 +376,7 @@ text, tool argument values, or file contents. 🔒 Nothing leaves the machine.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 668 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 670 tests ... OK
 ```
 
 The suites are plain `unittest` (stdlib only, so `pytest` discovers them too). Each one
@@ -400,6 +400,7 @@ builds its own throwaway database in a temp directory — **your real `usage.db`
   the Usage log's newest-100 cap with no page key, provider suffixes on shared model names,
   the Dashboard's Projects board and the credit cells that read `-` when a route reported none |
 | `test_cross_repo_golden.py` | 18 | the cross-repo golden fixture: one fixed input set (NULL / partial / cache-missing token rows, model spellings, local-midnight and cross-hour boundaries, both 2026 US DST days) run through this repo's own Usage Total expression, window aggregates, model rollup, typed date entry and calendar-day windows, pinned to the canonical file shared with ocut and qcut |
+| `test_family_contract_version.py` | 2 | `FAMILY_CONTRACT.md`'s machine-readable summary: this repo's copy of `family_contract.json` is pinned by sha256 and `contract_version` against the canonical copy in `all-usage-trackers` |
 | `test_usage.py` | 121 | the calendar-day windows (Today / 2 / 3 / 7 / 14 / 30 days / all) and their custom-range labels, the typed date/time normalisation (24-hour display, 12-hour still accepted on input), the token totals and provider grouping, the Dashboard queries, the drill-down queries (windowed per-entity summaries, plugin use counts, a single call's full row), the schema gate, and which indexes earn their keep, the headless session list (window,
   newest-first order, limit) |
 | `test_indexes.py` | 4 | the rule the two earlier index cuts relied on a hand-taken reading for: every statement the report surface really runs is captured and planned with `EXPLAIN QUERY PLAN`, and a declared index no plan names fails — plus the structural rule that caught the v9 cut, a key that is a strict prefix of a wider declared key |
@@ -430,7 +431,7 @@ at an old number, fails the suite.
 | `scripts/cbut-sync.py` | log parser and incremental indexer (`--full`, `--quiet`) |
 | `scripts/cbut-stats.py` | headless reports: `stats` · `tools` · `skills` · `agents` · `plugins` · `mcp` · `models` · `sessions` · `show` · `recent` · `inventory` · `export` · `health` · `backup` · `restore` · `vacuum` · `format` |
 | `scripts/cbut-tui.py` | the eight-tab Textual UI |
-| `scripts/tests/` | the 668 tests above |
+| `scripts/tests/` | the 670 tests above |
 | `docs/maintenance/` | what to re-check when CodeBuddy changes: the generated format-dependency surface, the version/compatibility matrix, the size & performance baseline with the commands that produced it, and the `file:line` map from a log record to the number on screen |
 | `systemd/` | optional 15-minute sync service + timer |
 | `requirements.txt` | `textual>=8.2,<9` — TUI only; everything else is stdlib |
