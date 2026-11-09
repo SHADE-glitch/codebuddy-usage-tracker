@@ -2187,3 +2187,21 @@ Cost      The list stays a snapshot: this repository's CI cannot read ~/.agents,
           still needs a manual pass here. What watches for that drift now is section 13 of
           ~/.agents/scripts/audit.sh, which reports it instead of waiting for a red build that never arrives.
 Commit    fe447e3
+
+### D-096 · 2026-11-09 · fix
+Symptom   The Chinese README still described two unlabelled token totals as current behaviour:
+          "API Total" (provider value, else input+output) plus a display-only "Usage Total".
+          The English README and the TUI carry one total only — Usage Total — and the provider
+          total is no longer printed anywhere. A reader of the Chinese page would look for a
+          column that does not exist.
+Change    Removed "API Total" from the Dashboard, Tokens and Request Logs column lists and
+          rewrote both accuracy paragraphs, so both language halves state the same single-total
+          rule: Usage Total = Input + Output + cache hit, with the retired name kept only as a
+          historical aside.
+Evidence  `python3 -m unittest discover -s scripts/tests` exits 0; README.md and
+          README.zh-CN.md both carry 16 `##` sections; `test_tui.py::test_one_token_total_and_no_api_total`
+          pins the single-total rule in the TUI; the only remaining "API Total" mention in the
+          Chinese page names it as the old name.
+Cost      The Chinese page now depends on the English one for the historical name. A future
+          totals change still has to land on both sides, which the section-count guard enforces.
+Commit    8e4cb04
