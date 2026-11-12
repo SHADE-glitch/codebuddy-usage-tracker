@@ -2223,3 +2223,10 @@ Evidence  python3 -m unittest discover -s scripts/tests -q -> 666 OK; the revers
 Cost      A legitimate family-rule change now has to land in four byte-identical
           copies of the golden fixture and bump three digest constants together.
 Commit    a93b1f7
+
+### D-098 · 2026-11-12 · chore
+Symptom   The project-level rules pointer block in AGENTS.md used bare `@~/.agents/standards/...` imports to pull in the machine-wide standard. That only delivers the rule text to agents that expand `@` imports or read `opencode.json`; an agent that does neither holds the pointer and none of the rule text.
+Change    Replaced the two `@` imports with plain backticked absolute paths (`~/.agents/standards/STANDARD.md`, `~/.agents/standards/dimensions/a.md`). The rule text is now delivered by the tool-neutral global behavior contract (GLOBAL.md) before the first edit, so the pointer works for every agent regardless of import expansion. No rule text was duplicated or changed — only the pointer form.
+Evidence  `python3 -m unittest discover -s scripts/tests -q` (the repository standard guard) exits 0: Ran 670 tests, OK. The change sits inside the AGENTS.md pointer block and does not touch heading counts or section structure; the record-coverage check resolves `Commit 238d4ca`.
+Cost      The pointer is a local copy of the instruction; the tool-neutral contract is what carries the rule text. Whether that text actually reaches a session is a per-tool check, not a repository guard.
+Commit   238d4ca
