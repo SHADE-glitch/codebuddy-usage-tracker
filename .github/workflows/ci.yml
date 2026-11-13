@@ -36,5 +36,6 @@ jobs:
 
       - name: Run tests
         run: python3 -m unittest discover -s scripts/tests
+      - run: python3 scripts/check_language.py
       - name: Standards block matches the lock
         run: python3 scripts/render_standards.py --verify-lock .
