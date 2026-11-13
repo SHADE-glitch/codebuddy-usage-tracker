@@ -2230,3 +2230,18 @@ Change    Replaced the two `@` imports with plain backticked absolute paths (`~/
 Evidence  `python3 -m unittest discover -s scripts/tests -q` (the repository standard guard) exits 0: Ran 670 tests, OK. The change sits inside the AGENTS.md pointer block and does not touch heading counts or section structure; the record-coverage check resolves `Commit 238d4ca`.
 Cost      The pointer is a local copy of the instruction; the tool-neutral contract is what carries the rule text. Whether that text actually reaches a session is a per-tool check, not a repository guard.
 Commit   238d4ca
+
+---
+
+### D-099 · 2026-11-13 · chore
+
+Symptom   The repository carried an `opencode.json` whose only content was the two standard pointers
+          already present in `AGENTS.md`; a second copy of the delivery instruction that could drift
+          with no guard noticing it had gone stale.
+Change    Removed `opencode.json` from the root layer and dropped it from the layout guard's
+          `ROOT_FILES` list; `STANDARD.md` §1 no longer requires it. Delivery is the pointer block
+          plus the machine-level `GLOBAL.md` contract.
+Evidence  `python3 scripts/tests/test_conventions.py` exits 0; `bash ~/.agents/scripts/audit.sh` exits 0 (all governed
+          repositories pass the layout check).
+Cost      No per-assistant config remains, so an agent that ignores the pointer is undetected by any
+          local guard; that was already true of the file it replaced.
