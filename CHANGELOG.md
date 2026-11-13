@@ -2245,3 +2245,4 @@ Evidence  `python3 scripts/tests/test_conventions.py` exits 0; `bash ~/.agents/s
           repositories pass the layout check).
 Cost      No per-assistant config remains, so an agent that ignores the pointer is undetected by any
           local guard; that was already true of the file it replaced.
+Commit    2202d69
