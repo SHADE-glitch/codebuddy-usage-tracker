@@ -14,17 +14,9 @@
 
 **解决什么** —— CodeBuddy 把历史存在为「恢复会话」而设计的本地日志里；`cbut` 把它们索引进一个本地 SQLite 文件，看清用过什么、装了什么。
 
-<p align="center"><img src="docs/screenshots/dashboard.png" alt="仪表盘（演示索引）" width="900"></p>
+<p align="center"><img src="docs/screenshots/demo.gif" alt="CodeBuddy 记录器依次切过八个标签页，途中打开一条技能记录" width="1100"></p>
 
-<p align="center"><em><b>仪表盘</b> —— 用量、会话、花了钱的模型、真正用过的工具，一个窗口看完。这里的数字全部来自演示索引，不含任何真实机器的数据。</em></p>
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="依次切换 TUI 的八个标签页" width="900"></p>
-
-<p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完八个标签页——工具、技能、代理、插件、MCP、Token、用量——每页停留到能看清为止。<b>展示的功能：</b>同一份本地索引的八种视角；顶栏的时间范围只作用于当前标签页，每个标签页各自记住自己的窗口。</em></p>
-
-<p align="center"><img src="docs/screenshots/demo-range.gif" alt="把时间范围从 30 天切到 7 天，再切到 1 天" width="900"></p>
-
-<p align="center"><em><b>动图内容：</b> 在仪表盘把时间范围从 30 天切到 7 天、再切到 1 天，卡片、表格与图表随之重算。 <b>展示的功能：</b> 每个标签页各自记住自己的时间窗口；这里的改动不会波及其余七个标签页。</em></p>
+<p align="center"><em><b>动图内容：</b>看板从仪表盘进入，依次切过工具、技能、代理、插件、MCP、Token、用量七页；在技能页按 <code>Enter</code> 打开光标所在行，<code>Esc</code> 返回。<b>展示的功能：</b>单个索引的全景——请求与额度、token 与缓存总量、模型与工具排行，以及每个技能的调用次数、成功率与最后使用时间。画面里的索引是为录制造的合成数据。</em></p>
 
 **怎么跑** —— `./install.sh`，然后 `cbut sync`。
 

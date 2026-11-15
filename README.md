@@ -14,17 +14,9 @@
 
 **What it solves** — CodeBuddy keeps its history in local logs shaped for resuming sessions; `cbut` indexes them into one local SQLite file so you can see what you have used and what is installed.
 
-<p align="center"><img src="docs/screenshots/dashboard.png" alt="The dashboard, running against a demo index" width="900"></p>
+<p align="center"><img src="docs/screenshots/demo.gif" alt="The CodeBuddy tracker stepping through all eight tabs, opening a skill row on the way" width="1100"></p>
 
-<p align="center"><em><b>The dashboard</b> — usage, sessions, the models you paid for and the tools you actually used, in one window. Every number comes from a demo index, not from a real machine.</em></p>
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
-
-<p align="center"><em><b>In the clip:</b> the TUI opens on the Dashboard and steps through all eight tabs — Tools, Skills, Agents, Plugins, MCP, Tokens, Usage — holding each long enough to read. <b>What it shows:</b> one local index cut eight ways; the range selector in the top bar re-scopes only the tab you are on, so every tab keeps its own window.</em></p>
-
-<p align="center"><img src="docs/screenshots/demo-range.gif" alt="Switching the time range from 30 days to 7 days and then to 1 day" width="900"></p>
-
-<p align="center"><em><b>In the clip:</b> the Dashboard's range selector is switched from 30 days to 7 days and then to 1 day; the cards, table and charts re-scope each time. <b>What it shows:</b> every tab keeps its own time window, so changing the range here does not alter the seven other tabs.</em></p>
+<p align="center"><em><b>In the clip:</b> the board opens on the dashboard, then steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage; on Skills, <code>Enter</code> opens the row it is on and <code>Esc</code> returns. <b>What it shows:</b> the window over one index — requests and credits, token and cache totals, the model and tool leaders, and each skill’s calls, pass rate and last use. The index behind it is synthetic, seeded for the clip.</em></p>
 
 **How to run** — `./install.sh`, then `cbut sync`.
 
